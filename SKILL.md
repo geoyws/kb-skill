@@ -265,7 +265,7 @@ kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
 |---|---|
 | `blocking` | work cannot resume until he calls it |
 | `decision` | a design or scope call that is his |
-| `approval` | staging push, destructive op, scope expansion, spend |
+| `approval` | production-tier action, `master`/`main` or production-ref push (`prod`, `production`, `*-prod`, `*-production`), destructive op, scope expansion, spend |
 | `review` | a deployed tier waiting on his eyes — put the URL in the text |
 | `risk` | failed gate, flaky tier, expired credential, half-written file |
 
