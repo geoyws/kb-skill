@@ -344,6 +344,11 @@ copy_public_package() {
   local target_root=$1
   mkdir -p "$target_root"
   cp -R "$package_dir"/. "$target_root"/
+  # The package's own git metadata must never travel into a fixture. When this
+  # package is consumed as a submodule its .git is a FILE holding a relative
+  # gitdir pointer, which resolves to nothing from a temp directory, so every
+  # git command in the fixture dies with "not a git repository".
+  rm -rf "$target_root/.git"
 }
 
 test_local_exec_injects_project_and_preserves_argv() {
