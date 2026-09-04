@@ -718,6 +718,28 @@ surface, and it must fail closed on drift. The adapter passes only that fixed
 TEXT` when `codex-cli 0.150.1` is installed. The separately named live
 smoke receipt is the distinct runtime check for installed Codex support.
 
+The optional Claude print bridge is consumer `claude.print`, action
+`start-readonly-turn`, with capability `start`. Host-local `dispatchers.json`
+binds those exact names to `kanban-claude-print-adapter` and fixed arguments
+`--claude ABSOLUTE_PATH --home ABSOLUTE_PATH --cwd ABSOLUTE_PATH
+--required-version VERSION`; keep executable, home, working-directory, and
+version choices outside subscription rows and portable skill text. The
+dispatcher serializes this consumer so one fresh worker owns each delivery.
+The adapter starts Claude in safe-mode print operation with no tools and no
+session persistence; it never resumes or drives an active TUI. Its child
+environment contains exactly `HOME` and `PATH=/usr/bin:/bin`, and its configured
+working directory is fixed.
+
+Executable, home, working-directory, version/help-surface, authentication, or
+response-contract drift fails closed; an invalid Claude response also fails
+closed. Treat the compiled-process adapter-contract check and the separately
+named installed-version live smoke as distinct evidence: the former proves
+protocol and process containment, while the latter proves the pinned installed
+Claude can authenticate and complete the real print turn. This bridge is
+optional and ships with no active subscription
+by default; an operator must deliberately add or resume a matching
+subscription after both checks pass.
+
 Run delivery through the separate compiled worker with exactly one explicit
 board selector:
 
