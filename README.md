@@ -6,7 +6,9 @@ installation.
 ## What is here
 
 - `SKILL.md` documents the public skill surface.
-- `scripts/kb-board` routes commands by board and preserves argv literally.
+- `scripts/kb-board` routes commands by board and preserves argv literally; on
+  `checkpoint` and `handoff create` it also forwards the caller's git checkout
+  as `--repo`, `--branch`, `--head` and `--dirty` unless the caller passed them.
 - `scripts/kb-host` routes registry commands by board home host and preserves
   argv literally.
 - `scripts/denylist-check`, `scripts/leak-gate`, `scripts/commit-gate`, and
