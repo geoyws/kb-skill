@@ -939,6 +939,35 @@ so validation and refusals are identical to the terminal. Every tool carries
 Updating is `install` over the binary — running servers pick it up without any
 client reconnecting.
 
+### From another machine: one persistent SSH channel
+
+The board home host boundary applies to the MCP server exactly as it does to
+the CLI, so the server runs *there* and the harness talks to it over stdio
+through SSH. That gives an interactive harness a connection it holds for the
+whole session instead of one handshake per read:
+
+```bash
+ssh BOARD_SSH_TARGET /root/.local/bin/kb mcp     # the whole server command
+```
+
+Register that command as a stdio MCP server in the harness — Claude Code:
+`claude mcp add --scope user --transport stdio kb -- ssh BOARD_SSH_TARGET
+/root/.local/bin/kb mcp`; Codex: an `[mcp_servers.kb]` block with
+`command = "ssh"` and `args = ["BOARD_SSH_TARGET", "/root/.local/bin/kb",
+"mcp"]`. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
+connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
+call — about one round trip plus the query — against 2.5 s per CLI one-shot
+without a ControlMaster. This is the agent API; there is no HTTP service.
+
+What does not change: every tool still takes its own `project`, because the
+server resolves a board per call and refuses `--project` on `kb mcp` itself
+rather than let one session silently answer about a board it was not asked
+about. The same rules, the same refusals, the same `readOnlyHint` — a tool
+call is the real binary on the real ledger, as root, on a production-bearing
+host. If the host is unreachable the server fails to start and the harness
+says so; that is the correct outcome. Never point the registration at a local
+`kb` or a local board file to make the error go away.
+
 ## Refusals worth knowing
 
 These are deliberate. Do not work around them; they exist because each one was
