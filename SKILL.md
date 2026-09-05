@@ -154,9 +154,11 @@ Scoped to their group:
 | `story` | `adv`=advance |
 | `handoff` | `ls`=list `new`=create `acc`=accept |
 | `workspace` | `ls`=list `att`=attach `det`=detach |
+| `attention` | `ls`=list `up`=update `new`=raise |
 | `tag` | `ls`=list `rm`=remove `new`=add |
 | `rule` | `ls`=list `new`=add `up`=update `cat`=show |
 | `sitrep` | `ls`=list `new`=post |
+| `deploy` | `ls`=list `cat`=show |
 | `subscription` | `ls`=list `new`=add `cat`=show |
 
 ⚠ `att` means **attach** inside `workspace` and **attention** at the top level.
