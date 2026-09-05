@@ -485,6 +485,93 @@ atomically before starting work because inspection does not reserve it.
 transaction** that records it — there is no window where the work reads finished
 but the lease is still held.
 
+### The lease is 15 minutes, and only `kb hb` extends it
+
+A claim expires 15 minutes after it is taken unless something renews it, and
+`kb hb` is the only thing that does — a checkpoint records progress but does
+not buy time. An agent that works for an hour without a heartbeat is not
+holding the task at the end of it, however busy it was.
+
+Every board command sweeps expired claims before it reads anything, so the
+first symptom is usually a refusal on your own next write:
+
+```
+task t-1234abcd has no active lease: it was never claimed, or the lease
+expired and was retired; claim the task to write to it
+```
+
+That is not a lost task. The sweep returned it to `todo`, released your
+assignee if it was still yours, and recorded a `claim_expired` event naming
+you. Re-claim it (`kb claim <id> --as "$AGENT"`) and carry on — but everything
+you had not written down is gone, which is what the next block is for.
+
+### Write at boundaries, because a dead agent writes nothing
+
+Context exhaustion, a provider limit and a kill all end a turn without warning.
+The ledger cannot capture what was only ever in the turn, so the discipline is
+to write at each boundary rather than at the end:
+
+| When | Write |
+|---|---|
+| after claiming | `kb note <id> --kind plan "…"` — what you are about to do |
+| on each commit | `kb note <id> --kind progress "<sha> one line"` |
+| on any blocker | `kb cp <id> --lease "$TOKEN" --state blocked --blocker "…"` |
+| before `/clear`, rotation, or an expected compaction | `kb cp` for one task, or `kb h new` in the session form for the lane |
+
+`kb note` needs no lease, so a progress line still lands after a lease lapsed —
+which is exactly when you most want it to.
+
+### `orphanedFrom` — what the previous holder left behind
+
+When you claim or read a task whose previous holder died, the claim receipt and
+`kb ctx` carry an `orphanedFrom` block:
+
+```json
+{ "agent": "claude@driver-2", "sessionID": "…", "expiredAt": 1788600000000,
+  "lastCheckpointAt": 1788599100000, "worktree": "/root/work/src/kanban",
+  "branch": "kanban-geoyws-driver", "headSha": "e87c5a6" }
+```
+
+It is **absent**, not null, when there is nothing to report, and it describes
+only the current `todo` spell: a task that was orphaned, reclaimed and finished
+does not hand a later holder that old orphan. `lastCheckpointAt` is `null` when
+the dead holder wrote no checkpoint after claiming, which is the case where the
+tree may be further along than anything the ledger knows — `cd` to `worktree`
+and compare `git rev-parse HEAD` against `headSha` before trusting either.
+
+### Resuming, in order
+
+1. `kb h ls --project P --status pending --json` — **no `--to`**. Every session
+   handoff has an addressee (`h new` refuses one without `--to`), but the
+   addressee is a lane name, and lanes get renumbered and recreated. Filtering
+   with `--to driver-2` hides a brief left for `driver-3`, which is precisely
+   the brief you need after a renumber. List them all and read the addressees.
+   More than one match is a stop, not a pick.
+2. `kb h acc <id> --as "$LANE" --json`. On a task-form handoff this mints the
+   lease and sets `in_progress` in one transaction, so when it succeeds you do
+   not also run `claim --next`. A session handoff mints no lease by design.
+3. `claim --next` **ignores pending handoffs**, and a task a handoff returned to
+   `todo` keeps its assignee — so a different lane needs `--allow-reassign` to
+   take it.
+4. `kb ctx <id> --json` — newest handoff and checkpoint first, then sitreps,
+   then `orphanedFrom` if it is there.
+5. `cd` to the record's `repoPath` and check the tree: `git rev-parse HEAD`
+   against `headSha`, `git status --short` against `dirtySummary`. A mismatch
+   outranks everything else in the brief.
+6. `kb note <id> --kind plan` before touching code.
+
+### `--validation` says which layer, by convention
+
+`--validation` is free text and nothing refuses a malformed value, so the
+convention is carried here: start every one with `unit:`, `integration:`,
+`e2e:` or `substitute:`. Naming the layer is the whole point — "tests pass" on
+a row whose only coverage is a unit test reads as end-to-end to the next
+person. A fail-closed check was considered and rejected as disproportionate for
+an optional flag.
+
+Plan steps are child rows or one `--kind plan` note. There is no checklist
+field, and adding one would put the same truth in two places.
+
 ## Plans
 
 **A plan is an epic.** Its body is the plan, its children are the work it became,
