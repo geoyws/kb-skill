@@ -514,6 +514,16 @@ ornamental epics.
 kilobytes. Passing `--body` and `--body-file` together is refused — two answers
 to one question.
 
+**The path is yours, not the board host's.** `kb-board` and `kb-host` read the
+file on the machine you typed the command on and transfer its bytes, so
+`--body-file plan.md` means the `plan.md` next to you. Until 2026-09-05 the
+flag was forwarded literally and the remote read a path that did not exist
+there (`Error: read body from /tmp/plan.md: No such file or directory`), which
+made it unusable from anywhere but the board home host. An unreadable path now
+fails on your machine before any connection, and giving the flag twice is
+refused rather than last-wins. It applies to every command that takes it:
+`task add`, `task update`, `rule add`, `rule update`, `attention update`.
+
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
 `kb ev --task <epic-id> --json` and needs nobody to have kept a copy:

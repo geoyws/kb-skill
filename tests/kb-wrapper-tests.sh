@@ -5,7 +5,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/public-kb-skill-tests.XXXXXX")
-trap 'rm -rf "$tmp_dir"' EXIT
+trap '[[ -n "${KEEP_TMP:-}" ]] || rm -rf "$tmp_dir"' EXIT
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -50,6 +50,31 @@ assert_argv_file() {
       fail "$file argv[$i] mismatch: expected '${expected[$i]}', got '${actual[$i]}'"
     fi
   done
+}
+
+# The body-file contract: the flag arrives last, pointing at a path the BOARD
+# HOST made, holding exactly the bytes the caller's file held. Argv equality
+# cannot express this because the remote path is a fresh mktemp, and argv
+# equality against the CALLER's path is precisely the wrong assertion -- it
+# passes for a file the remote cannot open.
+assert_body_transferred() {
+  local argv_file=$1
+  local seen_content=$2
+  local caller_file=$3
+  local -a actual=()
+
+  while IFS= read -r -d '' item; do
+    actual+=("$item")
+  done <"$argv_file"
+
+  local last=${actual[$((${#actual[@]} - 1))]}
+  local flag=${actual[$((${#actual[@]} - 2))]}
+  [[ "$flag" == "--body-file" ]] || fail "$argv_file: --body-file is not the final flag, got '$flag'"
+  [[ "$last" != "$caller_file" ]] || fail "$argv_file: the remote got the CALLER's path, so the body was not transferred"
+  [[ -s "$seen_content" ]] || fail "$seen_content: the remote read no body at all"
+  cmp -s "$seen_content" "$caller_file" || fail "$seen_content: body content differs from $caller_file"
+  [[ -r "$seen_content.path" ]] && [[ "$(<"$seen_content.path")" == "$last" ]] ||
+    fail "$seen_content.path: the body the remote read is not the path in argv"
 }
 
 assert_argv_prefix() {
@@ -253,6 +278,19 @@ EOF
 #!/bin/bash
 set -euo pipefail
 printf '%s\0' "$@" >"${FAKE_KB_LOG:?}"
+# When the caller asks, record what --body-file actually POINTED AT. argv alone
+# cannot tell a transferred body from a path the remote cannot read.
+if [[ -n "${FAKE_KB_BODY_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--body-file" ]]; then
+      cat -- "$arg" >"$FAKE_KB_BODY_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_BODY_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
+fi
 EOF
 
   cat >"$fakebin/git" <<'EOF'
@@ -311,6 +349,24 @@ esac
 EOF
 
   chmod +x "$fakebin/ssh" "$fakebin/hostname" "$fakebin/gitleaks" "$fakebin/kb" "$fakebin/git"
+}
+
+# Drive kb-board through the fake ssh from a given body-capture path. The
+# body-file tests need FAKE_KB_BODY_OUT in the remote environment, which the
+# existing runner does not set.
+run_board_remote_body() {
+  local fakebin=$1 ssh_log=$2 kb_log=$3 table=$4 remote_host=$5 seen=$6
+  shift 6
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin:$PATH" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_BODY_OUT="$seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$@"
 }
 
 run_expect_failure() {
@@ -454,6 +510,111 @@ test_adjacent_hosts_table_is_used() {
   assert_argv_file "$kb_log" --project "$board_id" task ls
 }
 
+test_board_body_file_is_transferred_not_forwarded() {
+  local fakebin="$tmp_dir/bodyfile/fakebin"
+  local ssh_log="$tmp_dir/bodyfile/ssh.argv"
+  local kb_log="$tmp_dir/bodyfile/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table body
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/bodyfile/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  # Prose with every byte that breaks naive quoting: a newline, a single
+  # quote, a dollar-paren, a backslash and a trailing newline.
+  body="$tmp_dir/bodyfile/plan.md"
+  printf '%s\n' '# plan' "it'\''s $(hostname) \\ literal" 'last line' >"$body"
+
+  run_board_remote_body "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$tmp_dir/bodyfile/seen" "$board_id" t new 'Title' --body-file "$body" --json
+  assert_argv_prefix "$kb_log" --project "$board_id" t new 'Title' --json --body-file
+  assert_body_transferred "$kb_log" "$tmp_dir/bodyfile/seen" "$body"
+
+  # The `--body-file=PATH` spelling is the same request.
+  run_board_remote_body "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$tmp_dir/bodyfile/seen2" "$board_id" t up t-1 --as a "--body-file=$body"
+  assert_argv_prefix "$kb_log" --project "$board_id" t up t-1 --as a --body-file
+  assert_body_transferred "$kb_log" "$tmp_dir/bodyfile/seen2" "$body"
+
+  # An unreadable path fails on the CALLER, before any connection.
+  FAKE_SSH_MODE=fail \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  run_expect_failure "$package_dir/scripts/kb-board" "$board_id" t new T --body-file "$tmp_dir/bodyfile/absent.md"
+
+  # Twice is a refusal, not last-wins.
+  FAKE_SSH_MODE=fail \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  run_expect_failure "$package_dir/scripts/kb-board" "$board_id" t new T --body-file "$body" --body-file "$body"
+}
+
+test_host_body_file_is_transferred_for_registry_rules() {
+  local fakebin="$tmp_dir/bodyhost/fakebin"
+  local ssh_log="$tmp_dir/bodyhost/ssh.argv"
+  local kb_log="$tmp_dir/bodyhost/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id home_host remote_host table body
+  board_id=$(make_id board)
+  home_host=$(make_id home)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/bodyhost/hosts.tsv"
+  make_table "$table" "$board_id" "$home_host" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  body="$tmp_dir/bodyhost/rule.md"
+  printf '%s\n' 'A rule body with an apostrophe'"'"'s quote.' >"$body"
+
+  # `rule add --body-file` is registry-owned, so it rides kb-host.
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin:$PATH" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_BODY_OUT="$tmp_dir/bodyhost/seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-host" "$home_host" r new --as agent --body-file "$body"
+
+  assert_argv_prefix "$kb_log" r new --as agent --body-file
+  assert_body_transferred "$kb_log" "$tmp_dir/bodyhost/seen" "$body"
+}
+
+test_body_file_at_the_boundary_needs_no_transfer() {
+  local fakebin="$tmp_dir/bodylocal/fakebin"
+  local ssh_log="$tmp_dir/bodylocal/ssh.argv"
+  local kb_log="$tmp_dir/bodylocal/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id home_host table body
+  board_id=$(make_id board)
+  home_host=$(/bin/hostname)
+  table="$tmp_dir/bodylocal/hosts.tsv"
+  make_table "$table" "$board_id" "$home_host" "$(make_id target)" "$home_host" "$fakebin/kb"
+
+  body="$tmp_dir/bodylocal/plan.md"
+  printf '%s\n' '# local plan' >"$body"
+
+  # On the board home host the caller's path IS the right path: no ssh, no
+  # temp file, and the flag keeps the caller's own argument.
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_MODE=fail \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_BODY_OUT="$tmp_dir/bodylocal/seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" t new 'Title' --body-file "$body"
+
+  assert_log_clean "$ssh_log" 'body-file at the boundary'
+  assert_argv_file "$kb_log" --project "$board_id" t new 'Title' --body-file "$body"
+  cmp -s "$tmp_dir/bodylocal/seen" "$body" || fail 'the local body was not the caller file'
+}
+
 test_readme_example_table_is_accepted() {
   local fakebin="$tmp_dir/readme/fakebin"
   local ssh_log="$tmp_dir/readme/ssh.argv"
@@ -466,6 +627,20 @@ test_readme_example_table_is_accepted() {
 #!/bin/bash
 set -euo pipefail
 printf '%s\0' "$@" >"${FAKE_KB_LOG:?}"
+# This stub, not fakebin/kb, is what hosts.tsv's kb_exec names here, so it
+# needs the body-file hook too: argv cannot distinguish a transferred body
+# from a path the remote could never open.
+if [[ -n "${FAKE_KB_BODY_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--body-file" ]]; then
+      cat -- "$arg" >"$FAKE_KB_BODY_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_BODY_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
+fi
 EOF
   chmod +x "$example_kb"
 
@@ -511,10 +686,16 @@ EOF
   FAKE_KB_LOG="$kb_log" \
   KB_HOSTS_TABLE="$table" \
   PATH="$fakebin:$PATH" \
+  FAKE_KB_BODY_OUT="$tmp_dir/readme/body.seen" \
   "$package_dir/scripts/kb-board" "$board_id" t new "Title" --body-file "$plan_file" --json
 
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
-  assert_argv_file "$kb_log" --project "$board_id" t new "Title" --body-file "$plan_file" --json
+  # The body is TRANSFERRED, not forwarded: the flag survives and moves to the
+  # end of argv, its path is one the board host made, and the CONTENT is what
+  # the caller wrote. Asserting the caller's own path here is what let a body
+  # file that the remote could never read look correct for months.
+  assert_argv_prefix "$kb_log" --project "$board_id" t new "Title" --json --body-file
+  assert_body_transferred "$kb_log" "$tmp_dir/readme/body.seen" "$plan_file"
 }
 
 test_skill_parity_sections_are_present() {
@@ -1946,6 +2127,9 @@ assert_test_wiring() {
     test_local_exec_injects_project_and_preserves_argv
     test_remote_exec_uses_ssh_and_preserves_argv
     test_adjacent_hosts_table_is_used
+    test_board_body_file_is_transferred_not_forwarded
+    test_host_body_file_is_transferred_for_registry_rules
+    test_body_file_at_the_boundary_needs_no_transfer
     test_readme_example_table_is_accepted
     test_skill_parity_sections_are_present
     test_public_readme_contract_snippets_are_present
@@ -2022,6 +2206,9 @@ main() {
     test_local_exec_injects_project_and_preserves_argv
     test_remote_exec_uses_ssh_and_preserves_argv
     test_adjacent_hosts_table_is_used
+    test_board_body_file_is_transferred_not_forwarded
+    test_host_body_file_is_transferred_for_registry_rules
+    test_body_file_at_the_boundary_needs_no_transfer
     test_readme_example_table_is_accepted
     test_skill_parity_sections_are_present
     test_public_readme_contract_snippets_are_present

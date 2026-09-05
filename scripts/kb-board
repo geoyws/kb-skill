@@ -213,16 +213,71 @@ if captures_git_provenance "$command" "${1-}" \
   fi
 fi
 
+# `--body-file PATH` names a file on the CALLER, and the binary runs on the
+# board host, so forwarding the flag literally made the remote read a path
+# that does not exist there: `Error: read body from /tmp/x.md: No such file or
+# directory`. Five commands take it (task add, task update, rule add, rule
+# update, attention update) and it was unusable from any other machine.
+#
+# The body is transferred instead: base64 on the caller, decoded into a
+# private temp file on the board host, and the flag rewritten to point at
+# that. base64 because a body is prose that can contain any byte, newlines and
+# quotes included, and it rides inside one already-quoted remote command
+# rather than a second channel. The temp file is removed whatever the exit
+# status, so a refusal leaves nothing behind.
+body_file=""
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --body-file)
+      [[ $# -ge 2 ]] || die 'kb-board: --body-file requires a path'
+      [[ -z "$body_file" ]] || die 'kb-board: --body-file given twice'
+      body_file=$2
+      shift 2
+      ;;
+    --body-file=*)
+      [[ -z "$body_file" ]] || die 'kb-board: --body-file given twice'
+      body_file=${1#*=}
+      shift
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+if [[ -n "$body_file" ]]; then
+  [[ -r "$body_file" ]] || die "kb-board: cannot read --body-file $body_file"
+fi
+set -- "${args[@]+${args[@]}}"
+
 current_host=$(/bin/hostname)
 
 if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
+  # Already at the boundary: the caller's path IS the board host's path.
+  if [[ -n "$body_file" ]]; then
+    exec "$kb_bin" --project "$board" "$command" "$@" --body-file "$body_file"
+  fi
   exec "$kb_bin" --project "$board" "$command" "$@"
 fi
 
-remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then exec $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
+if [[ -n "$body_file" ]]; then
+  encoded=$(base64 <"$body_file" | tr -d '\n')
+  remote_cmd+=" body=\$(mktemp \"\${TMPDIR:-/tmp}/kb-body.XXXXXX\") || exit 70;"
+  remote_cmd+=" trap 'rm -f \"\$body\"' EXIT;"
+  remote_cmd+=" printf '%s' $(shell_quote "$encoded") | base64 -d >\"\$body\" || exit 70;"
+  remote_cmd+=" $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+else
+  remote_cmd+=" exec $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+fi
 for arg in "$@"; do
   remote_cmd+=" $(shell_quote "$arg")"
 done
+if [[ -n "$body_file" ]]; then
+  # Not `exec`: the EXIT trap must still run to remove the decoded body.
+  remote_cmd+=" --body-file \"\$body\""
+fi
 remote_cmd+="; else printf '%s\n' 'kb-board: remote hostname mismatch' >&2; exit 69; fi"
 
 exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"
