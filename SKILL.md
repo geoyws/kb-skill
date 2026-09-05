@@ -367,9 +367,10 @@ driver's chatter cannot push yours out of view.
 Provenance rides along: worktree, branch, HEAD, root HEAD, dirty count are
 captured from where the **binary** ran. "Tests green" that does not say which
 checkout is a claim nobody can check. Over `kb-board` the binary runs on the
-board host, and `sitrep post` has no flags to carry your checkout yet, so a
-routed sitrep records none; checkpoints and handoffs get theirs forwarded (see
-Handoffs).
+board host, so the wrapper reads your checkout first and forwards it as
+`--repo` / `--branch` / `--head` / `--dirty`, exactly as it does for
+checkpoints and handoffs (see Handoffs). A sitrep with blank provenance is
+refused, not stored.
 
 **A sitrep is not a handoff, and not a task status.**
 
@@ -617,11 +618,11 @@ Recorded automatically. You do not pass it, and you should not have to:
   `--head` / `--dirty` still wins: capture is a default, not an override.
 - **Captured where the binary runs.** Over `kb-board` that is the board host,
   whose cwd is no checkout, so the wrapper reads yours before the hop and passes
-  `--repo` / `--branch` / `--head` / `--dirty` on `checkpoint` and
-  `handoff create` — `--branch DETACHED` when HEAD is detached, `--dirty` as
-  `clean`, `1 file changed` or `N files changed`. A flag you pass is left alone.
-  `sitrep post` has no such flags yet, so a routed sitrep records none. In an
-  interactive board-host shell, pass the four yourself.
+  `--repo` / `--branch` / `--head` / `--dirty` on `checkpoint`,
+  `handoff create` and `sitrep post` — `--branch DETACHED` when HEAD is
+  detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
+  you pass is left alone. All three refuse a row whose provenance would be
+  blank, so in an interactive board-host shell, pass the four yourself.
 - **Timestamps** are on every row already — `createdAt`, `updatedAt`,
   `completedAt`, `claimedAt`, `heartbeatAt`, `expiresAt`, `acceptedAt`,
   `resolvedAt`.

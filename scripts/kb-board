@@ -75,9 +75,9 @@ has_flag() {
 captures_git_provenance() {
   case "$1" in
     checkpoint|cp) return 0 ;;
-    handoff|h)
+    handoff|h|sitrep|sr)
       case "${2-}" in
-        create|new) return 0 ;;
+        create|new|post) return 0 ;;
       esac
       ;;
   esac

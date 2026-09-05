@@ -1750,13 +1750,13 @@ test_board_outside_a_repository_appends_no_provenance() {
   assert_argv_file "$stubbed_log" --project "$board_id" cp t-1 --lease tok --as agent --summary s
 }
 
-test_board_provenance_is_only_for_checkpoint_and_handoff_create() {
+test_board_provenance_is_only_for_the_three_provenance_writers() {
   local fakebin="$tmp_dir/prov-scope/fakebin"
   local ssh_log="$tmp_dir/prov-scope/ssh.argv"
   local kb_log="$tmp_dir/prov-scope/kb.argv"
   setup_fakebin_with_real_git "$fakebin"
 
-  local board_id remote_host table repo
+  local board_id remote_host table repo top head
   board_id=$(make_id board)
   remote_host=$(make_id remote)
   table="$tmp_dir/prov-scope/hosts.tsv"
@@ -1764,11 +1764,26 @@ test_board_provenance_is_only_for_checkpoint_and_handoff_create() {
 
   repo="$tmp_dir/prov-scope/repo"
   make_scratch_repo "$repo" dirty.txt
+  top=$(git -C "$repo" rev-parse --show-toplevel)
+  head=$(git -C "$repo" rev-parse HEAD)
 
-  # sitrep post has no provenance flags to receive.
+  # sitrep post records provenance and, since kanban dc7f195, refuses a
+  # blank one, so it gets the same four flags checkpoint does.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
     "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json
-  assert_argv_file "$kb_log" --project "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json
+  assert_argv_file "$kb_log" --project "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+
+  # The short forms are the same command.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" sr new 'still red' --as agent --lane driver-2
+  assert_argv_file "$kb_log" --project "$board_id" sr new 'still red' --as agent --lane driver-2 \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+
+  # sitrep list reads; nothing is appended.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" sr ls --lane driver-2 --json
+  assert_argv_file "$kb_log" --project "$board_id" sr ls --lane driver-2 --json
 
   # handoff is the right command but list is not the right subcommand.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
@@ -1967,7 +1982,7 @@ assert_test_wiring() {
     test_board_checkpoint_carries_the_callers_git_provenance
     test_board_explicit_provenance_flag_is_kept_not_duplicated
     test_board_outside_a_repository_appends_no_provenance
-    test_board_provenance_is_only_for_checkpoint_and_handoff_create
+    test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
     test_denylist_and_hook_behaviour
     test_content_audit
@@ -2043,7 +2058,7 @@ main() {
     test_board_checkpoint_carries_the_callers_git_provenance
     test_board_explicit_provenance_flag_is_kept_not_duplicated
     test_board_outside_a_repository_appends_no_provenance
-    test_board_provenance_is_only_for_checkpoint_and_handoff_create
+    test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
     test_public_readme_contract_snippets_are_present
     test_denylist_and_hook_behaviour
