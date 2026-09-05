@@ -73,6 +73,9 @@ Outside the board home host, do not call `kb` directly.
   board-owned one-shot command. It injects exactly one project selector, rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` so registry operations cannot be routed through a board helper.
+  On `checkpoint` and `handoff create` it also forwards your checkout as
+  `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
+  otherwise capture the board host's cwd (see Provenance).
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
@@ -254,10 +257,24 @@ business deciding it.
 kb att raise "<verdict-first, ≤2 sentences, with the concrete next action>" \
   --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> --json
 
-kb att list --status open --json          # what is waiting on the owner
-kb att list --status resolved --json      # the historical trail
+kb att list --status open --limit 200 --json              # what is waiting on the owner
+kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
+kb att list --status open --fields id,kind,raisedBy,taskID --limit 200 --json   # keys only; or --no-body
+kb att list --status resolved --limit 200 --json          # the historical trail
 kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
 ```
+
+**Say how many you want.** Without `--limit` the listing is capped at 100, and
+a board holding more than that **refuses** rather than handing back a page that
+reads as the whole; the refusal names `--limit N`. On a busy board
+`kb att list` with no `--limit` fails, and that is the right answer — pass a
+bound above the count you expect and check the length came back under it
+(ADR-037).
+
+`--lane LANE` keeps items raised by `<agent>@LANE` and items about a task whose
+lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
+rows do not carry is refused naming the ones they do. `--no-body` drops the
+body alone.
 
 `--kind` is a closed set:
 
@@ -272,11 +289,15 @@ kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
 There is deliberately no `info`: something that needs nobody is a note, and
 `kb n` already holds those.
 
-**Raise, do not resolve.** Agents raise and read; only the owner resolves. The one
-exception is an item this same session raised and has since made moot — retire
-that with `--note` saying why, so the record shows it was withdrawn rather than
-answered. Check `kb att list --status open` before raising and add to an
-existing item rather than duplicating one already waiting.
+**Raise, do not resolve.** Agents raise and read; only the owner resolves. The
+owner's actor is `geoyws`: the binary gates `resolve` and `reopen` on it and the
+refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
+`resolvedBy: geo` as a record, and `--as geo` today is refused like any other
+non-raiser. The one exception is an item this same session raised and has since
+made moot — retire that with `--note` saying why, so the record shows it was
+withdrawn rather than answered. Check `kb att list --status open --limit N`
+before raising and add to an existing item rather than duplicating one already
+waiting.
 
 Items are **resolved, never deleted**, and resolving twice is refused: that
 would overwrite who settled it and when, which is the part worth keeping. Open
@@ -324,8 +345,8 @@ view at `/search` is cross-board and read-only. `kb doctor --json` reports
 ```bash
 kb sr new "Retry path is the culprit; fix is in the queuer, tests still red." \
   --as "$AGENT" --lane driver-2 --json          # --task <ID> optional
-kb sr ls --lane driver-2 --json                 # the current view, newest first
-kb sr ls --lane driver-2 --all --json           # including what it superseded
+kb sr ls --lane driver-2 --json                 # the current view, newest first; capped at 20 without --limit
+kb sr ls --lane driver-2 --all --limit 100 --json   # including what it superseded
 ```
 
 **No task, no lease, no ceremony** — that is the whole point. A note needs a
@@ -344,8 +365,11 @@ by `--all` — **nothing is ever deleted**, and archiving is per lane, so anothe
 driver's chatter cannot push yours out of view.
 
 Provenance rides along: worktree, branch, HEAD, root HEAD, dirty count are
-captured from where you ran it. "Tests green" that does not say which checkout is
-a claim nobody can check.
+captured from where the **binary** ran. "Tests green" that does not say which
+checkout is a claim nobody can check. Over `kb-board` the binary runs on the
+board host, and `sitrep post` has no flags to carry your checkout yet, so a
+routed sitrep records none; checkpoints and handoffs get theirs forwarded (see
+Handoffs).
 
 **A sitrep is not a handoff, and not a task status.**
 
@@ -371,13 +395,27 @@ kb h new <task-id> --lease "$TOKEN" --as "$AGENT" \
 ```
 
 A **session handoff** is about the work as a whole — no task, no lease. This is
-what a lane hands its successor:
+what a lane hands its successor. Through `kb-board`, run from inside the
+checkout: `--repo`, `--branch`, `--head` and `--dirty` are filled in from it.
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID h new --as "claude@driver-2" --to "driver-2" \
+  --reason session_end --summary "…" --intent "…" --next-action "…" --json
+```
+
+Inside an interactive board-host shell your checkout is not there, so pass the
+four yourself — a handoff without a head is one nobody can verify against a
+tree:
 
 ```bash
 kb h new --as "claude@driver-2" --to "driver-2" --reason session_end \
   --summary "…" --intent "…" --next-action "…" \
-  --branch "$(git branch --show-current)" --repo "$(git rev-parse --show-toplevel)" --json
+  --repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY" --json
 ```
+
+`--dirty` is measured, never guessed: `clean`, `1 file changed` or `N files
+changed`, the wording the binary's own capture writes. An explicit flag always
+wins over capture.
 
 The task id and the lease travel together: each half alone is refused, because a
 lease exists only over a task and a task cannot be handed over without one.
@@ -388,12 +426,14 @@ brief keyed to a path is then unreachable. The successor knows its project and
 its lane, so that is the key:
 
 ```bash
-kb h ls --project px-crm --status pending --to driver-2 --json
+kb h ls --project px-crm --status pending --to driver-2 --limit 200 --json
 kb h acc <id> --as driver-2 --json      # task lease when claimable; acknowledgement only when settled
 ```
 
-`--repo` and `--branch` ride inside the record, so the successor `cd`s from the
-record rather than the path ever having been the lookup key.
+`--repo`, `--branch`, `--head` and `--dirty` ride inside the record, so the
+successor `cd`s from the record and checks the tree against it, rather than the
+path ever having been the lookup key. `h ls` is capped at 100 without
+`--limit` and refuses past that, naming the flag.
 
 Handoffs are **history**: removing a task drops the link and keeps the account.
 
@@ -403,12 +443,28 @@ Handoffs are **history**: removing a task drops the link and keeps the account.
 kb t new "Title" --priority 3 --lane fe --json     # 0 most urgent … 9 least, 3 default
 kb t new "Half-formed idea" --status draft --json  # not ready for action yet
 kb t ls --status todo --json
+kb t ls --status in_progress --lane driver-2 --with-claims --json   # who holds what, in one query
+kb t ls --status todo --fields id,title,lane,priority,claimed --json # keys only; or --no-body
+kb t cat <id> --limit 200 --json                   # one task with claim, notes, checkpoints, handoffs
 kb claim --next --as "$AGENT" --json               # or: kb claim <id> --as "$AGENT"
 kb hb <id> --lease "$TOKEN" --lease-minutes 30     # renew
 kb cp <id> --lease "$TOKEN" --as "$AGENT" --state continue \
   --summary "…" --intent "…" --next-action "…" --json
 kb rel <id> --lease "$TOKEN"
 ```
+
+**Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
+holder is `claim.agentID`, on `t cat` and on `t ls --with-claims`; there is no
+`claim.actor`, and `--fields actor` is refused naming the keys that exist.
+`assignee` is intent, never the lease: an assigned task can be free, a held one
+assigned to someone else. `--fields claim` needs `--with-claims` and
+`--fields dependencies` needs `--with-relations` — each refusal says so.
+`--lane LANE` filters on the server, so a big board answers small. `t cat`
+caps notes and handoffs at 100 and checkpoints at 20 unless `--limit N` says
+otherwise, and refuses past a cap rather than trimming.
+
+A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
+does; `kb-board` fills them from your checkout, and a flag you pass wins.
 
 To inspect the same scheduler queue without taking a lease:
 
@@ -559,6 +615,13 @@ Recorded automatically. You do not pass it, and you should not have to:
 - **Checkpoints and handoffs** fill `repoPath`, `branch`, `headSha`,
   `dirtySummary` and `rootHead` the same way. An explicit `--repo` / `--branch` /
   `--head` / `--dirty` still wins: capture is a default, not an override.
+- **Captured where the binary runs.** Over `kb-board` that is the board host,
+  whose cwd is no checkout, so the wrapper reads yours before the hop and passes
+  `--repo` / `--branch` / `--head` / `--dirty` on `checkpoint` and
+  `handoff create` — `--branch DETACHED` when HEAD is detached, `--dirty` as
+  `clean`, `1 file changed` or `N files changed`. A flag you pass is left alone.
+  `sitrep post` has no such flags yet, so a routed sitrep records none. In an
+  interactive board-host shell, pass the four yourself.
 - **Timestamps** are on every row already — `createdAt`, `updatedAt`,
   `completedAt`, `claimedAt`, `heartbeatAt`, `expiresAt`, `acceptedAt`,
   `resolvedAt`.
@@ -609,6 +672,15 @@ as the board's identity.
 
 `--limit` must be zero or more. A negative one reads as *no limit* in SQL, so it
 is refused rather than silently handing back everything you asked to bound.
+
+**A capped listing refuses a default it would exceed** (ADR-037). Without
+`--limit`, `ev` returns up to 50, `sr ls` 20, `search` 10, `att ls`, `h ls`,
+`deploy list` and `claim --candidates` 100, and `t cat` 100 notes, 20
+checkpoints and 100 handoffs. When more rows exist than that default, the
+command fails and names `--limit N` instead of passing the first page off as
+the whole; a board holding exactly the default lists all of it. An explicit
+`--limit N` is honoured as-is with no marker — ask for one more than you need
+if you want to know whether your own bound was hit.
 
 ## Watch — cursor-native live subscription
 
@@ -887,6 +959,12 @@ once a silent wrong answer.
   like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
+- A capped listing with more rows than the default the caller never set is
+  refused naming `--limit N`. `kb att list` on a busy board without `--limit`
+  fails, and that is correct: a page cut at the default would read as the
+  whole (ADR-037).
+- `--fields` naming a key the rows do not carry is refused listing the keys they
+  do; `claim` needs `--with-claims`, `dependencies` needs `--with-relations`.
 
 ## Reference
 
@@ -899,3 +977,4 @@ rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
 tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
 lowercase subsystem tags.
 ADR-021 keeps settled history while removing it from operational indexes.
+ADR-037 makes a capped listing refuse a default it would exceed.
