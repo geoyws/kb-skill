@@ -524,6 +524,13 @@ fails on your machine before any connection, and giving the flag twice is
 refused rather than last-wins. It applies to every command that takes it:
 `task add`, `task update`, `rule add`, `rule update`, `attention update`.
 
+**A plan has no size limit.** The body travels over the connection's stdin, not
+inside the command line, so an epic body is bounded by disk rather than by
+`ARG_MAX`. The first version of the fix carried it as an argument and a 128KB
+plan died with the remote shell's own `Argument list too long` -- Linux caps a
+single argument at 131072 bytes whatever `ARG_MAX` says -- which is a shell
+error, not a refusal this wrapper could explain.
+
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
 `kb ev --task <epic-id> --json` and needs nobody to have kept a copy:

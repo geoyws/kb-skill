@@ -263,10 +263,13 @@ fi
 
 remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
 if [[ -n "$body_file" ]]; then
-  encoded=$(base64 <"$body_file" | tr -d '\n')
+  # The body rides ssh's STDIN, not the command string. Embedding it as an
+  # argument capped the body at the board host's ARG_MAX: a 128KB plan died
+  # with the shell's own `Argument list too long`, which is not a refusal this
+  # wrapper could name. Streaming has no ceiling.
   remote_cmd+=" body=\$(mktemp \"\${TMPDIR:-/tmp}/kb-body.XXXXXX\") || exit 70;"
   remote_cmd+=" trap 'rm -f \"\$body\"' EXIT;"
-  remote_cmd+=" printf '%s' $(shell_quote "$encoded") | base64 -d >\"\$body\" || exit 70;"
+  remote_cmd+=" base64 -d >\"\$body\" <&0 || exit 70;"
   remote_cmd+=" $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
 else
   remote_cmd+=" exec $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
@@ -279,5 +282,16 @@ if [[ -n "$body_file" ]]; then
   remote_cmd+=" --body-file \"\$body\""
 fi
 remote_cmd+="; else printf '%s\n' 'kb-board: remote hostname mismatch' >&2; exit 69; fi"
+
+if [[ -n "$body_file" ]]; then
+  # Encode to a file rather than a pipe so the exit status is ssh's alone, and
+  # do not `exec`, so the EXIT trap still removes the caller's copy.
+  encoded=$(mktemp "${TMPDIR:-/tmp}/kb-body-enc.XXXXXX") || die 'kb-board: cannot stage --body-file'
+  trap 'rm -f "$encoded"' EXIT
+  base64 <"$body_file" >"$encoded" || die "kb-board: cannot encode --body-file $body_file"
+  status=0
+  "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
+  exit "$status"
+fi
 
 exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"

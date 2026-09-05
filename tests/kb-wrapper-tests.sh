@@ -538,6 +538,34 @@ test_board_body_file_is_transferred_not_forwarded() {
   assert_argv_prefix "$kb_log" --project "$board_id" t up t-1 --as a --body-file
   assert_body_transferred "$kb_log" "$tmp_dir/bodyfile/seen2" "$body"
 
+  # `attention update` takes the flag too, and rides the same path.
+  run_board_remote_body "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$tmp_dir/bodyfile/seen3" "$board_id" attention update a-1 --as a --body-file "$body"
+  assert_argv_prefix "$kb_log" --project "$board_id" attention update a-1 --as a --body-file
+  assert_body_transferred "$kb_log" "$tmp_dir/bodyfile/seen3" "$body"
+
+  # A body far above any ARG_MAX. Carried as a command-line argument this died
+  # with the remote shell's own `Argument list too long` at 128KB, which no
+  # refusal here could name; it rides stdin, so there is no ceiling to hit.
+  # A body whose base64 cannot fit in an argument list on THIS host. Carried
+  # as a command-line argument the transfer died with the shell's own
+  # `Argument list too long` -- observed against hax at a 128KB body, since
+  # Linux caps a single argument at 131072 bytes regardless of ARG_MAX -- and
+  # no refusal here could name it. Sizing from the live limit rather than a
+  # constant keeps the test meaningful on hosts with a larger ceiling.
+  local big="$tmp_dir/bodyfile/big.md"
+  local arg_max encoded_target
+  arg_max=$(getconf ARG_MAX 2>/dev/null || printf '%s' 131072)
+  # base64 inflates by 4/3; overshoot the limit outright.
+  encoded_target=$((arg_max + arg_max / 2))
+  yes 'a body line that is long enough to make this quick' 2>/dev/null |
+    head -c "$encoded_target" >"$big" || true
+  printf '\n' >>"$big"
+  [[ "$(wc -c <"$big")" -gt "$arg_max" ]] || fail 'the large-body fixture is not above ARG_MAX'
+  run_board_remote_body "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$tmp_dir/bodyfile/seenbig" "$board_id" t new 'Big' --body-file "$big"
+  assert_body_transferred "$kb_log" "$tmp_dir/bodyfile/seenbig" "$big"
+
   # An unreadable path fails on the CALLER, before any connection.
   FAKE_SSH_MODE=fail \
   FAKE_KB_LOG="$kb_log" \
