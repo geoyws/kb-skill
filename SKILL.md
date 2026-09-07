@@ -442,6 +442,84 @@ Handoffs are **history**: removing a task drops the link and keeps the account.
 
 ## Working a task
 
+**A unit of work is two write round trips**, one at each boundary, with a single
+read before them — on the measured link that is two round trips where there were
+six (ADR-041, Consequences). The reads collapse into the MCP `batch` tool: up to
+32 of them on one request, `readOnlyHint: true`, described under **As an MCP
+server**, so `t cat`, `ctx`, `r ls` and `att ls` for the task you are about to
+pick up all arrive together. `batch` is an MCP tool and the CLI has no
+counterpart, so interactively those are the same `kb` reads typed one at a time
+in the one open board-host shell. Each boundary is one `transact` (**Batched
+writes — `transact`**), which lands entirely or not at all.
+
+**The START batch** — take the task, and say what you are about to do:
+
+| # | item | arguments that matter |
+|---|---|---|
+| 0 | `claim` | `id` (or `next: true`), `as`, `lane`, `lease-minutes` |
+| 1 | `note` | `id`, `kind: plan`, `as`, `text` |
+
+`claim` alone, **not** `claim` + `heartbeat`. ADR-041 names the start sequence
+"claim, heartbeat, first note", but a fresh claim already carries its 15-minute
+lease and `lease-minutes` on the claim itself buys a longer one in the same
+item, so a heartbeat milliseconds later renews what was just minted.
+`heartbeat` belongs in the middle of a long unit, not at its start. `note`
+needs no lease, so this batch never threads the token at all; add an item that
+does need it — a `heartbeat`, an early `checkpoint` — and it takes
+`{"$ref": {"item": 0, "path": "/leaseToken"}}`, so the agent still never
+handles the token. Take `$TOKEN` off the envelope once, from
+`results[0].result.leaseToken`, and it serves the rest of the unit.
+
+**The END batch** — one of three shapes, because the checkpoint's own state
+decides what may follow it:
+
+| the unit | items |
+|---|---|
+| finished | `checkpoint` `state: done` + `note` |
+| continues later | `checkpoint` `state: continue` + `note` + `release` |
+| continues in another lane | `note` + `handoff_create` |
+
+`--state done` or `blocked` on a checkpoint **releases the lease in the same
+transaction** that records it — there is no window where the work reads finished
+but the lease is still held. Which is why no `release` may follow one: the token
+it presents is already gone, `release` refuses with `task <id> has no active
+lease`, and an atomic batch takes the checkpoint and the note down with it. A
+task `handoff_create` is the same story from the other end — it writes its own
+`continue` checkpoint, releases the lease and returns the row to `todo`, so it
+wants no checkpoint before it and no release after it. Every END item carries
+`lease: "$TOKEN"` literally, the token the START batch returned: `$ref` reaches
+strictly earlier items **of its own batch**, never back into an earlier one.
+
+The worked JSON is **The loop's write half, in one batch**, below — a claim, a
+checkpoint that takes the lease from item 0 by `$ref`, and the note: three
+writes, one round trip, a token the agent never handles. Read it there for the
+item shapes and the threading, which both boundaries use; the tables above say
+which items each boundary carries. It is deliberately not repeated here.
+
+**A replayed START batch lands nothing** — by `claim`'s semantics, not by
+`transact`'s. There is no idempotency key (ADR-041 §9): the replayed claim is
+refused by name at index 0, every later item is `skipped`, and because the batch
+is atomic nothing at all lands. An END batch has no such protection, and neither
+has any batch whose first item is additive: two replayed `note` items are two
+notes.
+
+**An agent that cannot tell whether a `transact` was received reads the board.**
+`kb t cat <id> --limit 200 --json` settles it — the claim is there or it is not,
+the checkpoint is there or it is not — and that is what to act on, rather than
+retrying blindly.
+
+One thing a rollback leaves standing: the expired-claim sweep every board open
+commits before any batch scope exists, so a rolled-back batch may still have
+retired somebody else's lapsed lease (**Batched writes — `transact`**, "What a
+rollback does not undo").
+
+### Single commands — interactive, and the fallback
+
+Nothing about the individual commands changed, so each of them is still exactly
+correct alone. This is the form for an interactive board-host shell, for a
+boundary that really does hold one write, and for finding out which item a
+refused batch was wrong about.
+
 ```bash
 kb t new "Title" --priority 3 --lane fe --json     # 0 most urgent … 9 least, 3 default
 kb t new "Half-formed idea" --status draft --json  # not ready for action yet
@@ -482,10 +560,6 @@ Candidate inspection is strictly read-only and never returns lease tokens.
 It shares eligibility and ordering with `claim --next`; claim the selected ID
 atomically before starting work because inspection does not reserve it.
 
-`--state done` or `blocked` on a checkpoint **releases the lease in the same
-transaction** that records it — there is no window where the work reads finished
-but the lease is still held.
-
 ### The lease is 15 minutes, and only `kb hb` extends it
 
 A claim expires 15 minutes after it is taken unless something renews it, and
@@ -518,6 +592,10 @@ to write at each boundary rather than at the end:
 | on each commit | `kb note <id> --kind progress "<sha> one line"` |
 | on any blocker | `kb cp <id> --lease "$TOKEN" --state blocked --blocker "…"` |
 | before `/clear`, rotation, or an expected compaction | `kb cp` for one task, or `kb h new` in the session form for the lane |
+
+The last row is the END batch: at a real boundary the checkpoint, the note and
+the release — or the handoff — go in one `transact`, so either the whole
+boundary is recorded or nothing is.
 
 `kb note` needs no lease, so a progress line still lands after a lease lapsed —
 which is exactly when you most want it to.
