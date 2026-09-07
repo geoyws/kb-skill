@@ -225,7 +225,21 @@ fi
 # quotes included, and it rides inside one already-quoted remote command
 # rather than a second channel. The temp file is removed whatever the exit
 # status, so a refusal leaves nothing behind.
+
+# `--items-file PATH` is the same problem with a different answer. The path is
+# the CALLER's while the binary runs on the board host, so forwarding it
+# literally makes the remote read a path that is not there — but a `transact`'s
+# items are one JSON document read exactly once, and `transact` reads nothing
+# else from stdin. So the file is STREAMED as ssh's stdin and the remote flag
+# is rewritten to `/dev/stdin`, which the binary reads like any other file.
+# That is one ssh with no remote temp file, no base64 round trip and no ARG_MAX
+# ceiling, and it makes a local path and the documented
+# `--items-file /dev/stdin < items.json` form the same thing on the far side.
+#
+# `/dev/stdin` written out by the caller travels untouched: their own redirect
+# is already ssh's stdin, and reopening it here would buy nothing.
 body_file=""
+items_file=""
 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -240,6 +254,25 @@ while [[ $# -gt 0 ]]; do
       body_file=${1#*=}
       shift
       ;;
+    --items-file)
+      [[ $# -ge 2 ]] || die 'kb-board: --items-file requires a path'
+      [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
+      if [[ "$2" = /dev/stdin ]]; then
+        args+=("$1" "$2")
+      else
+        items_file=$2
+      fi
+      shift 2
+      ;;
+    --items-file=*)
+      [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
+      if [[ "${1#*=}" = /dev/stdin ]]; then
+        args+=("$1")
+      else
+        items_file=${1#*=}
+      fi
+      shift
+      ;;
     *)
       args+=("$1")
       shift
@@ -249,6 +282,13 @@ done
 if [[ -n "$body_file" ]]; then
   [[ -r "$body_file" ]] || die "kb-board: cannot read --body-file $body_file"
 fi
+if [[ -n "$items_file" ]]; then
+  [[ -r "$items_file" ]] || die "kb-board: cannot read --items-file $items_file"
+  # Both want ssh's stdin and no command takes both, so this is a refusal
+  # rather than a precedence rule nothing could explain in a receipt.
+  [[ -z "$body_file" ]] ||
+    die 'kb-board: --body-file and --items-file both need the ssh channel; pass one'
+fi
 set -- "${args[@]+${args[@]}}"
 
 current_host=$(/bin/hostname)
@@ -257,6 +297,9 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
   # Already at the boundary: the caller's path IS the board host's path.
   if [[ -n "$body_file" ]]; then
     exec "$kb_bin" --project "$board" "$command" "$@" --body-file "$body_file"
+  fi
+  if [[ -n "$items_file" ]]; then
+    exec "$kb_bin" --project "$board" "$command" "$@" --items-file "$items_file"
   fi
   exec "$kb_bin" --project "$board" "$command" "$@"
 fi
@@ -281,6 +324,11 @@ if [[ -n "$body_file" ]]; then
   # Not `exec`: the EXIT trap must still run to remove the decoded body.
   remote_cmd+=" --body-file \"\$body\""
 fi
+if [[ -n "$items_file" ]]; then
+  # The items ride ssh's STDIN as themselves: `transact` reads its list once,
+  # from a path, and `/dev/stdin` is that path on the board host.
+  remote_cmd+=" --items-file $(shell_quote /dev/stdin)"
+fi
 remote_cmd+="; else printf '%s\n' 'kb-board: remote hostname mismatch' >&2; exit 69; fi"
 
 if [[ -n "$body_file" ]]; then
@@ -292,6 +340,12 @@ if [[ -n "$body_file" ]]; then
   status=0
   "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
   exit "$status"
+fi
+
+if [[ -n "$items_file" ]]; then
+  # One ssh, the caller's file on its stdin, and `exec` because there is
+  # nothing staged on either side to clean up.
+  exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
 fi
 
 exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"

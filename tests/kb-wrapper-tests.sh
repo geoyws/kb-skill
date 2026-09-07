@@ -77,6 +77,40 @@ assert_body_transferred() {
     fail "$seen_content.path: the body the remote read is not the path in argv"
 }
 
+# One transact is ONE ssh. The argv log cannot answer this -- the stub
+# overwrites it per call, so a second connection looks like the first -- and
+# the whole point of streaming the items is that the batch costs one round
+# trip. The stub appends a line per invocation instead.
+assert_ssh_call_count() {
+  local counter=$1
+  local expected=$2
+  local label=$3
+  local actual=0
+
+  if [[ -r "$counter" ]]; then
+    actual=$(wc -l <"$counter" | tr -d ' ')
+  fi
+  if [[ "$actual" -ne "$expected" ]]; then
+    fail "$label: expected $expected ssh invocation(s), got $actual"
+  fi
+}
+
+# The transact contract: the remote read its item list from ITS OWN stdin, and
+# the bytes there are the caller's file byte for byte. Argv cannot express it,
+# because `--items-file /dev/stdin` is the same string whether the stream
+# carried the items or nothing at all.
+assert_items_streamed() {
+  local seen=$1
+  local caller_file=$2
+  local label=$3
+
+  [[ -r "$seen.path" ]] || fail "$label: the remote read no --items-file at all"
+  [[ "$(<"$seen.path")" == /dev/stdin ]] ||
+    fail "$label: the remote read $(<"$seen.path"), not its own stdin"
+  [[ -s "$seen" ]] || fail "$label: the remote's stdin was empty"
+  cmp -s "$seen" "$caller_file" || fail "$label: the streamed items differ from $caller_file"
+}
+
 assert_argv_prefix() {
   local file=$1
   shift
@@ -237,6 +271,12 @@ setup_fakebin() {
 #!/bin/bash
 set -euo pipefail
 printf '%s\0' "$@" >"${FAKE_SSH_LOG:?}"
+# One transact must be ONE ssh, and the argv log cannot show a second call: it
+# is overwritten per invocation. The counter file is appended, so counting its
+# lines counts invocations.
+if [[ -n "${FAKE_SSH_COUNT_FILE:-}" ]]; then
+  printf 'ssh\n' >>"$FAKE_SSH_COUNT_FILE"
+fi
 case "${FAKE_SSH_MODE:-execute}" in
   execute)
     if [[ "${1-}" = -- ]]; then
@@ -286,6 +326,20 @@ if [[ -n "${FAKE_KB_BODY_OUT:-}" ]]; then
     if [[ "$prev" == "--body-file" ]]; then
       cat -- "$arg" >"$FAKE_KB_BODY_OUT"
       printf '%s' "$arg" >"$FAKE_KB_BODY_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
+fi
+# The same hook for `--items-file`. Over ssh that path is the REMOTE's
+# /dev/stdin, so argv names the same string whatever arrived; only reading the
+# path the way the binary reads it shows whether the caller's bytes are there.
+if [[ -n "${FAKE_KB_ITEMS_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--items-file" ]]; then
+      cat -- "$arg" >"$FAKE_KB_ITEMS_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_ITEMS_OUT.path"
       break
     fi
     prev=$arg
@@ -643,6 +697,183 @@ test_body_file_at_the_boundary_needs_no_transfer() {
   cmp -s "$tmp_dir/bodylocal/seen" "$body" || fail 'the local body was not the caller file'
 }
 
+# The documented over-ssh form: `transact --items-file /dev/stdin --json` with
+# the list redirected in. The whole value of a batch is that it is one round
+# trip, so the invocation count is an assertion, not a detail -- and the bytes
+# the remote reads have to be the caller's, or the batch runs something else.
+test_board_transact_items_ride_one_ssh_on_stdin() {
+  local fakebin="$tmp_dir/transact/fakebin"
+  local ssh_log="$tmp_dir/transact/ssh.argv"
+  local kb_log="$tmp_dir/transact/kb.argv"
+  local ssh_count="$tmp_dir/transact/ssh.count"
+  local seen="$tmp_dir/transact/items.seen"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host ssh_target table items
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  ssh_target=$(make_id target)
+  table="$tmp_dir/transact/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$ssh_target" "$remote_host" "$fakebin/kb"
+
+  # The loop's write half, with every byte that breaks naive quoting inside a
+  # value: a single quote, a dollar-paren, a backslash, a glob and newlines.
+  items="$tmp_dir/transact/items.json"
+  cat >"$items" <<'JSON'
+[
+  { "name": "claim", "arguments": { "id": "t-1a2b3c4d", "as": "claude@driver" } },
+  { "name": "checkpoint", "arguments": { "id": "t-1a2b3c4d",
+      "lease": { "$ref": { "item": 0, "path": "/leaseToken" } },
+      "as": "claude@driver", "summary": "it's $(hostname) \\ * done" } }
+]
+JSON
+
+  : >"$ssh_count"
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin:$PATH" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$ssh_count" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_ITEMS_OUT="$seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" transact --items-file /dev/stdin --json <"$items"
+
+  assert_ssh_call_count "$ssh_count" 1 'transact on stdin'
+  assert_argv_prefix "$ssh_log" -- "$ssh_target"
+  # The flag travels exactly as written: the caller already named the remote's
+  # stdin, so the wrapper has nothing to rewrite.
+  assert_argv_file "$kb_log" --project "$board_id" transact --items-file /dev/stdin --json
+  assert_items_streamed "$seen" "$items" 'transact on stdin'
+}
+
+# A LOCAL `--items-file PATH` from the MBP. The path is the caller's and the
+# binary runs on the board host, so forwarding it literally would make the
+# remote read a path that is not there -- the `--body-file` defect. The file is
+# streamed on the one ssh's stdin instead and the flag is rewritten to
+# `/dev/stdin`, which is the same file to the binary.
+test_board_transact_local_items_file_is_streamed() {
+  local fakebin="$tmp_dir/transact-local/fakebin"
+  local ssh_log="$tmp_dir/transact-local/ssh.argv"
+  local kb_log="$tmp_dir/transact-local/kb.argv"
+  local ssh_count="$tmp_dir/transact-local/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table items
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/transact-local/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  items="$tmp_dir/transact-local/items.json"
+  mkdir -p "$(dirname -- "$items")"
+  cat >"$items" <<'JSON'
+[
+  { "name": "note", "arguments": { "id": "t-1a2b3c4d", "kind": "progress",
+      "text": "one'two $(touch) * \\ two lines", "as": "claude@driver" } }
+]
+JSON
+
+  local form seen index=0
+  # Both spellings are the same request.
+  for form in '--items-file' '--items-file='; do
+    index=$((index + 1))
+    : >"$ssh_count"
+    : >"$kb_log"
+    seen="$tmp_dir/transact-local/seen-$index"
+    if [[ "$form" == '--items-file=' ]]; then
+      set -- "--items-file=$items"
+    else
+      set -- --items-file "$items"
+    fi
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_SSH_COUNT_FILE="$ssh_count" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_ITEMS_OUT="$seen" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" transact "$@" --json
+
+    assert_ssh_call_count "$ssh_count" 1 "local items-file $form"
+    # The flag moves to the end of argv, like `--body-file`, and its value is
+    # the remote's stdin rather than the caller's path.
+    assert_argv_file "$kb_log" --project "$board_id" transact --json --items-file /dev/stdin
+    assert_items_streamed "$seen" "$items" "local items-file $form"
+  done
+
+  # An unreadable path fails on the CALLER, before any connection.
+  : >"$ssh_count"
+  FAKE_SSH_MODE=fail \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$ssh_count" \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+    --items-file "$tmp_dir/transact-local/absent.json"
+  assert_ssh_call_count "$ssh_count" 0 'unreadable items-file'
+
+  # Twice is a refusal, not last-wins.
+  FAKE_SSH_MODE=fail \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+    --items-file "$items" --items-file "$items"
+
+  # One stdin, two claimants: refused rather than ranked, because whichever
+  # won, the other would arrive as an empty file.
+  local body="$tmp_dir/transact-local/body.md"
+  printf '%s\n' '# body' >"$body"
+  FAKE_SSH_MODE=fail \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+    --items-file "$items" --body-file "$body"
+}
+
+test_transact_items_file_at_the_boundary_needs_no_streaming() {
+  local fakebin="$tmp_dir/transact-boundary/fakebin"
+  local ssh_log="$tmp_dir/transact-boundary/ssh.argv"
+  local kb_log="$tmp_dir/transact-boundary/kb.argv"
+  local seen="$tmp_dir/transact-boundary/items.seen"
+  setup_fakebin "$fakebin"
+
+  local board_id home_host table items
+  board_id=$(make_id board)
+  home_host=$(/bin/hostname)
+  table="$tmp_dir/transact-boundary/hosts.tsv"
+  make_table "$table" "$board_id" "$home_host" "$(make_id target)" "$home_host" "$fakebin/kb"
+
+  items="$tmp_dir/transact-boundary/items.json"
+  mkdir -p "$(dirname -- "$items")"
+  printf '%s\n' '[{ "name": "note", "arguments": { "id": "t-1a2b3c4d", "text": "local" } }]' >"$items"
+
+  # On the board home host the caller's path IS the right path: no ssh, no
+  # streaming, and the flag keeps the caller's own argument.
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_MODE=fail \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_ITEMS_OUT="$seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json
+
+  assert_log_clean "$ssh_log" 'items-file at the boundary'
+  assert_argv_file "$kb_log" --project "$board_id" transact --json --items-file "$items"
+  [[ "$(<"$seen.path")" == "$items" ]] || fail 'the boundary rewrote the caller path'
+  cmp -s "$seen" "$items" || fail 'the local items were not the caller file'
+}
+
 test_readme_example_table_is_accepted() {
   local fakebin="$tmp_dir/readme/fakebin"
   local ssh_log="$tmp_dir/readme/ssh.argv"
@@ -742,6 +973,7 @@ test_skill_parity_sections_are_present() {
     '## Sitreps — where a lane stands, cheaply'
     '## Handoffs — task and session'
     '## Working a task'
+    '## Batched writes — `transact`'
     '## Plans'
     '## Tags — which part of the system this is about'
     '## Provenance — where and when work happened'
@@ -779,6 +1011,9 @@ test_skill_parity_sections_are_present() {
     'kb archive --older-than-days'
     'kb deploy start --repo'
     'kb mcp'
+    'kb transact --items-file items.json --json'
+    'scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json'
+    '{"$ref": {"item": N, "path": "/json/pointer"}}'
   )
 
   local command_snippet
@@ -1039,6 +1274,7 @@ test_host_surface_matches_source_allowlist() {
     subscription
     todo
     stale
+    transact
   )
 
   local command
@@ -1653,7 +1889,7 @@ test_host_refuses_board_owned_commands_without_transport() {
     deploy import tag archive search search-rebuild
     task t story s handoff h attention att attn claim checkpoint cp
     heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale
+    subscription todo stale transact
   )
 
   local command
@@ -2158,6 +2394,9 @@ assert_test_wiring() {
     test_board_body_file_is_transferred_not_forwarded
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
+    test_board_transact_items_ride_one_ssh_on_stdin
+    test_board_transact_local_items_file_is_streamed
+    test_transact_items_file_at_the_boundary_needs_no_streaming
     test_readme_example_table_is_accepted
     test_skill_parity_sections_are_present
     test_public_readme_contract_snippets_are_present
@@ -2237,6 +2476,9 @@ main() {
     test_board_body_file_is_transferred_not_forwarded
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
+    test_board_transact_items_ride_one_ssh_on_stdin
+    test_board_transact_local_items_file_is_streamed
+    test_transact_items_file_at_the_boundary_needs_no_streaming
     test_readme_example_table_is_accepted
     test_skill_parity_sections_are_present
     test_public_readme_contract_snippets_are_present

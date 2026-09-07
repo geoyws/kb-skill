@@ -454,6 +454,7 @@ kb hb <id> --lease "$TOKEN" --lease-minutes 30     # renew
 kb cp <id> --lease "$TOKEN" --as "$AGENT" --state continue \
   --summary "…" --intent "…" --next-action "…" --json
 kb rel <id> --lease "$TOKEN"
+kb transact --items-file items.json --json         # those writes as one atomic batch, below
 ```
 
 **Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
@@ -571,6 +572,139 @@ an optional flag.
 
 Plan steps are child rows or one `--kind plan` note. There is no checklist
 field, and adding one would put the same truth in two places.
+
+## Batched writes — `transact`
+
+Each write above is its own round trip and its own transaction, and the loop's
+writes are not independent: a `claim` yields the lease token a `checkpoint`
+needs, and a checkpoint that landed after a claim that did not is not a smaller
+success, it is a board that lies. `transact` takes an ordered list of ordinary
+operations, runs them in one process against one open board inside one
+transaction, and **either all of them land or none of them do** (ADR-041).
+
+```bash
+kb transact --items-file items.json --json
+kb transact --items '[{"name": "note", "arguments": {"id": "t-1a2b3c4d", "text": "…"}}]' --json
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+`--items` and `--items-file` are one question in two spellings, so passing both
+is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
+carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
+streams a local `--items-file PATH` on the single ssh connection's stdin and
+rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
+bytes arrive verbatim.
+
+**An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
+shape. `TOOL` is an MCP tool name, which is the command with its subcommand
+joined by `_` (`task_move` is `kb task move`), and `arguments` names that
+command's flags and positionals literally, hyphens included: `id`, `text`,
+`next-action`, `lease-minutes`. A boolean flag is `true`; `false` and `null` are
+absence. At most 32 items.
+
+Refused as items, before anything runs: `batch` and `transact` themselves — a
+batch may not carry a batch — plus `import` and `search-rebuild`, which open a
+board-wide transaction of their own, and anything that does not address one
+board's rows.
+
+**The selector goes to `transact`, never to an item.** A batch addresses the one
+board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
+is refused rather than having it silently discarded, and `kb-board` already
+injects exactly one selector. There is no batch-level `--as` either: each item
+carries its own actor and is authorized exactly as if it had arrived alone, so a
+batch cannot elevate.
+
+**The envelope**, on stdout either way:
+
+```json
+{ "batchId": "9f1c…", "ok": true, "failedIndex": null, "rolledBack": false,
+  "results": [ { "index": 0, "ok": true, "result": { "…": "what that command answers alone" } } ] }
+```
+
+Execution stops at the first failure. That item reports
+`{"index", "ok": false, "error"}` with the CLI's own refusal text, every later
+item reports `{"index", "ok": false, "skipped": true}` and was never attempted,
+and the batch answers `ok: false` and exits non-zero. `rolledBack: true` means
+the board is exactly where the batch found it. `rolledBack: false` beside
+`ok: false` means one thing only: the list was refused before anything ran, so
+`results` is empty. Reads may sit in a write batch and see the earlier items'
+writes; a read that fails fails the batch, because continuing past it would be
+deciding on absent information.
+
+**`$ref` carries a value forward.** Any argument value may be
+`{"$ref": {"item": N, "path": "/json/pointer"}}`, replaced by the value at that
+RFC 6901 pointer inside item `N`'s result, where `N` is strictly earlier —
+forward and self-references are refused. That is how the lease token a `claim`
+mints (`/leaseToken`) reaches the checkpoint without the agent ever handling it.
+Every reference is checked for shape before any item runs, so a malformed
+pointer refuses the whole batch and nothing lands.
+
+**What a rollback does not undo.** Opening the board retires expired claims and
+commits that sweep before any batch scope exists, so a `transact` that rolled
+back may still have retired somebody else's lapsed lease and appended those
+events. That is correct — the sweep is not part of your batch and reverting it
+would resurrect dead leases — but a rolled-back `transact` is not a no-op on the
+ledger in every possible sense.
+
+**A replayed batch is not a no-op.** There is no idempotency key. A replayed
+loop batch is refused at its claim, because an active claim makes the second
+attempt fail by name, so it fails at index 0, skips every later item and lands
+nothing — good, but good by accident of `claim`'s own semantics rather than
+anything `transact` does. A batch whose first item is additive has no such
+protection: two replayed `note` items are two notes, two replayed `sitrep post`
+items are two sitreps. After a transport failure, read the board and decide;
+never retry a batch blindly.
+
+### The loop's write half, in one batch
+
+`items.json` — claim the task, checkpoint it with the lease the claim just
+minted, and write the plan note:
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "claude@driver", "lane": "driver" } },
+  { "name": "checkpoint",
+    "arguments": { "id": "t-1a2b3c4d",
+                   "lease": { "$ref": { "item": 0, "path": "/leaseToken" } },
+                   "as": "claude@driver", "state": "continue",
+                   "summary": "wrapper streams the items on one ssh",
+                   "intent": "land the batched write surface",
+                   "next-action": "document the envelope in the skill",
+                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
+                   "head": "da9a794", "dirty": "clean" } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan", "as": "claude@driver",
+                   "text": "wrapper first, then the skill, then the tests" } }
+]
+```
+
+```bash
+kb transact --items-file items.json --json                                    # at the boundary
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+Three writes, one round trip, a lease token that never passes through the agent,
+and — if the claim fails because somebody else holds the task — nothing on the
+board at all.
+
+**A provenance writer inside a batch carries its own provenance.** `kb-board`
+fills `--repo`, `--branch`, `--head` and `--dirty` from your checkout for a
+`checkpoint`, `handoff create` or `sitrep post` **command**; a batch's items are
+data, so it cannot fill them there. The binary runs on the board home host,
+whose cwd is not your checkout, and it refuses a row with blank provenance
+rather than storing a null:
+
+```
+refusing to record a row with blank provenance: repo_path, branch, head_sha,
+dirty_summary missing … Pass --repo PATH --branch NAME --head SHA --dirty TEXT
+```
+
+So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
+`git rev-parse --show-toplevel`, `git symbolic-ref --short HEAD`,
+`git rev-parse HEAD` and a count of `git status --porcelain` lines (`clean`,
+`1 file changed`, `N files changed`). Every other write — `claim`, `heartbeat`,
+`note`, `release`, `task update` — needs nothing extra.
 
 ## Plans
 
@@ -1043,6 +1177,15 @@ cannot describe something the CLI does not have. Each call runs the real binary,
 so validation and refusals are identical to the terminal. Every tool carries
 `readOnlyHint`, true only when the operation writes nothing anywhere.
 
+Two tools carry lists of other calls instead of arguments of their own.
+`batch` collapses up to 32 **reads** into one request and keeps
+`readOnlyHint: true`, so it refuses a writing entry by name and performs none
+of them. `transact` is the writing counterpart described above: `{ "items":
+[ {"name", "arguments"} ] }`, `readOnlyHint: false`, the binary run **once**
+with the whole list, and the envelope returned as the result — marked
+`isError` exactly when `ok` is `false`, because a rolled-back batch that read
+as success would be a lie.
+
 Updating is `install` over the binary — running servers pick it up without any
 client reconnecting.
 
@@ -1101,6 +1244,9 @@ once a silent wrong answer.
   whole (ADR-037).
 - `--fields` naming a key the rows do not carry is refused listing the keys they
   do; `claim` needs `--with-claims`, `dependencies` needs `--with-relations`.
+- A `transact` item naming its own board selector, or a second `transact`, is
+  refused before any item runs — a batch addresses one board and may not carry
+  a batch.
 
 ## Reference
 
@@ -1114,3 +1260,5 @@ tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
 lowercase subsystem tags.
 ADR-021 keeps settled history while removing it from operational indexes.
 ADR-037 makes a capped listing refuse a default it would exceed.
+ADR-041 makes `transact` one atomic ordered write batch and leaves the
+read-only `batch` untouched.
