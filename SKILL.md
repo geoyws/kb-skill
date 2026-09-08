@@ -255,16 +255,133 @@ on leaves no trace it was ever raised, so the same question gets asked again
 three sessions later — or worse, quietly answered by an agent that had no
 business deciding it.
 
-```bash
-kb att raise "<verdict-first, ≤2 sentences, with the concrete next action>" \
-  --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> --json
+**Raising an item is writing a decision card.** A card is a question, the
+context needed to answer it, and two to four authored choices, exactly one of
+them marked as your recommendation. The old convention — write the options into
+the body as prose and let the owner reconstruct them — is over: options in
+prose have to be parsed back out of English by whoever reads them, and the
+free-text answer they get back carries no verdict a lane can branch on. Author
+the choices as flags and the answer comes back machine-readable. The body is
+untouched by all of this and stays the long form — receipts, SHA256s, absolute
+paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
+(ADR-042).
 
-kb att list --status open --limit 200 --json              # what is waiting on the owner
-kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
-kb att list --status open --fields id,kind,raisedBy,taskID --limit 200 --json   # keys only; or --no-body
-kb att list --status resolved --limit 200 --json          # the historical trail
-kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
+```bash
+kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
+  --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> \
+  --question "<the decision, one sentence, ending in ?>" \
+  --context "<what is true now, what is blocked, what waiting costs>" \
+  --choice "<key>=<verb-phrase label>|approve" \
+  --consequence "<key>=<what happens if it is picked, and what it costs>" \
+  --choice "<key>=<verb-phrase label>|reject" \
+  --consequence "<key>=<what happens if it is picked, and what it costs>" \
+  --recommend <key> --json
 ```
+
+| flag | what goes in it |
+|---|---|
+| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "hax has no logged-in Claude account — assign a seat, or drop that receipt?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
+| `--context` | Two to five plain sentences, at most 800 characters, in this order: what is true now, what is blocked and how much waits on it, what waiting costs. If waiting costs nothing, say so — that is a legitimate answer and it changes the decision. |
+| `--choice KEY=LABEL\|OUTCOME` | Two to four, repeatable, one token so the three parts cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the item, and never shown to him. The label is the button text: a verb phrase starting with the verb, at most 60 characters, carrying no `|`. The outcome is one of `approve`, `reject`, `defer`, `other` — the machine-readable verdict a lane acts on, where the label is for the human. |
+| `--consequence KEY=TEXT` | One per choice, required on every one: a single sentence, at most 200 characters, saying what happens and what it costs, in that order. "Approved" is not a consequence; "the receipt is retried the same day, about ten minutes of your time plus the seat's monthly cost" is. |
+| `--recommend KEY` | Exactly one choice, and always one. It is your opinion. An agent that cannot pick one has not finished thinking about the question and should raise a smaller one. |
+
+`--question` and `--context` are one card: give both or neither.
+
+**Write about the world, not about the board.** "The lane", "the row", "the
+executor", "the driver", "the item" and every other word for the machinery are
+banned from the question and the context — he is deciding about the world, not
+about the ledger. Typed ids (`a-*`, `t-*`, `e-*`, `d-*`) belong in a trailing
+`References:` clause and never mid-sentence. Required instead: numbers with
+units (`ten minutes`, `43 items`, `HTTP 401`), absolute dates (`2026-09-05`,
+never "last week"), full nouns wherever a pronoun could drift, and second
+person for anything only he can do — "only you can finish the browser login".
+
+A `defer` consequence must name **what brings the question back**: a date, an
+event, or a task that will be filed. "Later" with no trigger is how an item is
+deferred into oblivion. And never put a credential value in a card; name the
+store entry.
+
+**Do not invent choices.** If the honest answer set really is "do it / do not
+do it", author none — pass `--question` and `--context` alone and let the
+default pair below serve. Two choices that are approve and reject wearing new
+labels are worse than the pair nobody claimed to have authored.
+
+**The free-text answer is always offered, and it carries a verdict.** `custom`
+is reserved for it: it is never one of your choices (`--choice custom=…` is
+refused) and it never has to be declared. Taking it costs him both an
+`--outcome` and a `--note`, which is the whole point — nothing closes an
+attention item without a verdict, so no lane inherits `Comment: do it after the
+pin lands` and has to guess whether that was a yes.
+
+```bash
+kb att list --status open --limit 200 --json              # what is waiting on the owner
+kb att list --status open --fields id,priority,question,choices --limit 200 --json   # the cards, without the bodies
+kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
+kb att list --status resolved --fields id,decision,resolution --limit 200 --json     # what he decided, and how
+
+kb att resolve <id> --as geoyws --choice keep-parked --json                        # an authored choice
+kb att resolve <id> --as geoyws --choice custom --outcome defer --note "…" --json  # the free-text answer
+```
+
+`--choice` is required on `resolve`. `--note` is optional for an authored
+choice, because the label and its consequence are already the record, and
+required for `custom`; `--outcome` applies to `custom` alone. A `--choice`
+naming a key the row does not carry is refused naming the keys it has, and that
+is what makes a stale card safe: if his browser is still showing a card that a
+later `att update` replaced, the click names a key that no longer exists and is
+refused by name rather than mapped onto whatever now sits in that position.
+
+**`decision` is what a lane reads back**, not the prose:
+`{"choice": "keep-parked", "outcome": "defer", "note": null, "by": "geoyws",
+"at": 1788805112431}`. Branch on `outcome`, quote the `choice` when you report,
+and treat `resolution` as derived — the writer composes it as
+`Decision: <label>. <consequence>`, plus a second `Note: <note>` line when a
+note was given, so no caller can leave a different trail. `Comment: ` is the
+pre-2026-09-08 spelling and now appears only on rows settled before then. Every
+choice settles the item, `defer` included: a deferral is a verdict, and
+`kb att reopen` is the way back.
+
+**An item with no card reads as the default pair.** A row that authored no
+choices is served — CLI, MCP and web alike — as `approve` ("Approve - proceed")
+and `reject` ("Reject - do not proceed") with **no recommendation**, because
+nobody authored that pair and nothing may claim it was recommended, and its
+body serves as both question and context. That is the only shape in the model
+with zero recommendations. `kb att update <id> --as "<agent>@<lane>"` takes the
+same five card flags, so an item still open can be given a card later, and
+`--clear-card` returns it to the default pair. A resolved item's card is
+history and is refused.
+
+**A card, written out.** `a-347ff24c` was a P0 whose body ran 1,235 characters
+of receipts — two SHA256s, a deployment id, a commit sha, an absolute
+executable path — and which sat at the top of "Needs you" for three days after
+being parked once with no trigger to bring it back. The same item raised as a
+card:
+
+```bash
+kb att raise "BLOCKED — HAX Claude Code 2.1.236 is installed at /root/.local/share/claude/versions/2.1.236 and host dispatchers.json binds claude.print/start-readonly-turn to that exact release adapter, but the stored OAuth access token is revoked and a real serialized no-tools turn fails HTTP 401. Resolve only after the installed adapter returns its exact live AdapterResponse for a real Claude acknowledgement; do not work around authentication." \
+  --as claude@driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
+  --question "hax has no logged-in Claude account, so the pubsub adapter cannot record one real Claude reply - assign a seat, or drop that receipt?" \
+  --context "Claude Code 2.1.236 is installed on hax and its dispatcher config loads, but the saved login is revoked and a real turn answers HTTP 401. You parked this on 2026-09-05 until an account was assigned to hax; three days later no account has been assigned. Only you can finish it: it needs a paid seat and a browser login nobody else can complete. One task is waiting - install Claude Code on hax for the pubsub adapter's live receipt - and nothing is waiting on that task. Until it moves, the pubsub adapter ships with every provider proven except Claude. References: a-347ff24c, t-8c656910." \
+  --choice "assign-and-login=Assign a Claude seat to hax and log in|approve" \
+  --consequence "assign-and-login=You buy or free one Claude seat, ssh to hax and finish the browser login: about ten minutes of your time plus the seat's monthly cost, and the receipt is retried the same day." \
+  --choice "keep-parked=Keep it parked until a seat frees up|defer" \
+  --consequence "keep-parked=Nothing changes and nobody waits on you; the pubsub adapter keeps shipping with the Claude path unproven, and a task is filed to re-raise this the day a seat frees up." \
+  --choice "drop-receipt=Drop the live-Claude receipt from the adapter|reject" \
+  --consequence "drop-receipt=The adapter is proven against the other providers only, the Claude path stays untested in production, and the install task closes as cancelled." \
+  --recommend assign-and-login --json
+```
+
+Question 133 characters, context 588, labels 38, 36 and 45, consequences 175,
+167 and 143, three choices, one recommendation. `assign-and-login` is the
+recommendation because the item's own resolve condition is a live receipt no
+workaround may produce, and one seat is the smallest price on the card.
+`keep-parked` is offered honestly rather than omitted — it is what he chose on
+2026-09-05 and it may still be right — but its consequence now names the
+trigger that brings the question back, which the parking did not, which is why
+the item was still open three days later. Pick it and the row afterwards reads
+`decision.outcome: "defer"` and `resolution: "Decision: Keep it parked until a
+seat frees up. Nothing changes and nobody waits on you; …"`.
 
 **Say how many you want.** Without `--limit` the listing is capped at 100, and
 a board holding more than that **refuses** rather than handing back a page that
@@ -276,7 +393,7 @@ bound above the count you expect and check the length came back under it
 `--lane LANE` keeps items raised by `<agent>@LANE` and items about a task whose
 lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
 rows do not carry is refused naming the ones they do. `--no-body` drops the
-body alone.
+body alone, which is the cheap way to read cards in bulk.
 
 `--kind` is a closed set:
 
@@ -296,10 +413,10 @@ owner's actor is `geoyws`: the binary gates `resolve` and `reopen` on it and the
 refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
 `resolvedBy: geo` as a record, and `--as geo` today is refused like any other
 non-raiser. The one exception is an item this same session raised and has since
-made moot — retire that with `--note` saying why, so the record shows it was
-withdrawn rather than answered. Check `kb att list --status open --limit N`
-before raising and add to an existing item rather than duplicating one already
-waiting.
+made moot — retire that with `--choice custom --outcome other --note` saying
+why, so the record shows it was withdrawn rather than answered. Check
+`kb att list --status open --limit N` before raising and add to an existing item
+rather than duplicating one already waiting.
 
 Items are **resolved, never deleted**, and resolving twice is refused: that
 would overwrite who settled it and when, which is the part worth keeping. Open
@@ -1325,6 +1442,13 @@ once a silent wrong answer.
 - A `transact` item naming its own board selector, or a second `transact`, is
   refused before any item runs — a batch addresses one board and may not carry
   a batch.
+- A card is refused by name rather than half-written: a `--consequence` or
+  `--recommend` naming a key no `--choice` declared, a duplicate key, a count
+  outside two to four, a recommendation that is not exactly one, a choice with
+  no consequence, `--question` without `--context`, `custom` as an authored
+  key, `--outcome` without `--choice custom`, a resolve with no `--choice` or
+  one naming a key the row does not carry, and any card flag at all on a
+  resolved item.
 
 ## Reference
 
@@ -1340,3 +1464,6 @@ ADR-021 keeps settled history while removing it from operational indexes.
 ADR-037 makes a capped listing refuse a default it would exceed.
 ADR-041 makes `transact` one atomic ordered write batch and leaves the
 read-only `batch` untouched.
+ADR-042 makes an attention item a decision card: an authored question, its
+context, two to four choices with one recommendation, and a free-text answer
+that still carries a verdict.
