@@ -1343,6 +1343,38 @@ attempt. Keep the start receipt's capability token until finishing. Use
 `deploy abandon --token … --note …` when no failure was observed; `--force` is
 an explicit audited recovery override. See ADR-030.
 
+**A recovery whose build commit is genuinely unknown** (a retained Docker
+image with no trustworthy build SHA) uses the artifact-identity mode instead
+of pretending to a commit - one mode per attempt, and each refuses the
+other's flags (kanban 15219b4, ADR-043, 2026-09-09):
+
+```bash
+kb deploy start --repo OWNER/REPO --build-commit unknown \
+  --artifact api=docker-image-id:sha256:<64 hex> \
+  --artifact web=oci-manifest-digest:sha256:<64 hex> \
+  [--deployer-checkout FULL_40_CHAR_SHA] --tier @_p --environment production \
+  --host "$BOARD_HOME_HOST" --url "$SERVICE_URL" --task TASK_ID --as "$AGENT" --json
+
+kb deploy finish DEPLOYMENT_ID --token CAPABILITY_TOKEN --result succeeded \
+  --phase verification --observed api=docker-image-id:sha256:<64 hex> \
+  --observed web=oci-manifest-digest:sha256:<64 hex> \
+  --receipt "what was checked live" --as "$AGENT" --json
+```
+
+`--build-commit` takes the literal `unknown` and nothing else: a 40-hex value
+there is refused with the sentence that names the Git mode. `docker-image-id`
+(the Docker config/image ID) and `oci-manifest-digest` (the registry manifest
+digest) are distinct kinds and are never compared to each other. `succeeded`
+needs `--observed` for every expected role, exact per role and per kind; a
+missing role, an extra role, a kind mismatch or a value mismatch is refused
+naming the role and both values, and `--served-commit` is refused on an
+artifact attempt. `--deployer-checkout` (the checkout the deployer ran from)
+is recorded apart and never presented as the build commit. The JSON carries
+`identityMode`, `buildCommit` (`unknown`), `buildCommitLabel`,
+`deployerCheckout` and `artifacts[] {role, kind, expected, observed}`; the
+Deployments page says `build commit unknown - recovered by artifact identity`
+in words, never a blank where a SHA would be.
+
 ## The web view
 
 `$BOARD_WEB_URL` — every board at once, behind shared Google SSO with only the
