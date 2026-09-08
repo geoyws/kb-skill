@@ -960,7 +960,13 @@ EOF
 test_skill_parity_sections_are_present() {
   local skill="$package_dir/SKILL.md"
   local text
-  text=$(/bin/cat "$skill")
+  # SKILL.md is the daily surface and reference.md is its long-form half; the
+  # public surface is their union, so nothing may be lost by the split.
+  text=$(/bin/cat "$skill" "$package_dir/reference.md")
+
+  local skill_lines
+  skill_lines=$(wc -l <"$skill" | tr -d '[:space:]')
+  [[ "$skill_lines" -le 300 ]] || fail "SKILL.md is $skill_lines lines: the daily surface must stay at or under 300"
 
   local -a required_headings=(
     '## Board home host is the execution boundary'
@@ -990,7 +996,7 @@ test_skill_parity_sections_are_present() {
 
   local heading
   for heading in "${required_headings[@]}"; do
-    assert_contains "$text" "$heading" "skill heading $heading"
+    assert_contains "$text" "$heading" "skill+reference heading $heading"
   done
 
   local -a required_commands=(
@@ -1018,7 +1024,7 @@ test_skill_parity_sections_are_present() {
 
   local command_snippet
   for command_snippet in "${required_commands[@]}"; do
-    assert_contains "$text" "$command_snippet" "skill command $command_snippet"
+    assert_contains "$text" "$command_snippet" "skill+reference command $command_snippet"
   done
 
   local -a required_public_tokens=(
@@ -1041,7 +1047,7 @@ test_skill_parity_sections_are_present() {
 
   local token_snippet
   for token_snippet in "${required_public_tokens[@]}"; do
-    assert_contains "$text" "$token_snippet" "skill public token $token_snippet"
+    assert_contains "$text" "$token_snippet" "skill+reference public token $token_snippet"
   done
 }
 

@@ -6,6 +6,8 @@ installation.
 ## What is here
 
 - `SKILL.md` documents the public skill surface.
+- `reference.md` documents the long-form half of that skill — the sections
+  `SKILL.md` names but does not carry in full.
 - `scripts/kb-board` routes commands by board and preserves argv literally; on
   `checkpoint` and `handoff create` it also forwards the caller's git checkout
   as `--repo`, `--branch`, `--head` and `--dirty` unless the caller passed them.
