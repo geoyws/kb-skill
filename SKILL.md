@@ -326,7 +326,11 @@ kb att resolve <id> --as geoyws --choice custom --outcome defer --note "…" --j
 
 `--choice` is required on `resolve`. `--note` is optional for an authored
 choice, because the label and its consequence are already the record, and
-required for `custom`; `--outcome` applies to `custom` alone. A `--choice`
+required for `custom`; `--outcome` applies to `custom` alone. On the web the
+same holds: the card carries one reply field, and whatever is typed in it is
+sent with whichever choice is clicked - so a lane reading `decision.note`
+beside an authored `choice` is reading what geoyws added to his click, and
+should act on it before the consequence text. A `--choice`
 naming a key the row does not carry is refused naming the keys it has, and that
 is what makes a stale card safe: if his browser is still showing a card that a
 later `att update` replaced, the click names a key that no longer exists and is
