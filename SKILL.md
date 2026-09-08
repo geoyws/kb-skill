@@ -387,6 +387,12 @@ the item was still open three days later. Pick it and the row afterwards reads
 `decision.outcome: "defer"` and `resolution: "Decision: Keep it parked until a
 seat frees up. Nothing changes and nobody waits on you; …"`.
 
+**An explicit `--limit` that cuts is named, not hidden.** `kb ev --limit N`
+keeps stdout at exactly N rows and writes one line to stderr - `events: showing
+N of more than N; pass --limit above N for the rest (ceiling 1000000)` - so a
+page of history that stops at the limit never reads as the whole history.
+Exit status stays 0; the rows you asked for are the rows you get.
+
 **Say how many you want.** Without `--limit` the listing is capped at 100, and
 a board holding more than that **refuses** rather than handing back a page that
 reads as the whole; the refusal names `--limit N`. On a busy board
@@ -1166,8 +1172,10 @@ Rules:
 - `--follow` reopens read-only transactions between polls and emits rows
   synchronously, with no intermediate queue. It requires `--limit` to be at
   least `1`, so `--follow --limit 0` fails.
-- `--limit` is constrained to `0..1000` in every mode; follow mode additionally
-  rejects `0`. Sparse filtering happens before `--limit`, so the limit slices
+- `--limit` is constrained to `0..1000000` in every mode, the one ceiling every
+  `--limit` on this ledger shares (kanban 8991e9f, 2026-09-08 - effectively
+  unbounded for any board this tool holds; a batch is a SQL LIMIT, never a
+  preallocated buffer); follow mode additionally rejects `0`. Sparse filtering happens before `--limit`, so the limit slices
   the filtered result set rather than the raw rows.
 - `--db PATH` opens that exact database file.
 - NDJSON envelopes carry `version`, `scope`, `cursor`, `type`, and `payload`
