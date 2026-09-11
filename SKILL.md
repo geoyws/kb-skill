@@ -288,6 +288,13 @@ kb att raise "<verdict-first body — receipts, paths, the concrete next action>
 
 `--question` and `--context` are one card: give both or neither.
 
+**The recommendation goes first.** The web card numbers the recommended choice
+`1`, and every digest that renders a card puts it first and marks it. When you
+surface a card in a reply, do the same: the recommended choice leads, marked as
+yours, and the other choices follow in the card's order — never reordered,
+merged or reworded, because the key of the choice he clicks is what the
+resolution records.
+
 **Write about the world, not about the board.** "The lane", "the row", "the
 executor", "the driver", "the item" and every other word for the machinery are
 banned from the question and the context — he is deciding about the world, not

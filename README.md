@@ -64,6 +64,39 @@ Example `kb-board` body-file invocation copied from the package docs:
 scripts/kb-board board_identifier t new "Title" --body-file /tmp/plan.md --json
 ```
 
+## Attention decision cards
+
+An open attention item is a **decision card** (ADR-042): a question, the
+context needed to answer it, and two to four authored choices, each with the
+consequence of picking it and a machine-readable outcome of `approve`,
+`reject`, `defer` or `other`, exactly one marked as the recommendation. Every
+item also offers an implicit `custom` answer that needs its own `--outcome` and
+a note, so nothing closes an item without a verdict; a row that authored no
+choices is served as the `approve`/`reject` default pair with no
+recommendation, and the body stays the long form.
+
+```bash
+scripts/kb-board BOARD_ID att raise "Review the deployed queuer" --as codex@driver --kind review --tag queuer \
+  --question "The queuer is deployed but unproven - review it now, or ship and review after?" \
+  --context "The queuer has been live on staging since 2026-09-05 with no errors. One task waits on the review, and waiting costs a day of feedback." \
+  --choice "review-now=Review the deployed queuer today|approve" \
+  --consequence "review-now=You spend about twenty minutes reading it today and the waiting task unblocks this afternoon." \
+  --choice "ship-first=Ship it and review after the release|defer" \
+  --consequence "ship-first=The release goes out unreviewed and a task is filed to review it on 2026-09-12." \
+  --recommend review-now
+scripts/kb-board BOARD_ID att resolve a-12345678 --as geoyws --choice review-now
+scripts/kb-board BOARD_ID att resolve a-12345678 --as geoyws --choice custom --outcome defer --note "After the aix pin lands."
+```
+
+Bounds: question at most 160 characters, context at most 800, choice labels
+at most 60, consequences at most 200, two to four choices, every choice needs
+a consequence, exactly one recommendation, and `--question`/`--context` come
+as a pair. Every refusal is store-level and names its fix — an undeclared
+`--consequence` key, a duplicate key, a count outside two to four, no
+recommendation or two, a choice with no consequence, half a question/context
+pair, the reserved `custom` key, a `--recommend` with no choices, and each
+length bound — and the recommendation goes first wherever a card is rendered.
+
 ## Hygiene model
 
 The leak gate requires an explicit denylist file path and `gitleaks`. The

@@ -697,6 +697,72 @@ test_body_file_at_the_boundary_needs_no_transfer() {
   cmp -s "$tmp_dir/bodylocal/seen" "$body" || fail 'the local body was not the caller file'
 }
 
+# ADR-042 card flags ride kb-board like any other argv: the pipe inside a
+# choice value, the repeatable --choice/--consequence pair, --recommend, and
+# the custom resolution's --outcome/--note must each arrive exactly as typed,
+# once, with the wrapper neither splitting nor interpreting them.
+test_attention_card_flags_ride_the_wrapper() {
+  local fakebin="$tmp_dir/attcard/fakebin"
+  local ssh_log="$tmp_dir/attcard/ssh.argv"
+  local kb_log="$tmp_dir/attcard/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id home_host ssh_target remote_host table
+  board_id=$(make_id board)
+  home_host=$(/bin/hostname)
+  ssh_target=$(make_id target)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/attcard/hosts.tsv"
+  make_table "$table" "$board_id" "$home_host" "$ssh_target" "$remote_host" "$fakebin/kb"
+
+  FAKE_HOSTNAME_VALUE="$home_host" \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_PATH="$fakebin" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_SSH_MODE=fail \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" att raise 'BLOCKED - receipts below' \
+    --as codex@driver --kind blocking \
+    --question 'Assign a seat, or drop that receipt?' \
+    --context 'The login is revoked and a real turn answers HTTP 401.' \
+    --choice 'assign-and-login=Assign a Claude seat to hax and log in|approve' \
+    --consequence 'assign-and-login=The receipt is retried the same day.' \
+    --choice 'keep-parked=Keep it parked until a seat frees up|defer' \
+    --consequence 'keep-parked=A task is filed to re-raise it.' \
+    --recommend assign-and-login --json
+
+  assert_log_clean "$ssh_log" 'attention card raise'
+  assert_argv_file "$kb_log" --project "$board_id" att raise 'BLOCKED - receipts below' \
+    --as codex@driver --kind blocking \
+    --question 'Assign a seat, or drop that receipt?' \
+    --context 'The login is revoked and a real turn answers HTTP 401.' \
+    --choice 'assign-and-login=Assign a Claude seat to hax and log in|approve' \
+    --consequence 'assign-and-login=The receipt is retried the same day.' \
+    --choice 'keep-parked=Keep it parked until a seat frees up|defer' \
+    --consequence 'keep-parked=A task is filed to re-raise it.' \
+    --recommend assign-and-login --json
+
+  : >"$ssh_log"
+  : >"$kb_log"
+
+  FAKE_HOSTNAME_VALUE="$home_host" \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_PATH="$fakebin" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_SSH_MODE=fail \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" att resolve a-1 \
+    --as geoyws --choice custom --outcome defer --note 'after the pin lands'
+
+  assert_log_clean "$ssh_log" 'attention custom resolve'
+  assert_argv_file "$kb_log" --project "$board_id" att resolve a-1 \
+    --as geoyws --choice custom --outcome defer --note 'after the pin lands'
+}
+
 # The documented over-ssh form: `transact --items-file /dev/stdin --json` with
 # the list redirected in. The whole value of a batch is that it is one round
 # trip, so the invocation count is an assertion, not a detail -- and the bytes
@@ -2394,6 +2460,7 @@ assert_test_wiring() {
     test_board_body_file_is_transferred_not_forwarded
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
+    test_attention_card_flags_ride_the_wrapper
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
     test_transact_items_file_at_the_boundary_needs_no_streaming
@@ -2476,6 +2543,7 @@ main() {
     test_board_body_file_is_transferred_not_forwarded
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
+    test_attention_card_flags_ride_the_wrapper
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
     test_transact_items_file_at_the_boundary_needs_no_streaming
