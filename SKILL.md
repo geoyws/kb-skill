@@ -1005,13 +1005,23 @@ an explicit audited recovery override. See ADR-030.
 ## The web view
 
 `$BOARD_WEB_URL` — every board at once, behind shared Google SSO with only the
-allowed account list. Reads use the same Store as the CLI. The sole shipped
-write is the Needs-you reply/resolve action, attributed to `$OWNER`.
+allowed account list. Reads use the same Store as the CLI. Writes are a
+deliberately narrow, same-origin, owner-attributed set: resolving an attention
+item from its card, **undoing** one that was just decided (the audited
+`attention reopen`, not a second write path), opening a draft plan, and
+pausing or resuming a subscription.
 
 - **Needs you** (the landing page) — every open attention item across every
-  board, oldest first, with its kind, who raised it, how long it has waited, and
-  an inline reply plus quick decision buttons. A reply resolves the item and is
-  preserved as its resolution note.
+  board as a decision card (ADR-042): question, context, the recommended
+  choice first, alternatives, one reply field whose words ride with whichever
+  choice is clicked, and the free-text answer with its verdict. `1`–`4` answer
+  the card that has focus, `c` reaches the reply field, `Enter` submits the
+  free-text answer, `u` brings back the last decided item, `Esc` clears a
+  picked verdict. A decided card is replaced in place by a receipt carrying an
+  **Undo** button — no page load, and the receipt survives the live refresh.
+- **Recent decisions** — what was decided, newest first across every board,
+  with the verdict in the ledger's own words and an Undo per row, so a decided
+  item leaves the eye's way without disappearing.
 - **Lanes** — the counterpart: what every lane last reported, newest first.
 - **Boards** — the `kb dash` projection as a table.
 - **Plans** — draft epics with their bodies, each naming the work it holds back.
@@ -1021,6 +1031,10 @@ write is the Needs-you reply/resolve action, attributed to `$OWNER`.
 - **Task detail** — notes, checkpoints, the event trail, and the provenance of
   whoever holds it. Never the lease token: that is a capability, and a page that
   rendered one would hand it to whoever loaded the page.
+
+Board texts (bodies, notes, plans, sitreps) render as markdown with raw HTML
+stripped server-side. Every reference link (task, board, deployment) shows a
+hover preview — previews nest — and opens the item in its own tab.
 
 It is `kanban serve` on loopback 14200, kept up by `kanban-serve.service` and
 fronted by nginx. It binds the loopback interface and has **no `--bind` flag** — kanban
