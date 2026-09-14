@@ -685,6 +685,38 @@ may not have it. If the installed version/surface lacks sprint support, stop
 and report that capability boundary; never improvise with a locally built
 binary, open a local board copy, or attempt a schema migration yourself.
 
+### Sprint-scoped rules and sprint search
+
+These forms are newer parts of the sprint schema. Confirm that the installed
+`v` and `schema --json` output above includes them before use; an older
+installed binary may support sprints without these rule and search additions.
+
+Add a rule for one board and one of its sprints through the registry-owned
+`kb-host` path, never `kb-board`:
+
+```bash
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." \
+  --board BOARD --sprint sp-ID [--tag slug] --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
+  --sprint sp-ID --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
+  --clear-sprint --as ACTOR
+```
+
+The sprint must exist on that board, including historical closed sprints. The
+optional tag further intersects that scope. On update, `--sprint` and
+`--clear-sprint` are mutually exclusive. The rule applies only when the task
+is attached to that sprint during claim, handoff acceptance, and context
+assembly; unattached tasks and tasks in another sprint do not receive it.
+
+Sprint cards are also searchable by title, body, and target version:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD search QUERY --source sprint --json
+```
+
+Sprint results cite `kanban://BOARD/sprint/ID`.
+
 Create a planned card, then give planning a required goal body and deliberate
 scope:
 
