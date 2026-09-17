@@ -230,6 +230,34 @@ Measured on the acies board 2026-09-17: the ledger accepts both
 `--as "@:geoyws/acies/driver"` and `--as "geoyws/acies/driver"` on notes,
 updates and claims. Write the sigil form.
 
+**The longer name wins, and the lane field lives alongside it** (George,
+2026-09-17, reconciling this section with the sigil rule in the root
+`AGENTS.md`). Where a short and a long spelling of one identity are both
+defensible, write the long one — so `@:geoyws/acies/driver`, never `@:geoyws`
+and never `driver`. And the actor never *replaces* the lane field:
+
+```bash
+kb att raise "…" --as "@:geoyws/px/driver-3" --lane driver-3 …
+kb sr new "…"   --as "@:geoyws/px/driver-3" --lane driver-3
+```
+
+Both, never either. They answer different questions and are read by different
+things: the **actor** is who wrote the row, and the **lane field** is what the
+row belongs to — and the field is what `att ls --lane`, `sr ls --lane` and
+every lane queue filter actually match on. A row whose actor names its lane
+but whose `--lane` is empty is invisible to its own lane's queue, which is the
+same failure the harness-qualified actor caused, wearing different clothes.
+
+A pane that holds no driver lane repeats its own derived team token in the
+lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
+board — so the shape never degrades to a bare team and a reader always knows
+all three answers were given. The board segment is the board being written to,
+not the agent's home board.
+
+Nothing verifies the two agree today. If you write `--as
+"@:geoyws/px/driver-3" --lane driver-2`, the ledger stores both without
+complaint — see the `kanban` board for the refusal that should exist.
+
 ## Tag-scoped rules — what frames work
 
 Put short, non-secret operating constraints in the one registry-owned rules
@@ -302,7 +330,7 @@ paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
 
 ```bash
 kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
-  --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> \
+  --as "@:<team>/<board>/<lane>" --lane <lane> --kind blocking --task <ID if it is about one> \
   --question "<the decision, one sentence, ending in ?>" \
   --context "<what is true now, what is blocked, what waiting costs>" \
   --choice "<key>=<verb-phrase label>|approve" \
@@ -409,7 +437,7 @@ choices is served — CLI, MCP and web alike — as `approve` ("Approve - procee
 and `reject` ("Reject - do not proceed") with **no recommendation**, because
 nobody authored that pair and nothing may claim it was recommended, and its
 body serves as both question and context. That is the only shape in the model
-with zero recommendations. `kb att update <id> --as "<agent>@<lane>"` takes the
+with zero recommendations. `kb att update <id> --as "@:<team>/<board>/<lane>"` takes the
 same five card flags, so an item still open can be given a card later, and
 `--clear-card` returns it to the default pair. A resolved item's card is
 history and is refused.
@@ -422,7 +450,7 @@ card:
 
 ```bash
 kb att raise "BLOCKED — HAX Claude Code 2.1.236 is installed at /root/.local/share/claude/versions/2.1.236 and host dispatchers.json binds claude.print/start-readonly-turn to that exact release adapter, but the stored OAuth access token is revoked and a real serialized no-tools turn fails HTTP 401. Resolve only after the installed adapter returns its exact live AdapterResponse for a real Claude acknowledgement; do not work around authentication." \
-  --as claude@driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
+  --as "@:geoyws/hax/driver" --lane driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
   --question "hax has no logged-in Claude account, so the pubsub adapter cannot record one real Claude reply - assign a seat, or drop that receipt?" \
   --context "Claude Code 2.1.236 is installed on hax and its dispatcher config loads, but the saved login is revoked and a real turn answers HTTP 401. You parked this on 2026-09-05 until an account was assigned to hax; three days later no account has been assigned. Only you can finish it: it needs a paid seat and a browser login nobody else can complete. One task is waiting - install Claude Code on hax for the pubsub adapter's live receipt - and nothing is waiting on that task. Until it moves, the pubsub adapter ships with every provider proven except Claude. References: a-347ff24c, t-8c656910." \
   --choice "assign-and-login=Assign a Claude seat to hax and log in|approve" \
@@ -458,7 +486,7 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by `<agent>@LANE` and items about a task whose
+`--lane LANE` keeps items raised by `@:<team>/<board>/LANE`, items whose `--lane` field is LANE, and items about a task whose
 lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
 rows do not carry is refused naming the ones they do. `--no-body` drops the
 body alone, which is the cheap way to read cards in bulk.
@@ -587,7 +615,7 @@ what a lane hands its successor. Through `kb-board`, run from inside the
 checkout: `--repo`, `--branch`, `--head` and `--dirty` are filled in from it.
 
 ```bash
-<skill-dir>/scripts/kb-board BOARD_ID h new --as "claude@driver-2" --to "driver-2" \
+<skill-dir>/scripts/kb-board BOARD_ID h new --as "@:geoyws/kanban/driver-2" --to "driver-2" \
   --reason session_end --summary "…" --intent "…" --next-action "…" --json
 ```
 
@@ -596,7 +624,7 @@ four yourself — a handoff without a head is one nobody can verify against a
 tree:
 
 ```bash
-kb h new --as "claude@driver-2" --to "driver-2" --reason session_end \
+kb h new --as "@:geoyws/kanban/driver-2" --to "driver-2" --reason session_end \
   --summary "…" --intent "…" --next-action "…" \
   --repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY" --json
 ```
@@ -791,7 +819,7 @@ When you claim or read a task whose previous holder died, the claim receipt and
 `kb ctx` carry an `orphanedFrom` block:
 
 ```json
-{ "agent": "claude@driver-2", "sessionID": "…", "expiredAt": 1788600000000,
+{ "agent": "@:geoyws/kanban/driver-2", "sessionID": "…", "expiredAt": 1788600000000,
   "lastCheckpointAt": 1788599100000, "worktree": "/root/work/src/kanban",
   "branch": "kanban-geoyws-driver", "headSha": "e87c5a6" }
 ```
@@ -926,18 +954,18 @@ minted, and write the plan note:
 ```json
 [
   { "name": "claim",
-    "arguments": { "id": "t-1a2b3c4d", "as": "claude@driver", "lane": "driver" } },
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver", "lane": "driver" } },
   { "name": "checkpoint",
     "arguments": { "id": "t-1a2b3c4d",
                    "lease": { "$ref": { "item": 0, "path": "/leaseToken" } },
-                   "as": "claude@driver", "state": "continue",
+                   "as": "@:geoyws/kanban/driver", "state": "continue",
                    "summary": "wrapper streams the items on one ssh",
                    "intent": "land the batched write surface",
                    "next-action": "document the envelope in the skill",
                    "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
                    "head": "da9a794", "dirty": "clean" } },
   { "name": "note",
-    "arguments": { "id": "t-1a2b3c4d", "kind": "plan", "as": "claude@driver",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan", "as": "@:geoyws/kanban/driver",
                    "text": "wrapper first, then the skill, then the tests" } }
 ]
 ```
