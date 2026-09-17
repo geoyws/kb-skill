@@ -196,6 +196,40 @@ kb ws det --root /retired/worktree --as "$AGENT" --json
 kb ws ls --all --json           # including detached aliases
 ```
 
+## Who you are — the lane is the worker
+
+George, 2026-09-17: *"u should be @:geoyws/acies/driver and it doesn't matter
+if youre codex or claude"*, and *"write to the skill for all lane executors to
+just claim the lane work even if it has codex or claude or anything and rename
+it to canonical @:geoyws/acies/driver etc"*.
+
+**An agent's `--as` is its lane, spelled `@:<team>/<board>/<lane>`** —
+`@:geoyws/acies/driver`, `@:geoyws/px/driver-3`. The harness never appears in
+it. `claude@driver` and `codex@driver` were one lane wearing two labels, and
+every check that compared whole actor strings turned that into a fake
+ownership boundary: a lane's own rows read as assigned to someone else, so its
+queue hid work from itself.
+
+Consequences, all of them load-bearing:
+
+- **Claim your lane's work regardless of the assignee's label.** An assignee
+  of `claude@…`, `codex@…` or `kimi@…` on your lane is you. Only a different
+  LANE is a different worker.
+- **Rename the rows you touch**, so the estate converges without a mass
+  rewrite: `kb t up <id> --assignee "@:<team>/<board>/<lane>" --as
+  "@:<team>/<board>/<lane>"` before you claim.
+- **A live lease still stops you.** Identity is not a licence to `--force`
+  over another session that is working right now.
+- **`geoyws` remains the owner identity**, and only it resolves or reopens an
+  attention row. A lane actor that resolves its own attention has forged the
+  owner's verdict.
+- Settled rows keep the harness-qualified actor they were written with. That
+  is history; do not rewrite it to look tidy.
+
+Measured on the acies board 2026-09-17: the ledger accepts both
+`--as "@:geoyws/acies/driver"` and `--as "geoyws/acies/driver"` on notes,
+updates and claims. Write the sigil form.
+
 ## Tag-scoped rules — what frames work
 
 Put short, non-secret operating constraints in the one registry-owned rules
@@ -313,6 +347,30 @@ refused) and it never has to be declared. Taking it costs him both an
 `--outcome` and a `--note`, which is the whole point — nothing closes an
 attention item without a verdict, so no lane inherits `Comment: do it after the
 pin lands` and has to guess whether that was a yes.
+
+**Every carded row carries an Active Comprehension Check (ACC) at the head of
+its body** (George, 2026-09-17: "I find myself not understanding the codebase
+enough"). You are the one with the file open, so you write the check; a
+walkthrough clerk only falls back to drafting one. It is the first lines of
+the body, in exactly this shape, so `/kb-att` can parse it and hide the answer:
+
+```
+ACC: <one question whose answer is a fact this decision turns on, ending in ?>
+  a) <plain statement>
+  b) <plain statement>
+  c) <plain statement>
+answer: b
+explain: <two sentences: why b is true, naming the component, file, host or tier; what changes if he believed a or c>
+```
+
+Two to four lettered answers, exactly one `answer:` key, `explain:` under 400
+characters. Ask about the world the choice depends on — which service answers
+the port, which tier the branch deploys to, what breaks while it waits — never
+about the row. The answer is a fact you measured, cited in the body's receipts,
+not your opinion; the recommendation is what the card's `--recommend` is for.
+The block is body text, so the web view can show the answer by scrolling: the
+native `check` field that hides it is kanban draft epic `e-5c8f7735`; until it
+ships, this block is the contract.
 
 ```bash
 kb att list --status open --limit 200 --json              # what is waiting on the owner
