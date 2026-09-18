@@ -1117,8 +1117,33 @@ question.
 the row unfiled and do not smuggle the subject into the title. Registering is one
 command and it is paid once per concept, by whoever names it first.
 
-Names are lowercase letters, digits and inner hyphens. `Infra` is refused rather
-than folded — folding would decide for you which spelling you meant.
+Names are lowercase letters, digits and inner hyphens, in segments joined by
+`/`. `Infra` is refused rather than folded — folding would decide for you which
+spelling you meant.
+
+**Tags are namespaced by estate: `<estate>/<subsystem>`** (George, 2026-09-18:
+"these tags need to be updated to be namespaced e.g. IFCA_ASSISTANT or
+UNUM_ASSISTANT", separator settled as `/` the same day). The estate is the
+board's owner, never the board name: `ifca/` for the IFCA boards (`px`,
+`prjx`, `fmx`, `hx`, `hrx`, `ix`, `mx-root`, `rentx-root`, `auditx-root`,
+`ifca-docs`, `rx`), `unum/` for `unum`, `geoyws/` for George's own boards
+(`kanban`, `acies`, `atmux`, `hax`, `medic`, `geoyws`, `dotfiles`, `ord`,
+`hom`, `vidgen`, `approval-classifier`, `superdriver`, `dshoc`). A bare `aix`
+means something different on `px`, `hx` and `prjx`; `ifca/aix` does not. The
+slash is the estate's hierarchy separator already (`@:geoyws/px/driver-3`),
+and it stays unambiguous when the subsystem itself carries hyphens
+(`ifca/aix-chat`). Prose renders it `:ifca/aix-chat`.
+
+Migration state: the served binary still refuses `/` in a tag name (measured
+2026-09-18: `lowercase letters, digits and inner hyphens only`), and the bare
+names are the registered vocabulary on every board until kanban epic
+`e-2faa0cf9` ships the validator + `kb tag rename` verb and migrates them
+(2026-09-18 inventory in that epic's body). Until then: **attach what
+`kb tag ls` shows**, never a hyphenated stand-in for the slash form — two
+spellings of one concept is exactly what the master file exists to prevent.
+Register a genuinely new concept under a bare name if you must, note the
+intended `<estate>/<name>` in its description, and the migration renames it.
+When the migration is done, this paragraph is deleted by that epic's sweep task.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
 subsystem as much as the task it produces does.
