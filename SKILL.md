@@ -307,6 +307,17 @@ would overwrite who settled it and when, which is the part worth keeping. Open
 items list **oldest first** — an unanswered question does not get less urgent by
 being ignored.
 
+A reference that arrives **after** an item is resolved — an external issue key,
+a receipt, a later commit — is not written onto the card, and `att resolve` on
+a resolved item is refused rather than reopened for it. Record it as a note on
+the task the item was raised for (or on the task the receipt belongs to),
+citing the item by id: `kb note <task-id> "PAI-246 is the verified receipt for
+a-9ae089d1" --as "$AGENT" --kind evidence --json`. The note is searchable by
+the id, the card keeps its decision, actor and timestamps untouched, and
+`kb att list --status resolved` still reads as what was decided when. There is
+no annotation verb on resolved attention, on purpose (decided by George,
+2026-09-14).
+
 Still surface the item in your reply as well. The board makes it survive; the
 reply makes the owner see it now. In one and not the other is a bug.
 
