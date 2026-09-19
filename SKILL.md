@@ -439,6 +439,9 @@ successor `cd`s from the record and checks the tree against it, rather than the
 path ever having been the lookup key. `h ls` is capped at 100 without
 `--limit` and refuses past that, naming the flag.
 
+A task can be **restricted to models**: `kb h accept --model NAME` is checked
+against the task's list the same way a claim is.
+
 Handoffs are **history**: removing a task drops the link and keeps the account.
 
 ## Working a task
@@ -455,6 +458,20 @@ kb hb <id> --lease "$TOKEN" --lease-minutes 30     # renew
 kb cp <id> --lease "$TOKEN" --as "$AGENT" --state continue \
   --summary "…" --intent "…" --next-action "…" --json
 kb rel <id> --lease "$TOKEN"
+```
+
+A task can be **restricted to models** (ADR-049): a task that needs a
+capability only one model has must force the harness to run that model, so
+the restriction lives on the task row and the declaration lives on the claim.
+Model names are a free token validated by a regex, not a registry, so a typo
+restricts a task to a model nobody runs.
+
+```bash
+kb t new "Title" --allowed-model Astra --allowed-model Kimi --json  # repeatable; empty list is unrestricted
+kb t up <id> --allowed-model claude-fable-5-1 --json    # REPLACES the whole list
+kb t up <id> --clear-allowed-models --json              # together with --allowed-model, refused
+kb t ls --allowed-model Astra --json                    # filter
+kb claim <id> --as "$AGENT" --model Astra --json        # declares which model is claiming
 ```
 
 **Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
@@ -1285,6 +1302,12 @@ once a silent wrong answer.
   whole (ADR-037).
 - `--fields` naming a key the rows do not carry is refused listing the keys they
   do; `claim` needs `--with-claims`, `dependencies` needs `--with-relations`.
+- A restricted task refuses a claim that does not match: `task {id} is
+  restricted to models [{list}]; pass --model with one of them to claim it`
+  with no `--model`, and `task {id} is restricted to models [{list}]; model
+  {model} may not claim it` with a `--model` outside the list. `claim --next`
+  and `--candidates` never produce these refusals — they skip restricted rows
+  silently unless `--model` matches one.
 
 ## Reference
 
