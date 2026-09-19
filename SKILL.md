@@ -379,8 +379,11 @@ pin lands` and has to guess whether that was a yes.
 **Every carded row carries an Active Comprehension Check (ACC) at the head of
 its body** (George, 2026-09-17: "I find myself not understanding the codebase
 enough"). You are the one with the file open, so you write the check; a
-walkthrough clerk only falls back to drafting one. It is the first lines of
-the body, in exactly this shape, so `/kb-att` can parse it and hide the answer:
+walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
+quiz the row's own diagnosis, which "isn't helping my understanding of the
+codebase but asking me to diagnose issues"; a row without an `ACC:` block gets
+its card with no check). It is the first lines of the body, in exactly this
+shape, so `/kb-att` can parse it and hide the answer:
 
 ```
 ACC: <one question whose answer is a fact this decision turns on, ending in ?>
@@ -392,10 +395,15 @@ explain: <two sentences: why b is true, naming the component, file, host or tier
 ```
 
 Two to four lettered answers, exactly one `answer:` key, `explain:` under 400
-characters. Ask about the world the choice depends on — which service answers
-the port, which tier the branch deploys to, what breaks while it waits — never
-about the row. The answer is a fact you measured, cited in the body's receipts,
-not your opinion; the recommendation is what the card's `--recommend` is for.
+characters. Ask about **how the system works** — which component owns the
+behaviour and where it lives, which host or tier a thing runs on and why, what
+a flag or default controls — a fact he could reuse on the next row. Never ask
+about the row: not what you measured today, not what your sweep proved, not
+what the leaked thing signs. Test: if the answer is only knowable by having
+read this row, it is your diagnosis read back as a quiz — drop it. The answer
+is a fact you verified in the code or on the host, cited in the body's
+receipts, not your opinion; the recommendation is what the card's
+`--recommend` is for.
 The block is body text, so the web view can show the answer by scrolling: the
 native `check` field that hides it is kanban draft epic `e-5c8f7735`; until it
 ships, this block is the contract.
