@@ -401,9 +401,12 @@ kb h new <task-id> --lease "$TOKEN" --as "$AGENT" \
 A **session handoff** is about the work as a whole — no task, no lease. This is
 what a lane hands its successor. Through `kb-board`, run from inside the
 checkout: `--repo`, `--branch`, `--head` and `--dirty` are filled in from it.
+Address the successor by its full typed lane actor; a new bare `driver` or
+`driver-N` target is refused with the typed form to pass instead.
 
 ```bash
-<skill-dir>/scripts/kb-board BOARD_ID h new --as "claude@driver-2" --to "driver-2" \
+LANE_ACTOR="@:team/project/driver-2"
+<skill-dir>/scripts/kb-board BOARD_ID h new --as "claude@driver-2" --to "$LANE_ACTOR" \
   --reason session_end --summary "…" --intent "…" --next-action "…" --json
 ```
 
@@ -412,7 +415,7 @@ four yourself — a handoff without a head is one nobody can verify against a
 tree:
 
 ```bash
-kb h new --as "claude@driver-2" --to "driver-2" --reason session_end \
+kb h new --as "claude@driver-2" --to "$LANE_ACTOR" --reason session_end \
   --summary "…" --intent "…" --next-action "…" \
   --repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY" --json
 ```
@@ -426,18 +429,24 @@ lease exists only over a task and a task cannot be handed over without one.
 
 **Find one by lane, not by directory** — the point of the session form. A
 worktree gets recreated, a driver renumbered, a repo cloned to another box; a
-brief keyed to a path is then unreachable. The successor knows its project and
-its lane, so that is the key:
+brief keyed to a path is then unreachable. The successor knows its team,
+project, and lane, so its full typed actor is the key:
 
 ```bash
-kb h ls --project px-crm --status pending --to driver-2 --limit 200 --json
-kb h acc <id> --as driver-2 --json      # task lease when claimable; acknowledgement only when settled
+kb h ls --project px-crm --status pending --to "$LANE_ACTOR" --limit 200 --json
+kb h acc <id> --as "$LANE_ACTOR" --json # task lease when claimable; acknowledgement only when settled
 ```
 
 `--repo`, `--branch`, `--head` and `--dirty` ride inside the record, so the
 successor `cd`s from the record and checks the tree against it, rather than the
 path ever having been the lookup key. `h ls` is capped at 100 without
 `--limit` and refuses past that, naming the flag.
+
+Legacy drain only: `h ls --to driver-2` may find a stored pre-cutover bare
+target, and its matching full typed actor may accept it with
+`h acc <id> --as "$LANE_ACTOR"`. The row keeps the bare `toAgent` and records
+the full typed `acceptedBy`, preserving its history; never create another bare
+lane target.
 
 Handoffs are **history**: removing a task drops the link and keeps the account.
 
@@ -543,12 +552,12 @@ and compare `git rev-parse HEAD` against `headSha` before trusting either.
 ### Resuming, in order
 
 1. `kb h ls --project P --status pending --json` — **no `--to`**. Every session
-   handoff has an addressee (`h new` refuses one without `--to`), but the
-   addressee is a lane name, and lanes get renumbered and recreated. Filtering
-   with `--to driver-2` hides a brief left for `driver-3`, which is precisely
-   the brief you need after a renumber. List them all and read the addressees.
-   More than one match is a stop, not a pick.
-2. `kb h acc <id> --as "$LANE" --json`. On a task-form handoff this mints the
+   handoff has an addressee (`h new` refuses one without `--to`), but lanes get
+   renumbered and recreated. Filtering with `--to "$LANE_ACTOR"` hides a brief
+   left for another lane actor, which is precisely the brief you need after a
+   renumber. List them all and read the full typed addressees (or a bare one on
+   a legacy row). More than one match is a stop, not a pick.
+2. `kb h acc <id> --as "$LANE_ACTOR" --json`. On a task-form handoff this mints the
    lease and sets `in_progress` in one transaction, so when it succeeds you do
    not also run `claim --next`. A session handoff mints no lease by design.
 3. `claim --next` **ignores pending handoffs**, and a task a handoff returned to
