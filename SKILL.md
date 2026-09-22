@@ -409,7 +409,9 @@ read this row, it is your diagnosis read back as a quiz — drop it. The answer
 is a fact you verified in the code or on the host, cited in the body's
 receipts, not your opinion; the recommendation is what the card's
 `--recommend` is for.
-Only the raiser may author or update the check, and once an answer is recorded
+Only the raiser may author or update the check (`t-1227a592`: an update carrying any
+`--check*` flag from another actor is refused naming the raiser, and `geoyws` gets no
+exception), and once an answer is recorded
 the definition is closed to edits. Every read carries the check redacted —
 question, choices and about, never the answer or the explanation — so
 `/kb-att` asks it blind and the resolve grades it; only the raise receipt
