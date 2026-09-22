@@ -337,7 +337,13 @@ kb att raise "<verdict-first body — receipts, paths, the concrete next action>
   --consequence "<key>=<what happens if it is picked, and what it costs>" \
   --choice "<key>=<verb-phrase label>|reject" \
   --consequence "<key>=<what happens if it is picked, and what it costs>" \
-  --recommend <key> --json
+  --recommend <key> \
+  --check "<the fact this decision turns on, as one question ending in ?>" \
+  --check-choice "<key>=<plain statement>" \
+  --check-choice "<key>=<plain statement>" \
+  --check-answer <key> \
+  --check-explain "<why the answer is true, and what changes under the others>" \
+  --check-about <subject> --json
 ```
 
 | flag | what goes in it |
@@ -376,26 +382,25 @@ refused) and it never has to be declared. Taking it costs him both an
 attention item without a verdict, so no lane inherits `Comment: do it after the
 pin lands` and has to guess whether that was a yes.
 
-**Every carded row carries an Active Comprehension Check (ACC) at the head of
-its body** (George, 2026-09-17: "I find myself not understanding the codebase
+**Every carded row carries an Active Comprehension Check (ACC) on its card**
+(George, 2026-09-17: "I find myself not understanding the codebase
 enough"). You are the one with the file open, so you write the check; a
 walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
 quiz the row's own diagnosis, which "isn't helping my understanding of the
-codebase but asking me to diagnose issues"; a row without an `ACC:` block gets
-its card with no check). It is the first lines of the body, in exactly this
-shape, so `/kb-att` can parse it and hide the answer:
+codebase but asking me to diagnose issues"; a row with no `check` field gets
+its card with no check). Author it as flags, all or none — never as prose in
+the body, where the web view would show the answer beside the question:
 
-```
-ACC: <one question whose answer is a fact this decision turns on, ending in ?>
-  a) <plain statement>
-  b) <plain statement>
-  c) <plain statement>
-answer: b
-explain: <two sentences: why b is true, naming the component, file, host or tier; what changes if he believed a or c>
-```
+| flag | what goes in it |
+|---|---|
+| `--check` | One question, present tense, ending in `?`: the fact this decision turns on, in his terms. |
+| `--check-choice KEY=LABEL` | Two to four, repeatable, one token so key and label cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the check, and never shown to him; the label is a plain statement, at most 60 characters, carrying no `\|`. |
+| `--check-answer KEY` | Exactly one, naming a declared choice key. It is the fact, not your opinion. |
+| `--check-explain TEXT` | At most 400 characters, two sentences: why the answer is true, naming the component, file, host or tier; what changes if he believed the others. |
+| `--check-about SUBJECT` | The durable subject this teaches: a file path (with `/` or an extension), an `@@host` or `@_tier` sigil, an `UPPER_SNAKE` setting, or a `--flag`. |
 
-Two to four lettered answers, exactly one `answer:` key, `explain:` under 400
-characters. Ask about **how the system works** — which component owns the
+Two to four `--check-choice` entries, exactly one `--check-answer` naming a
+declared key, `--check-explain` under 400 characters. Ask about **how the system works** — which component owns the
 behaviour and where it lives, which host or tier a thing runs on and why, what
 a flag or default controls — a fact he could reuse on the next row. Never ask
 about the row: not what you measured today, not what your sweep proved, not
@@ -404,9 +409,12 @@ read this row, it is your diagnosis read back as a quiz — drop it. The answer
 is a fact you verified in the code or on the host, cited in the body's
 receipts, not your opinion; the recommendation is what the card's
 `--recommend` is for.
-The block is body text, so the web view can show the answer by scrolling: the
-native `check` field that hides it is kanban draft epic `e-5c8f7735`; until it
-ships, this block is the contract.
+Only the raiser may author or update the check, and once an answer is recorded
+the definition is closed to edits. Every read carries the check redacted —
+question, choices and about, never the answer or the explanation — so
+`/kb-att` asks it blind and the resolve grades it; only the raise receipt
+echoes the full definition. The `ACC:` body block this replaces is retired:
+never write one, and never parse one back out.
 
 ```bash
 kb att list --status open --limit 200 --json              # what is waiting on the owner
