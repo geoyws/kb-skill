@@ -216,8 +216,8 @@ kb r new "Kanban only." --board kanban --as "$AGENT" --json
 kb r new "All except project-a." --except-board project-a --as "$AGENT" --json
 kb r up r-12345678 --board kanban --as "$AGENT" --json
 
-# Lowercase subsystem tags intersect the board selector.
-kb r new "Queuer only." --tag queuer --as "$AGENT" --json
+# Namespaced subsystem tags intersect the board selector.
+kb r new "Queuer only." --tag geoyws/queuer --as "$AGENT" --json
 kb r up r-12345678 --clear-tags --as "$AGENT" --json
 ```
 
@@ -242,7 +242,7 @@ value in the plaintext board database.**
 Every rule carries one `tags` array. `ALL` is explicit and default,
 `ONLY:<name>` is a named include, and `EXCEPT:<name>` subtracts from `ALL`.
 Repeatable `--board`/`--except-board` flags validate exact board names.
-Lowercase `--tag` selectors must exist on an active board; several are an OR
+Namespaced `--tag` selectors must exist on an active board; several are an OR
 set intersected with the board selector. Task claim/context/handoff injection
 requires a matching task tag. Taskless session handoffs and web board pages
 omit subsystem-scoped rules. See ADR-027.
@@ -319,7 +319,7 @@ plus the one registry rules document. Each result has a stable
 ```bash
 kb search "resume the release handoff" --project kanban --json
 kb search t-12345678 --source task --limit 5 --max-chars 4000 --json
-kb search "authentication recovery" --tag auth --all-boards --json
+kb search "authentication recovery" --tag geoyws/auth --all-boards --json
 kb search "retired decision" --all --json       # include archived history
 ```
 
@@ -474,7 +474,7 @@ To inspect the same scheduler queue without taking a lease:
 ```bash
 kb claim --candidates --as "$AGENT" --project NAME \
   [--lane LANE] [--role ROLE] [--caller-scope driver] \
-  [--no-cross-lane] [--allow-reassign] [--tag NAME] [--limit N] --json
+  [--no-cross-lane] [--allow-reassign] [--tag ESTATE/SUBSYSTEM] [--limit N] --json
 ```
 
 Candidate inspection is strictly read-only and never returns lease tokens.
@@ -665,35 +665,42 @@ task contains nothing.
 
 ## Tags — which part of the system this is about
 
-**Tag your rows.** A board that cannot say whether a task is infra, queuer or
-askie makes you read titles to find out, and you are the one who knows.
+**Tag your rows.** A board that cannot say whether a task is `geoyws/infra`,
+`geoyws/queuer` or `geoyws/askie` makes you read titles to find out, and you are
+the one who knows.
 
-Examples below use bare tag names in storage and CLI. Prose may render a
-registered Kanban tag as `:slug`, but storage and CLI always use the bare slug
-(`--tag slug`). The colon is only presentation notation; do not create another
-sigil namespace inside KB tags.
+Tags are namespaced `<estate>/<subsystem>` in storage and CLI
+(`--tag estate/subsystem`) — slash spelling only, per map rule r-98ff7ad2. The
+hyphen form (`geoyws-orchestration`) is superseded; never use it. Estate-neutral
+examples below use `geoyws/`: the package ships estate-neutral, so examples need
+a concrete estate, and the author's own estate is the illustration — not a
+default the consumer inherits. Prose renders a registered tag as
+`:estate/subsystem` (e.g. `:geoyws/infra`); the colon is only presentation
+notation, do not create another sigil namespace inside KB tags. A tag already in
+use moves to its namespaced name with `kb tag rename`.
 
 ```bash
 kb tag ls --json                                   # the vocabulary, with use counts
-kb tag new infra --description "hosts, containers, deploys" --as "$AGENT" --json
-kb t new "Retry backoff" --tag queuer --tag infra --json
-kb t up <id> --tag queuer --as "$AGENT" --json     # replaces, does not append
+kb tag new geoyws/infra --description "hosts, containers, deploys" --as "$AGENT" --json
+kb t new "Retry backoff" --tag geoyws/queuer --tag geoyws/infra --json
+kb t up <id> --tag geoyws/queuer --as "$AGENT" --json     # replaces, does not append
 kb t up <id> --clear-tags --as "$AGENT" --json     # the only way to say "none"
-kb t ls --status todo --tag queuer --json          # open work in one subsystem
+kb t ls --status todo --tag geoyws/queuer --json          # open work in one subsystem
 ```
 
 **Read `kb tag ls` before you tag.** The vocabulary is a per-board **master
 file**: only a registered tag can be attached, and attaching an unregistered one
 is refused naming the nearest match. That refusal is the feature — it is what
-stops `infra`, `Infra` and `infrastructure` becoming three answers to one
-question.
+stops `geoyws/infra`, `geoyws/Infra` and `geoyws/infrastructure` becoming three
+answers to one question.
 
 **If nothing fits, register it** with a description, then use it. Do not leave
 the row unfiled and do not smuggle the subject into the title. Registering is one
 command and it is paid once per concept, by whoever names it first.
 
-Names are lowercase letters, digits and inner hyphens. `Infra` is refused rather
-than folded — folding would decide for you which spelling you meant.
+Names are `<estate>/<subsystem>`: each segment is lowercase letters, digits and
+inner hyphens, joined by one `/`. `geoyws/Infra` is refused rather than folded
+— folding would decide for you which spelling you meant.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
 subsystem as much as the task it produces does.
@@ -703,9 +710,10 @@ on it; a tag is *what part of the system this touches*. Putting a subsystem in
 `lane` silently changes which driver receives the work.
 
 `@:team` is atmux routing identity, not a tag. Do not encode board, lane, team,
-host, tier, actor, priority, or typed row IDs as tags. In particular, `:module`
-means the registered KB tag `module`, while `@:team` names an atmux team; they
-are different types and must never be normalized into one another.
+host, tier, actor, priority, or typed row IDs as tags. In particular,
+`:geoyws/module` means the registered KB tag `geoyws/module`, while `@:team`
+names an atmux team; they are different types and must never be normalized into
+one another.
 
 Retiring a tag rows still carry is refused and says how many; `--force` strips it
 from them and records the count in the trail.
@@ -854,7 +862,7 @@ board path or root in the record.
 
 ```bash
 kb subscription add --project NAME --id sub-codex-queue \
-  --subject task:t-12345678 --kind checkpoint_added --tag orchestration \
+  --subject task:t-12345678 --kind checkpoint_added --tag geoyws/orchestration \
   --consumer codex.queue --action enqueue-turn \
   --timeout-ms 30000 --max-retries 3 --rate-per-minute 60 \
   --max-concurrency 1 --secret-ref codex_queue_token --as "$OWNER" --json
@@ -1105,8 +1113,8 @@ once a silent wrong answer.
 - `restore` takes the data root exclusively and refuses while anything else
   holds it.
 - A tag that is not in the board's master file is refused on attach **and on
-  filter**. `kb t ls --tag infr` does not answer "nothing" — an empty list reads
-  like a finding, and that is how a typo becomes a wrong answer somebody acts on.
+  filter**. `kb t ls --tag geoyws/infr` does not answer "nothing" — an empty list
+  reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
 - A capped listing with more rows than the default the caller never set is
@@ -1125,6 +1133,6 @@ attention), ADR-013 (plans are epics), ADR-015 (tags are a master file),
 ADR-016 (the web view), ADR-017 (sitreps), ADR-018 (the original board-local
 rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
 tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
-lowercase subsystem tags.
+namespaced `<estate>/<subsystem>` tags.
 ADR-021 keeps settled history while removing it from operational indexes.
 ADR-037 makes a capped listing refuse a default it would exceed.
