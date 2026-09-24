@@ -409,6 +409,34 @@ read this row, it is your diagnosis read back as a quiz — drop it. The answer
 is a fact you verified in the code or on the host, cited in the body's
 receipts, not your opinion; the recommendation is what the card's
 `--recommend` is for.
+
+**George's bar, 2026-09-24 ("ACC is asking stupid questions"; "how would I
+know what 00164 is? don't expect me to know!"):** a check is asked of someone
+who has NOT read the ADR, the Acies card, the gap register or this row. So:
+
+- Never name a document by number or id in the question (`ADR-GLOBAL-00164`,
+  `D-05`, `HR-GAP-06`, `PAY-GAP-07`, `business.md:4329`). If the question needs
+  the reference to make sense, it is about the document, not the system.
+- Never ask what a proposal, card or register *says* ("Under the acies-hr
+  card, where does X live?", "Does this ADR set the numbers itself?"). Those are
+  reading-comprehension questions about text he has not read. Ask instead
+  what the running system does today, in the code or on the host, which he
+  can reason about from how the product works.
+- The subject is Unum or Acies as George uses it: a behaviour he can see, a
+  place data lives, a host or tier, a flag. Good: "Who fills in an employee's
+  gross, deductions and net pay in Unum HR today?" (`a-user`/`the-system`).
+  Bad: "What happens if acies-hr tries to lock payroll inputs with no provider
+  adapter?" — that is the card's rule, invisible until you read the card.
+- Both wrong answers must be plausible to someone who knows the product; a
+  question whose wrong option is absurd teaches nothing.
+- If no such question exists for the decision, raise the card **with no
+  check**. A missing check is reported as debt; a document-trivia check is a
+  defect the clerk skips at read time and names in the report.
+
+A clerk walking cards (`/kb-att`, `/kb-acc`) applies the same test at read
+time: a check that names a document id or asks what a card says is not asked,
+the card goes up without it, and the row is counted under "trivia checks
+skipped" in the report.
 Only the raiser may author or update the check (`t-1227a592`: an update carrying any
 `--check*` flag from another actor is refused naming the raiser, and `geoyws` gets no
 exception), and once an answer is recorded
