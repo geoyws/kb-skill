@@ -412,11 +412,32 @@ receipts, not your opinion; the recommendation is what the card's
 Only the raiser may author or update the check (`t-1227a592`: an update carrying any
 `--check*` flag from another actor is refused naming the raiser, and `geoyws` gets no
 exception), and once an answer is recorded
-the definition is closed to edits. Every read carries the check redacted —
-question, choices and about, never the answer or the explanation — so
-`/kb-att` asks it blind and the resolve grades it; only the raise receipt
-echoes the full definition. The `ACC:` body block this replaces is retired:
-never write one, and never parse one back out.
+the definition is closed to edits. Every pre-answer read carries the check
+redacted — question, choices and about, never the answer or the explanation —
+whether the row is open or resolved; only the raise receipt echoes the full
+definition.
+The `ACC:` body block this replaces is retired: never write one, and never
+parse one back out.
+
+**The check is asked by `/kb-acc`, not `/kb-att`** (George, 2026-09-24: "when
+i'm in a hurry to clear atts i don't want to do accs"). A resolve no longer
+needs it: `att resolve` on a row whose check is unanswered succeeds and leaves
+the check pending — still redacted, still answerable (kanban t-1aa9f553).
+`/kb-acc` later asks it blind and records the key he picked on its own:
+
+```bash
+kb att check <id> --as geoyws --key <key> --json   # geoyws or the raiser; open or resolved row
+```
+
+It goes through the same answer law as the web card: a check is answered
+exactly once, on an open or a resolved row, and a second answer is refused;
+the row's status does not change, and `att reopen` clears the result. The
+`--json` receipt is the row in its post-answer projection, whose `check` now
+carries `answer` (the right key), `explanation`, `answered` (the key he
+picked), `correct` and `answeredAt` beside `question`, `choices` and `about`.
+Without `--json` it prints three lines: `ACC: pass` or `ACC: miss on <key>`,
+then `answer: <key> — <label>`, then `why: <explanation>`. A pending check reads as
+`.check != null and .check.answered == null`.
 
 ```bash
 kb att list --status open --limit 200 --json              # what is waiting on the owner
@@ -426,6 +447,7 @@ kb att list --status resolved --fields id,decision,resolution --limit 200 --json
 
 kb att resolve <id> --as geoyws --choice keep-parked --json                        # an authored choice
 kb att resolve <id> --as geoyws --choice custom --outcome defer --note "…" --json  # the free-text answer
+kb att check <id> --as geoyws --key sign-server --json                            # answer the row's comprehension check
 ```
 
 `--choice` is required on `resolve`. `--note` is optional for an authored
