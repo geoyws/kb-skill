@@ -29,5 +29,6 @@ subscription
 tag
 task
 todo
+transact
 watch
 workspace

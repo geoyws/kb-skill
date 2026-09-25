@@ -196,6 +196,68 @@ kb ws det --root /retired/worktree --as "$AGENT" --json
 kb ws ls --all --json           # including detached aliases
 ```
 
+## Who you are — the lane is the worker
+
+George, 2026-09-17: *"u should be @:geoyws/acies/driver and it doesn't matter
+if youre codex or claude"*, and *"write to the skill for all lane executors to
+just claim the lane work even if it has codex or claude or anything and rename
+it to canonical @:geoyws/acies/driver etc"*.
+
+**An agent's `--as` is its lane, spelled `@:<team>/<board>/<lane>`** —
+`@:geoyws/acies/driver`, `@:geoyws/px/driver-3`. The harness never appears in
+it. `claude@driver` and `codex@driver` were one lane wearing two labels, and
+every check that compared whole actor strings turned that into a fake
+ownership boundary: a lane's own rows read as assigned to someone else, so its
+queue hid work from itself.
+
+Consequences, all of them load-bearing:
+
+- **Claim your lane's work regardless of the assignee's label.** An assignee
+  of `claude@…`, `codex@…` or `kimi@…` on your lane is you. Only a different
+  LANE is a different worker.
+- **Rename the rows you touch**, so the estate converges without a mass
+  rewrite: `kb t up <id> --assignee "@:<team>/<board>/<lane>" --as
+  "@:<team>/<board>/<lane>"` before you claim.
+- **A live lease still stops you.** Identity is not a licence to `--force`
+  over another session that is working right now.
+- **`geoyws` remains the owner identity**, and only it resolves or reopens an
+  attention row. A lane actor that resolves its own attention has forged the
+  owner's verdict.
+- Settled rows keep the harness-qualified actor they were written with. That
+  is history; do not rewrite it to look tidy.
+
+Measured on the acies board 2026-09-17: the ledger accepts both
+`--as "@:geoyws/acies/driver"` and `--as "geoyws/acies/driver"` on notes,
+updates and claims. Write the sigil form.
+
+**The longer name wins, and the lane field lives alongside it** (George,
+2026-09-17, reconciling this section with the sigil rule in the root
+`AGENTS.md`). Where a short and a long spelling of one identity are both
+defensible, write the long one — so `@:geoyws/acies/driver`, never `@:geoyws`
+and never `driver`. And the actor never *replaces* the lane field:
+
+```bash
+kb att raise "…" --as "@:geoyws/px/driver-3" --lane driver-3 …
+kb sr new "…"   --as "@:geoyws/px/driver-3" --lane driver-3
+```
+
+Both, never either. They answer different questions and are read by different
+things: the **actor** is who wrote the row, and the **lane field** is what the
+row belongs to — and the field is what `att ls --lane`, `sr ls --lane` and
+every lane queue filter actually match on. A row whose actor names its lane
+but whose `--lane` is empty is invisible to its own lane's queue, which is the
+same failure the harness-qualified actor caused, wearing different clothes.
+
+A pane that holds no driver lane repeats its own derived team token in the
+lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
+board — so the shape never degrades to a bare team and a reader always knows
+all three answers were given. The board segment is the board being written to,
+not the agent's home board.
+
+Nothing verifies the two agree today. If you write `--as
+"@:geoyws/px/driver-3" --lane driver-2`, the ledger stores both without
+complaint — see the `kanban` board for the refusal that should exist.
+
 ## Tag-scoped rules — what frames work
 
 Put short, non-secret operating constraints in the one registry-owned rules
@@ -255,16 +317,235 @@ on leaves no trace it was ever raised, so the same question gets asked again
 three sessions later — or worse, quietly answered by an agent that had no
 business deciding it.
 
-```bash
-kb att raise "<verdict-first, ≤2 sentences, with the concrete next action>" \
-  --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> --json
+**Raising an item is writing a decision card.** A card is a question, the
+context needed to answer it, and two to four authored choices, exactly one of
+them marked as your recommendation. The old convention — write the options into
+the body as prose and let the owner reconstruct them — is over: options in
+prose have to be parsed back out of English by whoever reads them, and the
+free-text answer they get back carries no verdict a lane can branch on. Author
+the choices as flags and the answer comes back machine-readable. The body is
+untouched by all of this and stays the long form — receipts, SHA256s, absolute
+paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
+(ADR-042).
 
-kb att list --status open --limit 200 --json              # what is waiting on the owner
-kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
-kb att list --status open --fields id,kind,raisedBy,taskID --limit 200 --json   # keys only; or --no-body
-kb att list --status resolved --limit 200 --json          # the historical trail
-kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
+```bash
+kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
+  --as "@:<team>/<board>/<lane>" --lane <lane> --kind blocking --task <ID if it is about one> \
+  --question "<the decision, one sentence, ending in ?>" \
+  --context "<what is true now, what is blocked, what waiting costs>" \
+  --choice "<key>=<verb-phrase label>|approve" \
+  --consequence "<key>=<what happens if it is picked, and what it costs>" \
+  --choice "<key>=<verb-phrase label>|reject" \
+  --consequence "<key>=<what happens if it is picked, and what it costs>" \
+  --recommend <key> \
+  --check "<the fact this decision turns on, as one question ending in ?>" \
+  --check-choice "<key>=<plain statement>" \
+  --check-choice "<key>=<plain statement>" \
+  --check-answer <key> \
+  --check-explain "<why the answer is true, and what changes under the others>" \
+  --check-about <subject> --json
 ```
+
+| flag | what goes in it |
+|---|---|
+| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "hax has no logged-in Claude account — assign a seat, or drop that receipt?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
+| `--context` | Two to five plain sentences, at most 800 characters, in this order: what is true now, what is blocked and how much waits on it, what waiting costs. If waiting costs nothing, say so — that is a legitimate answer and it changes the decision. |
+| `--choice KEY=LABEL\|OUTCOME` | Two to four, repeatable, one token so the three parts cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the item, and never shown to him. The label is the button text: a verb phrase starting with the verb, at most 60 characters, carrying no `|`. The outcome is one of `approve`, `reject`, `defer`, `other` — the machine-readable verdict a lane acts on, where the label is for the human. |
+| `--consequence KEY=TEXT` | One per choice, required on every one: a single sentence, at most 200 characters, saying what happens and what it costs, in that order. "Approved" is not a consequence; "the receipt is retried the same day, about ten minutes of your time plus the seat's monthly cost" is. |
+| `--recommend KEY` | Exactly one choice, and always one. It is your opinion. An agent that cannot pick one has not finished thinking about the question and should raise a smaller one. |
+
+`--question` and `--context` are one card: give both or neither.
+
+**Write about the world, not about the board.** "The lane", "the row", "the
+executor", "the driver", "the item" and every other word for the machinery are
+banned from the question and the context — he is deciding about the world, not
+about the ledger. Typed ids (`a-*`, `t-*`, `e-*`, `d-*`) belong in a trailing
+`References:` clause and never mid-sentence. Required instead: numbers with
+units (`ten minutes`, `43 items`, `HTTP 401`), absolute dates (`2026-09-05`,
+never "last week"), full nouns wherever a pronoun could drift, and second
+person for anything only he can do — "only you can finish the browser login".
+
+A `defer` consequence must name **what brings the question back**: a date, an
+event, or a task that will be filed. "Later" with no trigger is how an item is
+deferred into oblivion. And never put a credential value in a card; name the
+store entry.
+
+**Do not invent choices.** If the honest answer set really is "do it / do not
+do it", author none — pass `--question` and `--context` alone and let the
+default pair below serve. Two choices that are approve and reject wearing new
+labels are worse than the pair nobody claimed to have authored.
+
+**The free-text answer is always offered, and it carries a verdict.** `custom`
+is reserved for it: it is never one of your choices (`--choice custom=…` is
+refused) and it never has to be declared. Taking it costs him both an
+`--outcome` and a `--note`, which is the whole point — nothing closes an
+attention item without a verdict, so no lane inherits `Comment: do it after the
+pin lands` and has to guess whether that was a yes.
+
+**Every carded row carries an Active Comprehension Check (ACC) on its card**
+(George, 2026-09-17: "I find myself not understanding the codebase
+enough"). You are the one with the file open, so you write the check; a
+walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
+quiz the row's own diagnosis, which "isn't helping my understanding of the
+codebase but asking me to diagnose issues"; a row with no `check` field gets
+its card with no check). Author it as flags, all or none — never as prose in
+the body, where the web view would show the answer beside the question:
+
+| flag | what goes in it |
+|---|---|
+| `--check` | One question, present tense, ending in `?`: the fact this decision turns on, in his terms. |
+| `--check-choice KEY=LABEL` | Two to four, repeatable, one token so key and label cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the check, and never shown to him; the label is a plain statement, at most 60 characters, carrying no `\|`. |
+| `--check-answer KEY` | Exactly one, naming a declared choice key. It is the fact, not your opinion. |
+| `--check-explain TEXT` | At most 400 characters, two sentences: why the answer is true, naming the component, file, host or tier; what changes if he believed the others. |
+| `--check-about SUBJECT` | The durable subject this teaches: a file path (with `/` or an extension), an `@@host` or `@_tier` sigil, an `UPPER_SNAKE` setting, or a `--flag`. |
+
+Two to four `--check-choice` entries, exactly one `--check-answer` naming a
+declared key, `--check-explain` under 400 characters. Ask about **how the system works** — which component owns the
+behaviour and where it lives, which host or tier a thing runs on and why, what
+a flag or default controls — a fact he could reuse on the next row. Never ask
+about the row: not what you measured today, not what your sweep proved, not
+what the leaked thing signs. Test: if the answer is only knowable by having
+read this row, it is your diagnosis read back as a quiz — drop it. The answer
+is a fact you verified in the code or on the host, cited in the body's
+receipts, not your opinion; the recommendation is what the card's
+`--recommend` is for.
+
+**George's bar, 2026-09-24 ("ACC is asking stupid questions"; "how would I
+know what 00164 is? don't expect me to know!"):** a check is asked of someone
+who has NOT read the ADR, the Acies card, the gap register or this row. So:
+
+- Never name a document by number or id in the question (`ADR-GLOBAL-00164`,
+  `D-05`, `HR-GAP-06`, `PAY-GAP-07`, `business.md:4329`). If the question needs
+  the reference to make sense, it is about the document, not the system.
+- Never ask what a proposal, card or register *says* ("Under the acies-hr
+  card, where does X live?", "Does this ADR set the numbers itself?"). Those are
+  reading-comprehension questions about text he has not read. Ask instead
+  what the running system does today, in the code or on the host, which he
+  can reason about from how the product works.
+- The subject is Unum or Acies as George uses it: a behaviour he can see, a
+  place data lives, a host or tier, a flag. Good: "Who fills in an employee's
+  gross, deductions and net pay in Unum HR today?" (`a-user`/`the-system`).
+  Bad: "What happens if acies-hr tries to lock payroll inputs with no provider
+  adapter?" — that is the card's rule, invisible until you read the card.
+- Both wrong answers must be plausible to someone who knows the product; a
+  question whose wrong option is absurd teaches nothing.
+- If no such question exists for the decision, raise the card **with no
+  check**. A missing check is reported as debt; a document-trivia check is a
+  defect the clerk skips at read time and names in the report.
+
+A clerk walking cards (`/kb-att`, `/kb-acc`) applies the same test at read
+time: a check that names a document id or asks what a card says is not asked,
+the card goes up without it, and the row is counted under "trivia checks
+skipped" in the report.
+Only the raiser may author or update the check (`t-1227a592`: an update carrying any
+`--check*` flag from another actor is refused naming the raiser, and `geoyws` gets no
+exception), and once an answer is recorded
+the definition is closed to edits. Every pre-answer read carries the check
+redacted — question, choices and about, never the answer or the explanation —
+whether the row is open or resolved; only the raise receipt echoes the full
+definition.
+The `ACC:` body block this replaces is retired: never write one, and never
+parse one back out.
+
+**The check is asked by `/kb-acc`, not `/kb-att`** (George, 2026-09-24: "when
+i'm in a hurry to clear atts i don't want to do accs"). A resolve no longer
+needs it: `att resolve` on a row whose check is unanswered succeeds and leaves
+the check pending — still redacted, still answerable (kanban t-1aa9f553).
+`/kb-acc` later asks it blind and records the key he picked on its own:
+
+```bash
+kb att check <id> --as geoyws --key <key> --json   # geoyws or the raiser; open or resolved row
+```
+
+It goes through the same answer law as the web card: a check is answered
+exactly once, on an open or a resolved row, and a second answer is refused;
+the row's status does not change, and `att reopen` clears the result. The
+`--json` receipt is the row in its post-answer projection, whose `check` now
+carries `answer` (the right key), `explanation`, `answered` (the key he
+picked), `correct` and `answeredAt` beside `question`, `choices` and `about`.
+Without `--json` it prints three lines: `ACC: pass` or `ACC: miss on <key>`,
+then `answer: <key> — <label>`, then `why: <explanation>`. A pending check reads as
+`.check != null and .check.answered == null`.
+
+```bash
+kb att list --status open --limit 200 --json              # what is waiting on the owner
+kb att list --status open --fields id,priority,question,choices --limit 200 --json   # the cards, without the bodies
+kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
+kb att list --status resolved --fields id,decision,resolution --limit 200 --json     # what he decided, and how
+
+kb att resolve <id> --as geoyws --choice keep-parked --json                        # an authored choice
+kb att resolve <id> --as geoyws --choice custom --outcome defer --note "…" --json  # the free-text answer
+kb att check <id> --as geoyws --key sign-server --json                            # answer the row's comprehension check
+```
+
+`--choice` is required on `resolve`. `--note` is optional for an authored
+choice, because the label and its consequence are already the record, and
+required for `custom`; `--outcome` applies to `custom` alone. On the web the
+same holds: the card carries one reply field, and whatever is typed in it is
+sent with whichever choice is clicked - so a lane reading `decision.note`
+beside an authored `choice` is reading what geoyws added to his click, and
+should act on it before the consequence text. A `--choice`
+naming a key the row does not carry is refused naming the keys it has, and that
+is what makes a stale card safe: if his browser is still showing a card that a
+later `att update` replaced, the click names a key that no longer exists and is
+refused by name rather than mapped onto whatever now sits in that position.
+
+**`decision` is what a lane reads back**, not the prose:
+`{"choice": "keep-parked", "outcome": "defer", "note": null, "by": "geoyws",
+"at": 1788805112431}`. Branch on `outcome`, quote the `choice` when you report,
+and treat `resolution` as derived — the writer composes it as
+`Decision: <label>. <consequence>`, plus a second `Note: <note>` line when a
+note was given, so no caller can leave a different trail. `Comment: ` is the
+pre-2026-09-08 spelling and now appears only on rows settled before then. Every
+choice settles the item, `defer` included: a deferral is a verdict, and
+`kb att reopen` is the way back.
+
+**An item with no card reads as the default pair.** A row that authored no
+choices is served — CLI, MCP and web alike — as `approve` ("Approve - proceed")
+and `reject` ("Reject - do not proceed") with **no recommendation**, because
+nobody authored that pair and nothing may claim it was recommended, and its
+body serves as both question and context. That is the only shape in the model
+with zero recommendations. `kb att update <id> --as "@:<team>/<board>/<lane>"` takes the
+same five card flags, so an item still open can be given a card later, and
+`--clear-card` returns it to the default pair. A resolved item's card is
+history and is refused.
+
+**A card, written out.** `a-347ff24c` was a P0 whose body ran 1,235 characters
+of receipts — two SHA256s, a deployment id, a commit sha, an absolute
+executable path — and which sat at the top of "Needs you" for three days after
+being parked once with no trigger to bring it back. The same item raised as a
+card:
+
+```bash
+kb att raise "BLOCKED — HAX Claude Code 2.1.236 is installed at /root/.local/share/claude/versions/2.1.236 and host dispatchers.json binds claude.print/start-readonly-turn to that exact release adapter, but the stored OAuth access token is revoked and a real serialized no-tools turn fails HTTP 401. Resolve only after the installed adapter returns its exact live AdapterResponse for a real Claude acknowledgement; do not work around authentication." \
+  --as "@:geoyws/hax/driver" --lane driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
+  --question "hax has no logged-in Claude account, so the pubsub adapter cannot record one real Claude reply - assign a seat, or drop that receipt?" \
+  --context "Claude Code 2.1.236 is installed on hax and its dispatcher config loads, but the saved login is revoked and a real turn answers HTTP 401. You parked this on 2026-09-05 until an account was assigned to hax; three days later no account has been assigned. Only you can finish it: it needs a paid seat and a browser login nobody else can complete. One task is waiting - install Claude Code on hax for the pubsub adapter's live receipt - and nothing is waiting on that task. Until it moves, the pubsub adapter ships with every provider proven except Claude. References: a-347ff24c, t-8c656910." \
+  --choice "assign-and-login=Assign a Claude seat to hax and log in|approve" \
+  --consequence "assign-and-login=You buy or free one Claude seat, ssh to hax and finish the browser login: about ten minutes of your time plus the seat's monthly cost, and the receipt is retried the same day." \
+  --choice "keep-parked=Keep it parked until a seat frees up|defer" \
+  --consequence "keep-parked=Nothing changes and nobody waits on you; the pubsub adapter keeps shipping with the Claude path unproven, and a task is filed to re-raise this the day a seat frees up." \
+  --choice "drop-receipt=Drop the live-Claude receipt from the adapter|reject" \
+  --consequence "drop-receipt=The adapter is proven against the other providers only, the Claude path stays untested in production, and the install task closes as cancelled." \
+  --recommend assign-and-login --json
+```
+
+Question 133 characters, context 588, labels 38, 36 and 45, consequences 175,
+167 and 143, three choices, one recommendation. `assign-and-login` is the
+recommendation because the item's own resolve condition is a live receipt no
+workaround may produce, and one seat is the smallest price on the card.
+`keep-parked` is offered honestly rather than omitted — it is what he chose on
+2026-09-05 and it may still be right — but its consequence now names the
+trigger that brings the question back, which the parking did not, which is why
+the item was still open three days later. Pick it and the row afterwards reads
+`decision.outcome: "defer"` and `resolution: "Decision: Keep it parked until a
+seat frees up. Nothing changes and nobody waits on you; …"`.
+
+**An explicit `--limit` that cuts is named, not hidden.** `kb ev --limit N`
+keeps stdout at exactly N rows and writes one line to stderr - `events: showing
+N of more than N; pass --limit above N for the rest (ceiling 1000000)` - so a
+page of history that stops at the limit never reads as the whole history.
+Exit status stays 0; the rows you asked for are the rows you get.
 
 **Say how many you want.** Without `--limit` the listing is capped at 100, and
 a board holding more than that **refuses** rather than handing back a page that
@@ -273,10 +554,10 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by `<agent>@LANE` and items about a task whose
+`--lane LANE` keeps items raised by `@:<team>/<board>/LANE`, items whose `--lane` field is LANE, and items about a task whose
 lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
 rows do not carry is refused naming the ones they do. `--no-body` drops the
-body alone.
+body alone, which is the cheap way to read cards in bulk.
 
 `--kind` is a closed set:
 
@@ -296,10 +577,10 @@ owner's actor is `geoyws`: the binary gates `resolve` and `reopen` on it and the
 refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
 `resolvedBy: geo` as a record, and `--as geo` today is refused like any other
 non-raiser. The one exception is an item this same session raised and has since
-made moot — retire that with `--note` saying why, so the record shows it was
-withdrawn rather than answered. Check `kb att list --status open --limit N`
-before raising and add to an existing item rather than duplicating one already
-waiting.
+made moot — retire that with `--choice custom --outcome other --note` saying
+why, so the record shows it was withdrawn rather than answered. Check
+`kb att list --status open --limit N` before raising and add to an existing item
+rather than duplicating one already waiting.
 
 Items are **resolved, never deleted**, and resolving twice is refused: that
 would overwrite who settled it and when, which is the part worth keeping. Open
@@ -402,7 +683,7 @@ what a lane hands its successor. Through `kb-board`, run from inside the
 checkout: `--repo`, `--branch`, `--head` and `--dirty` are filled in from it.
 
 ```bash
-<skill-dir>/scripts/kb-board BOARD_ID h new --as "claude@driver-2" --to "driver-2" \
+<skill-dir>/scripts/kb-board BOARD_ID h new --as "@:geoyws/kanban/driver-2" --to "driver-2" \
   --reason session_end --summary "…" --intent "…" --next-action "…" --json
 ```
 
@@ -411,7 +692,7 @@ four yourself — a handoff without a head is one nobody can verify against a
 tree:
 
 ```bash
-kb h new --as "claude@driver-2" --to "driver-2" --reason session_end \
+kb h new --as "@:geoyws/kanban/driver-2" --to "driver-2" --reason session_end \
   --summary "…" --intent "…" --next-action "…" \
   --repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY" --json
 ```
@@ -442,6 +723,84 @@ Handoffs are **history**: removing a task drops the link and keeps the account.
 
 ## Working a task
 
+**A unit of work is two write round trips**, one at each boundary, with a single
+read before them — on the measured link that is two round trips where there were
+six (ADR-041, Consequences). The reads collapse into the MCP `batch` tool: up to
+32 of them on one request, `readOnlyHint: true`, described under **As an MCP
+server**, so `t cat`, `ctx`, `r ls` and `att ls` for the task you are about to
+pick up all arrive together. `batch` is an MCP tool and the CLI has no
+counterpart, so interactively those are the same `kb` reads typed one at a time
+in the one open board-host shell. Each boundary is one `transact` (**Batched
+writes — `transact`**), which lands entirely or not at all.
+
+**The START batch** — take the task, and say what you are about to do:
+
+| # | item | arguments that matter |
+|---|---|---|
+| 0 | `claim` | `id` (or `next: true`), `as`, `lane`, `lease-minutes` |
+| 1 | `note` | `id`, `kind: plan`, `as`, `text` |
+
+`claim` alone, **not** `claim` + `heartbeat`. ADR-041 names the start sequence
+"claim, heartbeat, first note", but a fresh claim already carries its 15-minute
+lease and `lease-minutes` on the claim itself buys a longer one in the same
+item, so a heartbeat milliseconds later renews what was just minted.
+`heartbeat` belongs in the middle of a long unit, not at its start. `note`
+needs no lease, so this batch never threads the token at all; add an item that
+does need it — a `heartbeat`, an early `checkpoint` — and it takes
+`{"$ref": {"item": 0, "path": "/leaseToken"}}`, so the agent still never
+handles the token. Take `$TOKEN` off the envelope once, from
+`results[0].result.leaseToken`, and it serves the rest of the unit.
+
+**The END batch** — one of three shapes, because the checkpoint's own state
+decides what may follow it:
+
+| the unit | items |
+|---|---|
+| finished | `checkpoint` `state: done` + `note` |
+| continues later | `checkpoint` `state: continue` + `note` + `release` |
+| continues in another lane | `note` + `handoff_create` |
+
+`--state done` or `blocked` on a checkpoint **releases the lease in the same
+transaction** that records it — there is no window where the work reads finished
+but the lease is still held. Which is why no `release` may follow one: the token
+it presents is already gone, `release` refuses with `task <id> has no active
+lease`, and an atomic batch takes the checkpoint and the note down with it. A
+task `handoff_create` is the same story from the other end — it writes its own
+`continue` checkpoint, releases the lease and returns the row to `todo`, so it
+wants no checkpoint before it and no release after it. Every END item carries
+`lease: "$TOKEN"` literally, the token the START batch returned: `$ref` reaches
+strictly earlier items **of its own batch**, never back into an earlier one.
+
+The worked JSON is **The loop's write half, in one batch**, below — a claim, a
+checkpoint that takes the lease from item 0 by `$ref`, and the note: three
+writes, one round trip, a token the agent never handles. Read it there for the
+item shapes and the threading, which both boundaries use; the tables above say
+which items each boundary carries. It is deliberately not repeated here.
+
+**A replayed START batch lands nothing** — by `claim`'s semantics, not by
+`transact`'s. There is no idempotency key (ADR-041 §9): the replayed claim is
+refused by name at index 0, every later item is `skipped`, and because the batch
+is atomic nothing at all lands. An END batch has no such protection, and neither
+has any batch whose first item is additive: two replayed `note` items are two
+notes.
+
+**An agent that cannot tell whether a `transact` was received reads the board.**
+`kb t cat <id> --limit 200 --json` settles it — the claim is there or it is not,
+the checkpoint is there or it is not — and that is what to act on, rather than
+retrying blindly.
+
+One thing a rollback leaves standing: the expired-claim sweep every board open
+commits before any batch scope exists, so a rolled-back batch may still have
+retired somebody else's lapsed lease (**Batched writes — `transact`**, "What a
+rollback does not undo").
+
+### Single commands — interactive, and the fallback
+
+Nothing about the individual commands changed, so each of them is still exactly
+correct alone. This is the form for an interactive board-host shell, for a
+boundary that really does hold one write, and for finding out which item a
+refused batch was wrong about.
+
 ```bash
 kb t new "Title" --priority 3 --lane fe --json     # 0 most urgent … 9 least, 3 default
 kb t new "Half-formed idea" --status draft --json  # not ready for action yet
@@ -454,6 +813,7 @@ kb hb <id> --lease "$TOKEN" --lease-minutes 30     # renew
 kb cp <id> --lease "$TOKEN" --as "$AGENT" --state continue \
   --summary "…" --intent "…" --next-action "…" --json
 kb rel <id> --lease "$TOKEN"
+kb transact --items-file items.json --json         # those writes as one atomic batch, below
 ```
 
 **Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
@@ -480,10 +840,6 @@ kb claim --candidates --as "$AGENT" --project NAME \
 Candidate inspection is strictly read-only and never returns lease tokens.
 It shares eligibility and ordering with `claim --next`; claim the selected ID
 atomically before starting work because inspection does not reserve it.
-
-`--state done` or `blocked` on a checkpoint **releases the lease in the same
-transaction** that records it — there is no window where the work reads finished
-but the lease is still held.
 
 ### The lease is 15 minutes, and only `kb hb` extends it
 
@@ -518,6 +874,10 @@ to write at each boundary rather than at the end:
 | on any blocker | `kb cp <id> --lease "$TOKEN" --state blocked --blocker "…"` |
 | before `/clear`, rotation, or an expected compaction | `kb cp` for one task, or `kb h new` in the session form for the lane |
 
+The last row is the END batch: at a real boundary the checkpoint, the note and
+the release — or the handoff — go in one `transact`, so either the whole
+boundary is recorded or nothing is.
+
 `kb note` needs no lease, so a progress line still lands after a lease lapsed —
 which is exactly when you most want it to.
 
@@ -527,7 +887,7 @@ When you claim or read a task whose previous holder died, the claim receipt and
 `kb ctx` carry an `orphanedFrom` block:
 
 ```json
-{ "agent": "claude@driver-2", "sessionID": "…", "expiredAt": 1788600000000,
+{ "agent": "@:geoyws/kanban/driver-2", "sessionID": "…", "expiredAt": 1788600000000,
   "lastCheckpointAt": 1788599100000, "worktree": "/root/work/src/kanban",
   "branch": "kanban-geoyws-driver", "headSha": "e87c5a6" }
 ```
@@ -571,6 +931,139 @@ an optional flag.
 
 Plan steps are child rows or one `--kind plan` note. There is no checklist
 field, and adding one would put the same truth in two places.
+
+## Batched writes — `transact`
+
+Each write above is its own round trip and its own transaction, and the loop's
+writes are not independent: a `claim` yields the lease token a `checkpoint`
+needs, and a checkpoint that landed after a claim that did not is not a smaller
+success, it is a board that lies. `transact` takes an ordered list of ordinary
+operations, runs them in one process against one open board inside one
+transaction, and **either all of them land or none of them do** (ADR-041).
+
+```bash
+kb transact --items-file items.json --json
+kb transact --items '[{"name": "note", "arguments": {"id": "t-1a2b3c4d", "text": "…"}}]' --json
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+`--items` and `--items-file` are one question in two spellings, so passing both
+is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
+carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
+streams a local `--items-file PATH` on the single ssh connection's stdin and
+rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
+bytes arrive verbatim.
+
+**An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
+shape. `TOOL` is an MCP tool name, which is the command with its subcommand
+joined by `_` (`task_move` is `kb task move`), and `arguments` names that
+command's flags and positionals literally, hyphens included: `id`, `text`,
+`next-action`, `lease-minutes`. A boolean flag is `true`; `false` and `null` are
+absence. At most 32 items.
+
+Refused as items, before anything runs: `batch` and `transact` themselves — a
+batch may not carry a batch — plus `import` and `search-rebuild`, which open a
+board-wide transaction of their own, and anything that does not address one
+board's rows.
+
+**The selector goes to `transact`, never to an item.** A batch addresses the one
+board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
+is refused rather than having it silently discarded, and `kb-board` already
+injects exactly one selector. There is no batch-level `--as` either: each item
+carries its own actor and is authorized exactly as if it had arrived alone, so a
+batch cannot elevate.
+
+**The envelope**, on stdout either way:
+
+```json
+{ "batchId": "9f1c…", "ok": true, "failedIndex": null, "rolledBack": false,
+  "results": [ { "index": 0, "ok": true, "result": { "…": "what that command answers alone" } } ] }
+```
+
+Execution stops at the first failure. That item reports
+`{"index", "ok": false, "error"}` with the CLI's own refusal text, every later
+item reports `{"index", "ok": false, "skipped": true}` and was never attempted,
+and the batch answers `ok: false` and exits non-zero. `rolledBack: true` means
+the board is exactly where the batch found it. `rolledBack: false` beside
+`ok: false` means one thing only: the list was refused before anything ran, so
+`results` is empty. Reads may sit in a write batch and see the earlier items'
+writes; a read that fails fails the batch, because continuing past it would be
+deciding on absent information.
+
+**`$ref` carries a value forward.** Any argument value may be
+`{"$ref": {"item": N, "path": "/json/pointer"}}`, replaced by the value at that
+RFC 6901 pointer inside item `N`'s result, where `N` is strictly earlier —
+forward and self-references are refused. That is how the lease token a `claim`
+mints (`/leaseToken`) reaches the checkpoint without the agent ever handling it.
+Every reference is checked for shape before any item runs, so a malformed
+pointer refuses the whole batch and nothing lands.
+
+**What a rollback does not undo.** Opening the board retires expired claims and
+commits that sweep before any batch scope exists, so a `transact` that rolled
+back may still have retired somebody else's lapsed lease and appended those
+events. That is correct — the sweep is not part of your batch and reverting it
+would resurrect dead leases — but a rolled-back `transact` is not a no-op on the
+ledger in every possible sense.
+
+**A replayed batch is not a no-op.** There is no idempotency key. A replayed
+loop batch is refused at its claim, because an active claim makes the second
+attempt fail by name, so it fails at index 0, skips every later item and lands
+nothing — good, but good by accident of `claim`'s own semantics rather than
+anything `transact` does. A batch whose first item is additive has no such
+protection: two replayed `note` items are two notes, two replayed `sitrep post`
+items are two sitreps. After a transport failure, read the board and decide;
+never retry a batch blindly.
+
+### The loop's write half, in one batch
+
+`items.json` — claim the task, checkpoint it with the lease the claim just
+minted, and write the plan note:
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver", "lane": "driver" } },
+  { "name": "checkpoint",
+    "arguments": { "id": "t-1a2b3c4d",
+                   "lease": { "$ref": { "item": 0, "path": "/leaseToken" } },
+                   "as": "@:geoyws/kanban/driver", "state": "continue",
+                   "summary": "wrapper streams the items on one ssh",
+                   "intent": "land the batched write surface",
+                   "next-action": "document the envelope in the skill",
+                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
+                   "head": "da9a794", "dirty": "clean" } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan", "as": "@:geoyws/kanban/driver",
+                   "text": "wrapper first, then the skill, then the tests" } }
+]
+```
+
+```bash
+kb transact --items-file items.json --json                                    # at the boundary
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+Three writes, one round trip, a lease token that never passes through the agent,
+and — if the claim fails because somebody else holds the task — nothing on the
+board at all.
+
+**A provenance writer inside a batch carries its own provenance.** `kb-board`
+fills `--repo`, `--branch`, `--head` and `--dirty` from your checkout for a
+`checkpoint`, `handoff create` or `sitrep post` **command**; a batch's items are
+data, so it cannot fill them there. The binary runs on the board home host,
+whose cwd is not your checkout, and it refuses a row with blank provenance
+rather than storing a null:
+
+```
+refusing to record a row with blank provenance: repo_path, branch, head_sha,
+dirty_summary missing … Pass --repo PATH --branch NAME --head SHA --dirty TEXT
+```
+
+So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
+`git rev-parse --show-toplevel`, `git symbolic-ref --short HEAD`,
+`git rev-parse HEAD` and a count of `git status --porcelain` lines (`clean`,
+`1 file changed`, `N files changed`). Every other write — `claim`, `heartbeat`,
+`note`, `release`, `task update` — needs nothing extra.
 
 ## Plans
 
@@ -692,8 +1185,33 @@ question.
 the row unfiled and do not smuggle the subject into the title. Registering is one
 command and it is paid once per concept, by whoever names it first.
 
-Names are lowercase letters, digits and inner hyphens. `Infra` is refused rather
-than folded — folding would decide for you which spelling you meant.
+Names are lowercase letters, digits and inner hyphens, in segments joined by
+`/`. `Infra` is refused rather than folded — folding would decide for you which
+spelling you meant.
+
+**Tags are namespaced by estate: `<estate>/<subsystem>`** (George, 2026-09-18:
+"these tags need to be updated to be namespaced e.g. IFCA_ASSISTANT or
+UNUM_ASSISTANT", separator settled as `/` the same day). The estate is the
+board's owner, never the board name: `ifca/` for the IFCA boards (`px`,
+`prjx`, `fmx`, `hx`, `hrx`, `ix`, `mx-root`, `rentx-root`, `auditx-root`,
+`ifca-docs`, `rx`), `unum/` for `unum`, `geoyws/` for George's own boards
+(`kanban`, `acies`, `atmux`, `hax`, `medic`, `geoyws`, `dotfiles`, `ord`,
+`hom`, `vidgen`, `approval-classifier`, `superdriver`, `dshoc`). A bare `aix`
+means something different on `px`, `hx` and `prjx`; `ifca/aix` does not. The
+slash is the estate's hierarchy separator already (`@:geoyws/px/driver-3`),
+and it stays unambiguous when the subsystem itself carries hyphens
+(`ifca/aix-chat`). Prose renders it `:ifca/aix-chat`.
+
+Migration state: the served binary still refuses `/` in a tag name (measured
+2026-09-18: `lowercase letters, digits and inner hyphens only`), and the bare
+names are the registered vocabulary on every board until kanban epic
+`e-2faa0cf9` ships the validator + `kb tag rename` verb and migrates them
+(2026-09-18 inventory in that epic's body). Until then: **attach what
+`kb tag ls` shows**, never a hyphenated stand-in for the slash form — two
+spellings of one concept is exactly what the master file exists to prevent.
+Register a genuinely new concept under a bare name if you must, note the
+intended `<estate>/<name>` in its description, and the migration renames it.
+When the migration is done, this paragraph is deleted by that epic's sweep task.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
 subsystem as much as the task it produces does.
@@ -833,8 +1351,10 @@ Rules:
 - `--follow` reopens read-only transactions between polls and emits rows
   synchronously, with no intermediate queue. It requires `--limit` to be at
   least `1`, so `--follow --limit 0` fails.
-- `--limit` is constrained to `0..1000` in every mode; follow mode additionally
-  rejects `0`. Sparse filtering happens before `--limit`, so the limit slices
+- `--limit` is constrained to `0..1000000` in every mode, the one ceiling every
+  `--limit` on this ledger shares (kanban 8991e9f, 2026-09-08 - effectively
+  unbounded for any board this tool holds; a batch is a SQL LIMIT, never a
+  preallocated buffer); follow mode additionally rejects `0`. Sparse filtering happens before `--limit`, so the limit slices
   the filtered result set rather than the raw rows.
 - `--db PATH` opens that exact database file.
 - NDJSON envelopes carry `version`, `scope`, `cursor`, `type`, and `payload`
@@ -1043,6 +1563,15 @@ cannot describe something the CLI does not have. Each call runs the real binary,
 so validation and refusals are identical to the terminal. Every tool carries
 `readOnlyHint`, true only when the operation writes nothing anywhere.
 
+Two tools carry lists of other calls instead of arguments of their own.
+`batch` collapses up to 32 **reads** into one request and keeps
+`readOnlyHint: true`, so it refuses a writing entry by name and performs none
+of them. `transact` is the writing counterpart described above: `{ "items":
+[ {"name", "arguments"} ] }`, `readOnlyHint: false`, the binary run **once**
+with the whole list, and the envelope returned as the result — marked
+`isError` exactly when `ok` is `false`, because a rolled-back batch that read
+as success would be a lie.
+
 Updating is `install` over the binary — running servers pick it up without any
 client reconnecting.
 
@@ -1101,6 +1630,16 @@ once a silent wrong answer.
   whole (ADR-037).
 - `--fields` naming a key the rows do not carry is refused listing the keys they
   do; `claim` needs `--with-claims`, `dependencies` needs `--with-relations`.
+- A `transact` item naming its own board selector, or a second `transact`, is
+  refused before any item runs — a batch addresses one board and may not carry
+  a batch.
+- A card is refused by name rather than half-written: a `--consequence` or
+  `--recommend` naming a key no `--choice` declared, a duplicate key, a count
+  outside two to four, a recommendation that is not exactly one, a choice with
+  no consequence, `--question` without `--context`, `custom` as an authored
+  key, `--outcome` without `--choice custom`, a resolve with no `--choice` or
+  one naming a key the row does not carry, and any card flag at all on a
+  resolved item.
 
 ## Reference
 
@@ -1114,3 +1653,8 @@ tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
 lowercase subsystem tags.
 ADR-021 keeps settled history while removing it from operational indexes.
 ADR-037 makes a capped listing refuse a default it would exceed.
+ADR-041 makes `transact` one atomic ordered write batch and leaves the
+read-only `batch` untouched.
+ADR-042 makes an attention item a decision card: an authored question, its
+context, two to four choices with one recommendation, and a free-text answer
+that still carries a verdict.
