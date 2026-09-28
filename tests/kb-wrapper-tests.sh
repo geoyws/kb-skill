@@ -750,7 +750,6 @@ test_skill_parity_sections_are_present() {
     '## Subscription records and dispatcher delivery'
     '## Archival — bounded hot indexes, intact history'
     '## Deployment attempts — exact release receipts'
-    '## The web view'
     '## As an MCP server'
     '## Refusals worth knowing'
     '## Reference'
@@ -798,8 +797,6 @@ test_skill_parity_sections_are_present() {
     '`--claude ABSOLUTE_PATH --home ABSOLUTE_PATH --cwd ABSOLUTE_PATH'
     'ships with no active subscription'
     'invalid Claude response also fails'
-    'kanban serve'
-    'kanban-serve.service'
     '/root/.local/bin/kanban-dispatcher'
     'system@cli'
   )
@@ -957,7 +954,6 @@ test_registry_commands_are_rejected_without_transport() {
     r
     rule
     init
-    serve
     schema
     mcp
     doctor
@@ -1012,7 +1008,6 @@ test_host_surface_matches_source_allowlist() {
     backup
     restore
     rule r
-    serve
     schema
     mcp
   )
@@ -1399,7 +1394,7 @@ test_alias_ownership_matches_wrappers() {
     : >"$ssh_log"
     : >"$kb_log"
     case "$alias" in
-      v|init|w|ws|dash|doctor|audit|backup|restore|r|serve|schema|mcp)
+      v|init|w|ws|dash|doctor|audit|backup|restore|r|schema|mcp)
         output=$(run_expect_failure env \
           FAKE_HOSTNAME_VALUE=$(make_id current) \
           FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
@@ -1495,7 +1490,6 @@ test_host_registry_commands_are_allowed_without_transport() {
     'audit verify --json'
     'backup --json'
     'restore --json'
-    'serve --port 1234'
     'schema --json'
     'mcp'
   )

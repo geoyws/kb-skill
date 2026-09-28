@@ -21,7 +21,6 @@ rule
 schema
 search
 search-rebuild
-serve
 sitrep
 stale
 story
