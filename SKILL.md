@@ -257,10 +257,10 @@ business deciding it.
 
 ```bash
 kb att raise "<verdict-first, ≤2 sentences, with the concrete next action>" \
-  --as "<agent>@<lane>" --kind blocking --task <ID if it is about one> --json
+  --as "@:<team>/<board>/<lane>" --lane "<lane>" --kind blocking --task <ID if it is about one> --json
 
 kb att list --status open --limit 200 --json              # what is waiting on the owner
-kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
+kb att list --status open --lane driver-2 --limit 200 --json   # stored lane, raiser suffix, or task lane
 kb att list --status open --fields id,kind,raisedBy,taskID --limit 200 --json   # keys only; or --no-body
 kb att list --status resolved --limit 200 --json          # the historical trail
 kb att resolve <id> --as "$OWNER" --note "…"   # the owner settles it
@@ -273,10 +273,11 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by `<agent>@LANE` and items about a task whose
-lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
-rows do not carry is refused naming the ones they do. `--no-body` drops the
-body alone.
+`--lane LANE` on raise stores its routing lane. On list, `--lane LANE` keeps rows
+whose stored lane is `LANE`, whose raiser ends in legacy `@LANE` or canonical
+`/LANE`, or whose linked task has lane `LANE`. `--fields k,k,…` keeps only
+those keys on each row; a key the rows do not carry is refused naming the
+ones they do. `--no-body` drops the body alone.
 
 `--kind` is a closed set:
 
