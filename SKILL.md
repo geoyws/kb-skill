@@ -849,10 +849,7 @@ Read the boundary without inventing a `sprint current` command:
 `sprint list` hides closed/abandoned history unless `--all` (or an explicit
 status) is requested; `sprint show` returns the sprint, its attached tasks,
 and its deployment proof. The registry-wide `dash` projects each board's
-current sprint summary. A task's `ctx` includes its attached sprint. The
-server-rendered read-only web
-projections are `/sprints`, `/sprints/BOARD`, and
-`/sprint/BOARD/SPRINT_ID`.
+current sprint summary. A task's `ctx` includes its attached sprint.
 See ADR-045.
 
 ## Tags — which part of the system this is about
