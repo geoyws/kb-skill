@@ -159,6 +159,7 @@ Scoped to their group:
 | `rule` | `ls`=list `new`=add `up`=update `cat`=show |
 | `sitrep` | `ls`=list `new`=post |
 | `deploy` | `ls`=list `cat`=show |
+| `sprint` | `ls`=list `cat`=show |
 | `subscription` | `ls`=list `new`=add `cat`=show |
 
 ⚠ `att` means **attach** inside `workspace` and **attention** at the top level.
@@ -278,8 +279,8 @@ kb r new "Kanban only." --board kanban --as "$AGENT" --json
 kb r new "All except project-a." --except-board project-a --as "$AGENT" --json
 kb r up r-12345678 --board kanban --as "$AGENT" --json
 
-# Lowercase subsystem tags intersect the board selector.
-kb r new "Queuer only." --tag queuer --as "$AGENT" --json
+# Namespaced subsystem tags intersect the board selector.
+kb r new "Queuer only." --tag geoyws/queuer --as "$AGENT" --json
 kb r up r-12345678 --clear-tags --as "$AGENT" --json
 ```
 
@@ -304,7 +305,7 @@ value in the plaintext board database.**
 Every rule carries one `tags` array. `ALL` is explicit and default,
 `ONLY:<name>` is a named include, and `EXCEPT:<name>` subtracts from `ALL`.
 Repeatable `--board`/`--except-board` flags validate exact board names.
-Lowercase `--tag` selectors must exist on an active board; several are an OR
+Namespaced `--tag` selectors must exist on an active board; several are an OR
 set intersected with the board selector. Task claim/context/handoff injection
 requires a matching task tag. Taskless session handoffs and web board pages
 omit subsystem-scoped rules. See ADR-027.
@@ -587,6 +588,17 @@ would overwrite who settled it and when, which is the part worth keeping. Open
 items list **oldest first** — an unanswered question does not get less urgent by
 being ignored.
 
+A reference that arrives **after** an item is resolved — an external issue key,
+a receipt, a later commit — is not written onto the card, and `att resolve` on
+a resolved item is refused rather than reopened for it. Record it as a note on
+the task the item was raised for (or on the task the receipt belongs to),
+citing the item by id: `kb note <task-id> "PAI-246 is the verified receipt for
+a-9ae089d1" --as "$AGENT" --kind evidence --json`. The note is searchable by
+the id, the card keeps its decision, actor and timestamps untouched, and
+`kb att list --status resolved` still reads as what was decided when. There is
+no annotation verb on resolved attention, on purpose (decided by George,
+2026-09-14).
+
 Still surface the item in your reply as well. The board makes it survive; the
 reply makes the owner see it now. In one and not the other is a bug.
 
@@ -600,7 +612,7 @@ plus the one registry rules document. Each result has a stable
 ```bash
 kb search "resume the release handoff" --project kanban --json
 kb search t-12345678 --source task --limit 5 --max-chars 4000 --json
-kb search "authentication recovery" --tag auth --all-boards --json
+kb search "authentication recovery" --tag geoyws/auth --all-boards --json
 kb search "retired decision" --all --json       # include archived history
 ```
 
@@ -619,8 +631,7 @@ kb search-rebuild --project kanban --as system@search-index --json
 kb search-rebuild --all-boards --as system@search-index --json
 ```
 
-MCP exposes these as `search` (read-only) and `search_rebuild` (write). The web
-view at `/search` is cross-board and read-only. `kb doctor --json` reports
+MCP exposes these as `search` (read-only) and `search_rebuild` (write). `kb doctor --json` reports
 `searchIndex` parity and cache freshness for every board.
 
 ## Sitreps — where a lane stands, cheaply
@@ -719,6 +730,9 @@ successor `cd`s from the record and checks the tree against it, rather than the
 path ever having been the lookup key. `h ls` is capped at 100 without
 `--limit` and refuses past that, naming the flag.
 
+A task can be **restricted to models**: `kb h accept --model NAME` is checked
+against the task's list the same way a claim is.
+
 Handoffs are **history**: removing a task drops the link and keeps the account.
 
 ## Working a task
@@ -816,6 +830,20 @@ kb rel <id> --lease "$TOKEN"
 kb transact --items-file items.json --json         # those writes as one atomic batch, below
 ```
 
+A task can be **restricted to models** (ADR-049): a task that needs a
+capability only one model has must force the harness to run that model, so
+the restriction lives on the task row and the declaration lives on the claim.
+Model names are a free token validated by a regex, not a registry, so a typo
+restricts a task to a model nobody runs.
+
+```bash
+kb t new "Title" --allowed-model Astra --allowed-model Kimi --json  # repeatable; empty list is unrestricted
+kb t up <id> --allowed-model claude-fable-5-1 --json    # REPLACES the whole list
+kb t up <id> --clear-allowed-models --json              # together with --allowed-model, refused
+kb t ls --allowed-model Astra --json                    # filter
+kb claim <id> --as "$AGENT" --model Astra --json        # declares which model is claiming
+```
+
 **Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
 holder is `claim.agentID`, on `t cat` and on `t ls --with-claims`; there is no
 `claim.actor`, and `--fields actor` is refused naming the keys that exist.
@@ -834,7 +862,7 @@ To inspect the same scheduler queue without taking a lease:
 ```bash
 kb claim --candidates --as "$AGENT" --project NAME \
   [--lane LANE] [--role ROLE] [--caller-scope driver] \
-  [--no-cross-lane] [--allow-reassign] [--tag NAME] [--limit N] --json
+  [--no-cross-lane] [--allow-reassign] [--tag ESTATE/SUBSYSTEM] [--limit N] --json
 ```
 
 Candidate inspection is strictly read-only and never returns lease tokens.
@@ -1156,62 +1184,205 @@ directly writable, since the gate cannot express either.
 **The tree is enforced**: an epic contains stories, a story contains tasks, a
 task contains nothing.
 
+## Sprints — a versioned, proof-gated boundary
+
+A sprint is a board-owned delivery boundary: one goal, an explicit set of task
+rows, and one target version. It is not an estimate bucket, and there is no
+sprint `draft` state or automatic rollover. The only states are `planned`,
+`current`, `closed`, and `abandoned`; at most one sprint is current. The
+scheduled `--start` and `--end` values are epoch **milliseconds** and remain
+separate from the actual start/end lifecycle stamps.
+
+First verify the routed host's installed binary, not a checkout or local copy:
+
+```bash
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST v
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST schema --json
+```
+
+Inspect the reported command surface for `sprint`. An older installed binary
+may not have it. If the installed version/surface lacks sprint support, stop
+and report that capability boundary; never improvise with a locally built
+binary, open a local board copy, or attempt a schema migration yourself.
+
+### Sprint-scoped rules and sprint search
+
+These forms are newer parts of the sprint schema. Confirm that the installed
+`v` and `schema --json` output above includes them before use; an older
+installed binary may support sprints without these rule and search additions.
+
+Add a rule for one board and one of its sprints through the registry-owned
+`kb-host` path, never `kb-board`:
+
+```bash
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." \
+  --board BOARD --sprint sp-ID [--tag slug] --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
+  --sprint sp-ID --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
+  --clear-sprint --as ACTOR
+```
+
+The sprint must exist on that board, including historical closed sprints. The
+optional tag further intersects that scope. On update, `--sprint` and
+`--clear-sprint` are mutually exclusive. The rule applies only when the task
+is attached to that sprint during claim, handoff acceptance, and context
+assembly; unattached tasks and tasks in another sprint do not receive it.
+
+Sprint cards are also searchable by title, body, and target version:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD search QUERY --source sprint --json
+```
+
+Sprint results cite `kanban://BOARD/sprint/ID`.
+
+Create a planned card, then give planning a required goal body and deliberate
+scope:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID sprint new "Release boundary" \
+  --target-version 2.4.0 --start 1799702400000 --end 1800307200000 \
+  --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID sprint plan sp-ID \
+  --body "Ship the agreed acceptance criteria." --parent-epic EPIC_ID \
+  --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID sprint start sp-ID --as ACTOR --json
+```
+
+Repeated `--candidate TASK_ID` values and `--parent-epic EPIC_ID` may be
+combined; planning attaches their union and retains rows already explicitly
+attached to this sprint. If that existing scope is itself the deliberate
+scope, the body alone is sufficient. Use `--empty-scope` only for an
+intentionally empty boundary: it is exclusive of candidates, a parent epic,
+and existing scope. `sprint plan` always refuses a missing body, and refuses
+an absent scope only when there is neither new nor existing explicit scope.
+`sprint start` refuses while another sprint is current.
+
+Task scope is explicit and audited:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID task add "Work item" \
+  --sprint sp-ID --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID task update TASK_ID \
+  --sprint sp-ID --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID task update TASK_ID \
+  --clear-sprint --as ACTOR --json
+```
+
+Attaching an epic or other container carries its subtree except descendants
+already explicitly attached to another sprint. The named row itself moves when
+explicitly reattached; `--clear-sprint` deliberately detaches only that row.
+
+While a sprint is current, every claim path and task-handoff acceptance defaults
+to its attached rows; unattached work is outside the boundary. With no current
+sprint this filter is a no-op, preserving the ordinary claim behavior and
+payload. Cross a boundary only explicitly:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID claim --next --as AGENT --sprint sp-ID --json
+<skill-dir>/scripts/kb-board BOARD_ID claim --next --as AGENT --any-sprint --json
+<skill-dir>/scripts/kb-board BOARD_ID handoff accept HANDOFF_ID \
+  --as AGENT --sprint sp-ID --json
+```
+
+`--sprint sp-ID` names the boundary; `--any-sprint` deliberately removes the
+filter. They are mutually exclusive, and the override is recorded in the
+claim/handoff audit event rather than becoming an invisible exception.
+
+Closing requires served proof for the same sprint and target version. These
+ledger commands only record evidence: they do not deploy, inspect, or verify
+the actual target. Bind the deployment at start and keep the returned
+capability token only in private ephemeral state—never put it in task or sprint
+notes, checkpoints, handoffs, receipts, chat, or logs. Independently observe
+the served target's exact commit and version, and only then record a successful
+verification finish with the matching `--served-version`:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID deploy start --repo OWNER/REPO \
+  --commit FULL_40_CHAR_SHA --tier TIER --environment ENVIRONMENT \
+  --host DEPLOY_HOST --url SERVICE_URL --sprint sp-ID --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID deploy finish DEPLOYMENT_ID --token TOKEN \
+  --result succeeded --phase verification --served-commit FULL_40_CHAR_SHA \
+  --served-version 2.4.0 --receipt "Observed the served release" \
+  --as ACTOR --json
+<skill-dir>/scripts/kb-board BOARD_ID sprint close sp-ID \
+  --deployment DEPLOYMENT_ID --as ACTOR --json
+```
+
+The close proof must be a succeeded verification deployment bound to that
+sprint, and its served version must equal the sprint's target version. If any
+attached rows remain unfinished, close refuses unless they are deliberately
+moved in the same operation to one named planned/current sprint:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID sprint close sp-ID \
+  --deployment DEPLOYMENT_ID --carry-to sp-NEXT \
+  --carry-note "Deferred after the verified release" --as ACTOR --json
+```
+
+There is no implicit rollover. Abandoning is also deliberate and requires a
+reason:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID sprint abandon sp-ID \
+  --note "The delivery boundary changed" --as ACTOR --json
+```
+
+Read the boundary without inventing a `sprint current` command:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID sprint list --json
+<skill-dir>/scripts/kb-board BOARD_ID sprint list --all --json
+<skill-dir>/scripts/kb-board BOARD_ID sprint show sp-ID --json
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST dash --json
+<skill-dir>/scripts/kb-board BOARD_ID ctx TASK_ID --json
+```
+
+`sprint list` hides closed/abandoned history unless `--all` (or an explicit
+status) is requested; `sprint show` returns the sprint, its attached tasks,
+and its deployment proof. The registry-wide `dash` projects each board's
+current sprint summary. A task's `ctx` includes its attached sprint.
+See ADR-045.
+
 ## Tags — which part of the system this is about
 
-**Tag your rows.** A board that cannot say whether a task is infra, queuer or
-askie makes you read titles to find out, and you are the one who knows.
+**Tag your rows.** A board that cannot say whether a task is `geoyws/infra`,
+`geoyws/queuer` or `geoyws/askie` makes you read titles to find out, and you are
+the one who knows.
 
-Examples below use bare tag names in storage and CLI. Prose may render a
-registered Kanban tag as `:slug`, but storage and CLI always use the bare slug
-(`--tag slug`). The colon is only presentation notation; do not create another
-sigil namespace inside KB tags.
+Tags are namespaced `<estate>/<subsystem>` in storage and CLI
+(`--tag estate/subsystem`) — slash spelling only, per map rule r-98ff7ad2. The
+hyphen form (`geoyws-orchestration`) is superseded; never use it. Estate-neutral
+examples below use `geoyws/`: the package ships estate-neutral, so examples need
+a concrete estate, and the author's own estate is the illustration — not a
+default the consumer inherits. Prose renders a registered tag as
+`:estate/subsystem` (e.g. `:geoyws/infra`); the colon is only presentation
+notation, do not create another sigil namespace inside KB tags. A tag already in
+use moves to its namespaced name with `kb tag rename`.
 
 ```bash
 kb tag ls --json                                   # the vocabulary, with use counts
-kb tag new infra --description "hosts, containers, deploys" --as "$AGENT" --json
-kb t new "Retry backoff" --tag queuer --tag infra --json
-kb t up <id> --tag queuer --as "$AGENT" --json     # replaces, does not append
+kb tag new geoyws/infra --description "hosts, containers, deploys" --as "$AGENT" --json
+kb t new "Retry backoff" --tag geoyws/queuer --tag geoyws/infra --json
+kb t up <id> --tag geoyws/queuer --as "$AGENT" --json     # replaces, does not append
 kb t up <id> --clear-tags --as "$AGENT" --json     # the only way to say "none"
-kb t ls --status todo --tag queuer --json          # open work in one subsystem
+kb t ls --status todo --tag geoyws/queuer --json          # open work in one subsystem
 ```
 
 **Read `kb tag ls` before you tag.** The vocabulary is a per-board **master
 file**: only a registered tag can be attached, and attaching an unregistered one
 is refused naming the nearest match. That refusal is the feature — it is what
-stops `infra`, `Infra` and `infrastructure` becoming three answers to one
-question.
+stops `geoyws/infra`, `geoyws/Infra` and `geoyws/infrastructure` becoming three
+answers to one question.
 
 **If nothing fits, register it** with a description, then use it. Do not leave
 the row unfiled and do not smuggle the subject into the title. Registering is one
 command and it is paid once per concept, by whoever names it first.
 
-Names are lowercase letters, digits and inner hyphens, in segments joined by
-`/`. `Infra` is refused rather than folded — folding would decide for you which
-spelling you meant.
-
-**Tags are namespaced by estate: `<estate>/<subsystem>`** (George, 2026-09-18:
-"these tags need to be updated to be namespaced e.g. IFCA_ASSISTANT or
-UNUM_ASSISTANT", separator settled as `/` the same day). The estate is the
-board's owner, never the board name: `ifca/` for the IFCA boards (`px`,
-`prjx`, `fmx`, `hx`, `hrx`, `ix`, `mx-root`, `rentx-root`, `auditx-root`,
-`ifca-docs`, `rx`), `unum/` for `unum`, `geoyws/` for George's own boards
-(`kanban`, `acies`, `atmux`, `hax`, `medic`, `geoyws`, `dotfiles`, `ord`,
-`hom`, `vidgen`, `approval-classifier`, `superdriver`, `dshoc`). A bare `aix`
-means something different on `px`, `hx` and `prjx`; `ifca/aix` does not. The
-slash is the estate's hierarchy separator already (`@:geoyws/px/driver-3`),
-and it stays unambiguous when the subsystem itself carries hyphens
-(`ifca/aix-chat`). Prose renders it `:ifca/aix-chat`.
-
-Migration state: the served binary still refuses `/` in a tag name (measured
-2026-09-18: `lowercase letters, digits and inner hyphens only`), and the bare
-names are the registered vocabulary on every board until kanban epic
-`e-2faa0cf9` ships the validator + `kb tag rename` verb and migrates them
-(2026-09-18 inventory in that epic's body). Until then: **attach what
-`kb tag ls` shows**, never a hyphenated stand-in for the slash form — two
-spellings of one concept is exactly what the master file exists to prevent.
-Register a genuinely new concept under a bare name if you must, note the
-intended `<estate>/<name>` in its description, and the migration renames it.
-When the migration is done, this paragraph is deleted by that epic's sweep task.
+Names are `<estate>/<subsystem>`: each segment is lowercase letters, digits and
+inner hyphens, joined by one `/`. `geoyws/Infra` is refused rather than folded
+— folding would decide for you which spelling you meant.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
 subsystem as much as the task it produces does.
@@ -1221,9 +1392,10 @@ on it; a tag is *what part of the system this touches*. Putting a subsystem in
 `lane` silently changes which driver receives the work.
 
 `@:team` is atmux routing identity, not a tag. Do not encode board, lane, team,
-host, tier, actor, priority, or typed row IDs as tags. In particular, `:module`
-means the registered KB tag `module`, while `@:team` names an atmux team; they
-are different types and must never be normalized into one another.
+host, tier, actor, priority, or typed row IDs as tags. In particular,
+`:geoyws/module` means the registered KB tag `geoyws/module`, while `@:team`
+names an atmux team; they are different types and must never be normalized into
+one another.
 
 Retiring a tag rows still carry is refused and says how many; `--force` strips it
 from them and records the count in the trail.
@@ -1299,9 +1471,9 @@ as the board's identity.
 is refused rather than silently handing back everything you asked to bound.
 
 **A capped listing refuses a default it would exceed** (ADR-037). Without
-`--limit`, `ev` returns up to 50, `sr ls` 20, `search` 10, `att ls`, `h ls`,
-`deploy list` and `claim --candidates` 100, and `t cat` 100 notes, 20
-checkpoints and 100 handoffs. When more rows exist than that default, the
+`--limit`, `ev` returns up to 50, `sr ls` 20, `search` 10, `att ls`,
+`h ls`, `deploy list`, `sprint list` and `claim --candidates` 100, and
+`t cat` 100 notes, 20 checkpoints and 100 handoffs. When more rows exist than
 command fails and names `--limit N` instead of passing the first page off as
 the whole; a board holding exactly the default lists all of it. An explicit
 `--limit N` is honoured as-is with no marker — ask for one more than you need
@@ -1311,8 +1483,7 @@ if you want to know whether your own bound was hit.
 
 `kb watch` is the canonical long-running process over the append-only ledgers.
 It is `longRunning` and `readOnly`, so generated MCP tool schemas exclude it.
-`kb events` stays the newest-first snapshot reader, and `/live` remains the
-compatibility invalidation socket for the browser.
+`kb events` stays the newest-first snapshot reader.
 
 `kb watch` emits protocol-v1 NDJSON envelopes. The payload is additive:
 `board {id,name?}` for board scope or `board: null` for registry scope,
@@ -1374,7 +1545,7 @@ board path or root in the record.
 
 ```bash
 kb subscription add --project NAME --id sub-codex-queue \
-  --subject task:t-12345678 --kind checkpoint_added --tag orchestration \
+  --subject task:t-12345678 --kind checkpoint_added --tag geoyws/orchestration \
   --consumer codex.queue --action enqueue-turn \
   --timeout-ms 30000 --max-retries 3 --rate-per-minute 60 \
   --max-concurrency 1 --secret-ref codex_queue_token --as "$OWNER" --json
@@ -1515,42 +1686,17 @@ kb deploy list --all --json
 ```
 
 Canonical tiers are `@_bdt`, `@_bd`, `@_bst`, `@_bs`, `@_s`, `@_uat`, and
-`@_p`. Record the full pushed commit. `succeeded` is refused unless the served
-commit matches it exactly and the phase is `verification` with a non-empty live
-receipt. A retry starts a new row with `--retry-of`; never rewrite the old
-attempt. Keep the start receipt's capability token until finishing. Use
-`deploy abandon --token … --note …` when no failure was observed; `--force` is
-an explicit audited recovery override. See ADR-030.
-
-## The web view
-
-`$BOARD_WEB_URL` — every board at once, behind shared Google SSO with only the
-allowed account list. Reads use the same Store as the CLI. The sole shipped
-write is the Needs-you reply/resolve action, attributed to `$OWNER`.
-
-- **Needs you** (the landing page) — every open attention item across every
-  board, oldest first, with its kind, who raised it, how long it has waited, and
-  an inline reply plus quick decision buttons. A reply resolves the item and is
-  preserved as its resolution note.
-- **Lanes** — the counterpart: what every lane last reported, newest first.
-- **Boards** — the `kb dash` projection as a table.
-- **Plans** — draft epics with their bodies, each naming the work it holds back.
-- **Deployments** — verified current releases, active attempts, recent failures,
-  and immutable per-attempt receipts; the existing WebSocket refresh keeps it live.
-- **Search** — cited exact, lexical, and semantic retrieval across every board.
-- **Task detail** — notes, checkpoints, the event trail, and the provenance of
-  whoever holds it. Never the lease token: that is a capability, and a page that
-  rendered one would hand it to whoever loaded the page.
-
-It is `kanban serve` on loopback 14200, kept up by `kanban-serve.service` and
-fronted by nginx. It binds the loopback interface and has **no `--bind` flag** — kanban
-implements no authentication and trusts the edge, so the only correct value is
-the default. Updating is `install` then `systemctl restart kanban-serve`; the
-MCP server's in-place swap does not apply to an HTTP server. `/live` upgrades to
-a WebSocket and sends revision-only refresh notifications; agent CLI/MCP access
-does not depend on that socket. That socket is compatibility invalidation only;
-`kb watch` is the canonical long-running stream over the append-only ledgers,
-and `kb events` stays the newest-first snapshot view.
+`@_p`. Deployment commands only record attempts and evidence; they neither
+perform a deployment nor inspect its target. Deploy through the real release
+path, independently observe the live target, then record the full pushed
+commit and what was actually served. `succeeded` is refused unless the served
+commit matches exactly and the phase is `verification` with a non-empty live
+receipt. Keep the start receipt's capability token only in private ephemeral
+state until finishing; never put it in task or sprint notes, checkpoints,
+handoffs, receipts, chat, or logs. A retry starts a new row with `--retry-of`;
+never rewrite the old attempt. Use `deploy abandon --token … --note …` when no
+failure was observed; `--force` is an explicit audited recovery override. See
+ADR-030.
 
 ## As an MCP server
 
@@ -1614,14 +1760,18 @@ once a silent wrong answer.
 - A single-valued flag given twice is refused — last-wins is how the wrong board
   gets written.
 - `--force` is required to override a live lease or nest a board inside a
-  registered tree, and every override is recorded.
+  registered tree, and every override is recorded. It lives on `task move` and
+  `task remove` — `claim` has no `--force`, and `--allow-reassign` only
+  inspects candidates. To recover a task whose agent died holding its lease,
+  `task move <id> todo --as <lane> --force`, then claim for a fresh token.
+  `handoff accept` can seize a lease only when a pending handoff exists.
 - A diagnostic never modifies what it diagnoses; a missing registered board is
   reported, never silently recreated.
 - `restore` takes the data root exclusively and refuses while anything else
   holds it.
 - A tag that is not in the board's master file is refused on attach **and on
-  filter**. `kb t ls --tag infr` does not answer "nothing" — an empty list reads
-  like a finding, and that is how a typo becomes a wrong answer somebody acts on.
+  filter**. `kb t ls --tag geoyws/infr` does not answer "nothing" — an empty list
+  reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
 - A capped listing with more rows than the default the caller never set is
@@ -1640,6 +1790,12 @@ once a silent wrong answer.
   key, `--outcome` without `--choice custom`, a resolve with no `--choice` or
   one naming a key the row does not carry, and any card flag at all on a
   resolved item.
+- A restricted task refuses a claim that does not match: `task {id} is
+  restricted to models [{list}]; pass --model with one of them to claim it`
+  with no `--model`, and `task {id} is restricted to models [{list}]; model
+  {model} may not claim it` with a `--model` outside the list. `claim --next`
+  and `--candidates` never produce these refusals — they skip restricted rows
+  silently unless `--model` matches one.
 
 ## Reference
 
@@ -1650,7 +1806,7 @@ attention), ADR-013 (plans are epics), ADR-015 (tags are a master file),
 ADR-016 (the web view), ADR-017 (sitreps), ADR-018 (the original board-local
 rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
 tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
-lowercase subsystem tags.
+namespaced `<estate>/<subsystem>` tags.
 ADR-021 keeps settled history while removing it from operational indexes.
 ADR-037 makes a capped listing refuse a default it would exceed.
 ADR-041 makes `transact` one atomic ordered write batch and leaves the
