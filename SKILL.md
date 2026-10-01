@@ -249,6 +249,15 @@ every lane queue filter actually match on. A row whose actor names its lane
 but whose `--lane` is empty is invisible to its own lane's queue, which is the
 same failure the harness-qualified actor caused, wearing different clothes.
 
+**Write the heartbeat session file right after every claim** (George,
+2026-09-29, kb dotfiles t-c991e76a option A): `~/.claude/kb-session`, mode
+0600, two lines — task id, then lease token. The PostToolUse heartbeat hook
+(`claude/hooks/kb-heartbeat.sh`) reads exactly that file and never guesses;
+no file means no heartbeats and the lease quietly expires. One session holds
+one task, so a second claim overwrites. Rewrite both lines whenever the token
+changes. The board is resolved off the session cwd by lane-detect, never
+stored in the file.
+
 A pane that holds no driver lane repeats its own derived team token in the
 lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
 board — so the shape never degrades to a bare team and a reader always knows
