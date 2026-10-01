@@ -732,7 +732,7 @@ worktree facts: a handoff without a head is one nobody can verify against a
 tree. A task id without its lease, or a lease without its task id.
 
 COMPLETION EVIDENCE. The create reply carries no top-level id (the record is
-wrapped), so read the id back with `kb h ls --task <task> --limit 5 --json | jq '.[0].id'`, and check `kb t cat <task>` shows the handoff on the task. Report both.
+wrapped), so read the id back with `kb h ls --task <task> --limit 5 --json | jq '.[0].id'`, and check `kb t cat <task>` shows the handoff on the task. A session handoff has no task to list by: read its id back with `kb h ls --status pending --limit 25 --json | jq -r --arg a "$ACTOR" 'map(select(.taskID == null and .fromAgent == $a)) | .[0].id'` (record fields `taskID` and `fromAgent`, measured 2026-10-01). Report the id either way.
 
 CONTENT CONTRACT. Every handoff carries these, short enough to act on:
 
@@ -740,7 +740,7 @@ CONTENT CONTRACT. Every handoff carries these, short enough to act on:
 - Worktree absolute realpath, branch, and base or candidate SHA (the `--repo`, `--branch`, `--head` facts).
 - Dirty state, measured never guessed (`clean`, `1 file changed`, `N files changed`).
 - The exact next action: the one concrete first move.
-- Open leases: which task the lease belonged to. It is released by the handoff itself.
+- Open leases (task handoffs only): which task the lease belonged to. It is released by the handoff itself. A session handoff carries no task and no lease, so it writes `none (session handoff)`.
 - Evidence paths: commits, files, or receipts the successor can check.
 - What was NOT verified: the layer you did not run, the tree you did not compare.
 
