@@ -16,6 +16,8 @@ paraphrasing it.
 
 Output is **always JSON**, with or without `--json`.
 
+Every command below is checked against `kb/references/verified-recipes.md` (kanban 0.3.0, board schema 37, 2026-10-01).
+
 ## Board home host is the execution boundary
 
 The authoritative Kanban registry and boards live on the board home host chosen
@@ -858,8 +860,8 @@ restricts a task to a model nobody runs.
 
 ```bash
 kb t new "Title" --allowed-model Astra --allowed-model Kimi --json  # repeatable; empty list is unrestricted
-kb t up <id> --allowed-model claude-fable-5-1 --json    # REPLACES the whole list
-kb t up <id> --clear-allowed-models --json              # together with --allowed-model, refused
+kb t up <id> --allowed-model claude-fable-5-1 --as "$ACTOR" --json    # REPLACES the whole list
+kb t up <id> --clear-allowed-models --as "$ACTOR" --json              # together with --allowed-model, refused
 kb t ls --allowed-model Astra --json                    # filter
 kb claim <id> --as "$AGENT" --model Astra --json        # declares which model is claiming
 ```
@@ -917,9 +919,9 @@ to write at each boundary rather than at the end:
 
 | When | Write |
 |---|---|
-| after claiming | `kb note <id> --kind plan "…"` — what you are about to do |
-| on each commit | `kb note <id> --kind progress "<sha> one line"` |
-| on any blocker | `kb cp <id> --lease "$TOKEN" --state blocked --blocker "…"` |
+| after claiming | `kb note <id> --kind plan "…" --as "$ACTOR"` — what you are about to do |
+| on each commit | `kb note <id> --kind progress "<sha> one line" --as "$ACTOR"` |
+| on any blocker | `kb cp <id> --lease "$TOKEN" --as "$ACTOR" --state blocked --blocker "…" --summary "…" --intent "…" --next-action "…"` |
 | before `/clear`, rotation, or an expected compaction | `kb cp` for one task, or `kb h new` in the session form for the lane |
 
 The last row is the END batch: at a real boundary the checkpoint, the note and
@@ -966,7 +968,7 @@ and compare `git rev-parse HEAD` against `headSha` before trusting either.
 5. `cd` to the record's `repoPath` and check the tree: `git rev-parse HEAD`
    against `headSha`, `git status --short` against `dirtySummary`. A mismatch
    outranks everything else in the brief.
-6. `kb note <id> --kind plan` before touching code.
+6. `kb note <id> "…" --kind plan --as "$ACTOR"` before touching code.
 
 ### `--validation` says which layer, by convention
 
