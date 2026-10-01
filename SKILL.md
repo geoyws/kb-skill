@@ -250,13 +250,24 @@ but whose `--lane` is empty is invisible to its own lane's queue, which is the
 same failure the harness-qualified actor caused, wearing different clothes.
 
 **Write the heartbeat session file right after every claim** (George,
-2026-09-29, kb dotfiles t-c991e76a option A): `~/.claude/kb-session`, mode
-0600, two lines — task id, then lease token. The PostToolUse heartbeat hook
-(`claude/hooks/kb-heartbeat.sh`) reads exactly that file and never guesses;
-no file means no heartbeats and the lease quietly expires. One session holds
-one task, so a second claim overwrites. Rewrite both lines whenever the token
-changes. The board is resolved off the session cwd by lane-detect, never
-stored in the file.
+2026-09-29, kb dotfiles t-c991e76a option A): mode 0600, two lines — task id,
+then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
+PostToolUse heartbeat hook (`claude/hooks/kb-heartbeat.sh`) runs the same
+helper and reads exactly that file; it never guesses, and no file means no
+heartbeats and the lease quietly expires. The path is one file per tmux pane
+(`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes on
+one host never overwrite each other's token (kb infra t-c827bfb2). Run the
+helper from the shell of the pane your harness runs in; never write the path
+by hand. Outside tmux it prints the legacy single file `~/.claude/kb-session`
+and exits 3, which is safe only while one session per host claims. One
+session holds one task, so a second claim overwrites. Rewrite both lines
+whenever the token changes. The board is resolved off the session cwd by
+lane-detect, never stored in the file.
+
+```bash
+f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
+(umask 077; printf '%s\n%s\n' "$TASK" "$TOKEN" > "$f")
+```
 
 A pane that holds no driver lane repeats its own derived team token in the
 lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
