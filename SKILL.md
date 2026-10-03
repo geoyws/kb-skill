@@ -20,6 +20,10 @@ Every command below is checked against `kb/references/verified-recipes.md` (kanb
 
 ## Board home host is the execution boundary
 
+Today every board's home host is `@@hax` (`hosts.tsv`); the ledger moves to
+`@@hal` at P7 (kb infra e-b0901795). Until then hal's `/root/.local/bin/kb` is
+`kb-remote.sh` forwarding to hax, so `hostname` on hal never matches.
+
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. Before any `/kb` read or write, check the current host
 **before attempting SSH**:
