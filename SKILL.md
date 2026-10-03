@@ -26,6 +26,9 @@ installed kanban release binary and the ledger is `/root/.local/share/kanban`
 there. hax holds only the fenced, immutable pre-cutover copy
 (`/root/.local/share/kanban.p7-fenced`) for rollback; every kb path on hax
 refuses writes and reads, by design.
+This includes the acies board: route every board read and write to @@hal through
+`kb-board` (or `kb-host hal` for registry commands). An unreachable @@hal is a
+blocked ledger operation, never a reason to use the old @@hax copy.
 
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. Before any `/kb` read or write, check the current host
