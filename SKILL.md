@@ -20,9 +20,12 @@ Every command below is checked against `kb/references/verified-recipes.md` (kanb
 
 ## Board home host is the execution boundary
 
-Today every board's home host is `@@hax` (`hosts.tsv`); the ledger moves to
-`@@hal` at P7 (kb infra e-b0901795). Until then hal's `/root/.local/bin/kb` is
-`kb-remote.sh` forwarding to hax, so `hostname` on hal never matches.
+Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
+(`hosts.tsv`; kb infra t-93c9468e). hal's `/root/.local/bin/kb` is the
+installed kanban release binary and the ledger is `/root/.local/share/kanban`
+there. hax holds only the fenced, immutable pre-cutover copy
+(`/root/.local/share/kanban.p7-fenced`) for rollback; every kb path on hax
+refuses writes and reads, by design.
 
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. Before any `/kb` read or write, check the current host
