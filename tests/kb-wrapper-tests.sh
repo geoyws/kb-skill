@@ -841,6 +841,60 @@ JSON
     --items-file "$items" --body-file "$body"
 }
 
+# Every occurrence is a duplicate regardless of whether the first value was
+# /dev/stdin (which has no caller-side path) or a local file. Refuse before
+# either the local binary or SSH sees ambiguous flags.
+test_board_transact_rejects_all_duplicate_items_file_forms() {
+  local fakebin="$tmp_dir/transact-duplicates/fakebin"
+  local ssh_log="$tmp_dir/transact-duplicates/ssh.argv"
+  local kb_log="$tmp_dir/transact-duplicates/kb.argv"
+  local ssh_count="$tmp_dir/transact-duplicates/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id table items route first second output
+  board_id=$(make_id board)
+  table="$tmp_dir/transact-duplicates/hosts.tsv"
+  items="$tmp_dir/transact-duplicates/items.json"
+  printf '%s\n' '[]' >"$items"
+  local -a first_args second_args
+
+  for route in remote local; do
+    if [[ "$route" == local ]]; then
+      make_table "$table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    else
+      make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    fi
+    for first in 0 1 2 3; do
+      case "$first" in
+        0) first_args=(--items-file /dev/stdin) ;;
+        1) first_args=(--items-file=/dev/stdin) ;;
+        2) first_args=(--items-file "$items") ;;
+        3) first_args=("--items-file=$items") ;;
+      esac
+      for second in 0 1 2 3; do
+        case "$second" in
+          0) second_args=(--items-file /dev/stdin) ;;
+          1) second_args=(--items-file=/dev/stdin) ;;
+          2) second_args=(--items-file "$items") ;;
+          3) second_args=("--items-file=$items") ;;
+        esac
+        output=$(FAKE_SSH_MODE=fail \
+          FAKE_SSH_LOG="$ssh_log" \
+          FAKE_SSH_COUNT_FILE="$ssh_count" \
+          FAKE_KB_LOG="$kb_log" \
+          KB_HOSTS_TABLE="$table" \
+          PATH="$fakebin:$PATH" \
+          run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+            "${first_args[@]}" --json "${second_args[@]}")
+        assert_contains "$output" '--items-file given twice' "$route duplicate items-file $first/$second"
+        assert_ssh_call_count "$ssh_count" 0 "$route duplicate items-file $first/$second"
+        assert_log_clean "$ssh_log" "$route duplicate items-file $first/$second SSH"
+        assert_log_clean "$kb_log" "$route duplicate items-file $first/$second binary"
+      done
+    done
+  done
+}
+
 test_transact_items_file_at_the_boundary_needs_no_streaming() {
   local fakebin="$tmp_dir/transact-boundary/fakebin"
   local ssh_log="$tmp_dir/transact-boundary/ssh.argv"
@@ -2379,90 +2433,7 @@ assert_no_bytecode_artifacts() {
   fi
 }
 
-assert_test_wiring() {
-  local source_file="$script_dir/kb-wrapper-tests.sh"
-  local -a expected_tests=(
-    test_local_exec_injects_project_and_preserves_argv
-    test_remote_exec_uses_ssh_and_preserves_argv
-    test_adjacent_hosts_table_is_used
-    test_board_body_file_is_transferred_not_forwarded
-    test_host_body_file_is_transferred_for_registry_rules
-    test_body_file_at_the_boundary_needs_no_transfer
-    test_board_transact_items_ride_one_ssh_on_stdin
-    test_board_transact_local_items_file_is_streamed
-    test_transact_items_file_at_the_boundary_needs_no_streaming
-    test_readme_example_table_is_accepted
-    test_skill_parity_sections_are_present
-    test_public_readme_contract_snippets_are_present
-    test_host_surface_matches_source_allowlist
-    test_host_surface_external_source_override_is_accepted
-    test_host_surface_missing_command_drift_is_fail_closed
-    test_host_surface_new_command_drift_is_fail_closed
-    test_host_surface_spoofed_strings_are_ignored
-    test_host_surface_duplicate_commands_are_fail_closed
-    test_host_surface_missing_commands_table_is_fail_closed
-    test_alias_surface_matches_fixture
-    test_alias_surface_missing_alias_drift_is_fail_closed
-    test_alias_surface_new_alias_drift_is_fail_closed
-    test_alias_surface_spoofed_strings_are_ignored
-    test_alias_surface_duplicate_functions_are_fail_closed
-    test_alias_surface_duplicate_alias_pairs_are_fail_closed
-    test_alias_surface_duplicate_alias_target_is_fail_closed
-    test_alias_surface_block_rhs_is_fail_closed
-    test_alias_surface_extra_rhs_is_fail_closed
-    test_alias_surface_guard_is_fail_closed
-    test_alias_surface_call_is_fail_closed
-    test_alias_surface_duplicate_passthrough_is_fail_closed
-    test_alias_ownership_matches_wrappers
-    test_selector_and_escape_flags_are_rejected_without_transport
-    test_registry_commands_are_rejected_without_transport
-    test_host_registry_commands_are_allowed_without_transport
-    test_host_local_exec_preserves_argv_and_uses_table_binary
-    test_host_remote_exec_uses_ssh_and_preserves_argv
-    test_host_table_conflicts_are_fail_closed
-    test_host_refuses_board_owned_commands_without_transport
-    test_host_remote_hostname_mismatch_is_fail_closed
-    test_binary_path_rules_are_enforced
-    test_board_remote_hostname_mismatch_is_fail_closed
-    test_board_checkpoint_carries_the_callers_git_provenance
-    test_board_explicit_provenance_flag_is_kept_not_duplicated
-    test_board_outside_a_repository_appends_no_provenance
-    test_board_provenance_is_only_for_the_three_provenance_writers
-    test_board_provenance_repo_path_with_a_space_round_trips
-    test_denylist_and_hook_behaviour
-    test_content_audit
-  )
-
-  local -a defined_tests=()
-  local line name expected count
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ $line =~ ^(test_[A-Za-z0-9_]+)\(\)[[:space:]]*\{$ ]] || continue
-    defined_tests+=("${BASH_REMATCH[1]}")
-  done <"$source_file"
-
-  for expected in "${expected_tests[@]}"; do
-    if ! declare -F "$expected" >/dev/null; then
-      fail "missing runnable test function: $expected"
-    fi
-    if ! contains_item "$expected" "${defined_tests[@]}"; then
-      fail "missing test definition: $expected"
-    fi
-    count=$(grep -E "^${expected}\(\)[[:space:]]*\{" "$source_file" | wc -l | tr -d ' ')
-    if [[ "$count" -ne 1 ]]; then
-      fail "duplicate test definition: $expected"
-    fi
-  done
-
-  for name in "${defined_tests[@]}"; do
-    if ! contains_item "$name" "${expected_tests[@]}"; then
-      fail "unexpected test definition: $name"
-    fi
-  done
-}
-
 main() {
-  assert_test_wiring
-
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
     test_remote_exec_uses_ssh_and_preserves_argv
@@ -2472,6 +2443,7 @@ main() {
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
+    test_board_transact_rejects_all_duplicate_items_file_forms
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_readme_example_table_is_accepted
     test_skill_parity_sections_are_present

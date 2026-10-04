@@ -980,7 +980,9 @@ is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
 carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
 streams a local `--items-file PATH` on the single ssh connection's stdin and
 rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
-bytes arrive verbatim.
+bytes arrive verbatim. The wrapper refuses a second `--items-file` before
+transport, including mixed `--items-file PATH` and `--items-file /dev/stdin`
+spellings (with or without `=`).
 
 **An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
 shape. `TOOL` is an MCP tool name, which is the command with its subcommand

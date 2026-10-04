@@ -240,6 +240,7 @@ fi
 # is already ssh's stdin, and reopening it here would buy nothing.
 body_file=""
 items_file=""
+seen_items_file=0
 args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -256,7 +257,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     --items-file)
       [[ $# -ge 2 ]] || die 'kb-board: --items-file requires a path'
-      [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
+      [[ "$seen_items_file" -eq 0 ]] || die 'kb-board: --items-file given twice'
+      seen_items_file=1
       if [[ "$2" = /dev/stdin ]]; then
         args+=("$1" "$2")
       else
@@ -265,7 +267,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --items-file=*)
-      [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
+      [[ "$seen_items_file" -eq 0 ]] || die 'kb-board: --items-file given twice'
+      seen_items_file=1
       if [[ "${1#*=}" = /dev/stdin ]]; then
         args+=("$1")
       else
