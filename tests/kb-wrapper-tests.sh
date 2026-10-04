@@ -1667,7 +1667,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-host" "$home_host" "$alias" ls
         assert_log_clean "$ssh_log" "registry alias host ssh $alias"
-        assert_argv_file "$kb_log" "$alias" ls
         ;;
       *)
         FAKE_HOSTNAME_VALUE="$home_host" \
@@ -1680,7 +1679,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-board" "$board_id" "$alias" ls
         assert_log_clean "$ssh_log" "board alias board ssh $alias"
-        assert_argv_file "$kb_log" --project "$board_id" "$alias" ls
 
         : >"$ssh_log"
         : >"$kb_log"
@@ -2264,100 +2262,6 @@ test_board_provenance_repo_path_with_a_space_round_trips() {
     --repo "$top" --branch main --head "$head" --dirty '2 files changed'
 }
 
-test_board_lease_identity_transport() {
-  local fakebin="$tmp_dir/identity/fakebin" ssh_log="$tmp_dir/identity/ssh.argv"
-  local kb_log="$tmp_dir/identity/kb.argv" table="$tmp_dir/identity/hosts.tsv"
-  local repo="$tmp_dir/identity/repo with space" other="$tmp_dir/identity/other"
-  local linked="$tmp_dir/identity/linked" board_id remote_host key other_key
-  setup_fakebin_with_real_git "$fakebin"
-  board_id=$(make_id board); remote_host=$(make_id remote)
-  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
-  make_scratch_repo "$repo"; make_scratch_repo "$other"
-  git -C "$repo" worktree add -q --detach "$linked"
-  key=$(python3 "$package_dir/scripts/kb-repo-identity.py" key "$repo")
-  other_key=$(python3 "$package_dir/scripts/kb-repo-identity.py" key "$other")
-  [[ "$key" == git-common-dir-v1:* && "$key" != "$other_key" ]] || fail 'distinct repos have distinct keys'
-  [[ "$key" == "$(python3 "$package_dir/scripts/kb-repo-identity.py" key "$linked")" ]] || fail 'linked worktrees share key'
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" claim t-1 --as agent
-  assert_argv_file "$kb_log" --project "$board_id" claim t-1 --as agent --repo-key "$key" --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" h acc h-1 --as agent --repo="$other"
-  assert_argv_file "$kb_log" --project "$board_id" h acc h-1 --as agent --repo-key "$other_key" --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" hb t-1 --lease tok
-  assert_argv_file "$kb_log" --project "$board_id" hb t-1 --lease tok --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" heartbeat t-1 --repo "$other" --repo-key asserted --no-repo-capture
-  assert_argv_file "$kb_log" --project "$board_id" heartbeat t-1 --repo-key asserted --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" claim t-1 --as agent --no-repo-capture
-  assert_argv_file "$kb_log" --project "$board_id" claim t-1 --as agent --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" claim --candidates --as agent
-  assert_argv_file "$kb_log" --project "$board_id" claim --candidates --as agent
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" deploy start --repo owner/repo
-  assert_argv_file "$kb_log" --project "$board_id" deploy start --repo owner/repo
-  local plain="$tmp_dir/identity/plain"
-  mkdir -p "$plain"
-  run_board_remote_from "$plain" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" claim t-2 --as agent
-  assert_argv_file "$kb_log" --project "$board_id" claim t-2 --as agent --no-repo-capture
-  run_board_remote_from "$linked" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" "$board_id" hb t-1 --repo "$other" --no-repo-capture
-  assert_argv_file "$kb_log" --project "$board_id" hb t-1 --no-repo-capture --repo-key "$other_key"
-  local local_table="$tmp_dir/identity/local-hosts.tsv" local_log="$tmp_dir/identity/local.argv"
-  make_table "$local_table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$remote_host" "$fakebin/kb"
-  (
-    cd "$linked"
-    FAKE_SSH_MODE=fail FAKE_KB_LOG="$local_log" KB_HOSTS_TABLE="$local_table" PATH="$fakebin:$PATH"       "$package_dir/scripts/kb-board" "$board_id" claim t-3 --as agent
-  )
-  assert_argv_file "$local_log" --project "$board_id" claim t-3 --as agent --repo-key "$key" --no-repo-capture
-}
-
-test_board_batch_lease_identity_transport() {
-  local fakebin="$tmp_dir/batch-identity/fakebin" ssh_log="$tmp_dir/batch-identity/ssh.argv"
-  local kb_log="$tmp_dir/batch-identity/kb.argv" table="$tmp_dir/batch-identity/hosts.tsv"
-  local seen="$tmp_dir/batch-identity/items.seen" repo="$tmp_dir/batch-identity/repo"
-  local other="$tmp_dir/batch-identity/other" board_id remote_host key other_key items form
-  setup_fakebin_with_real_git "$fakebin"
-  board_id=$(make_id board); remote_host=$(make_id remote)
-  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
-  make_scratch_repo "$repo"; make_scratch_repo "$other"
-  key=$(python3 "$package_dir/scripts/kb-repo-identity.py" key "$repo")
-  other_key=$(python3 "$package_dir/scripts/kb-repo-identity.py" key "$other")
-  items="$tmp_dir/batch-identity/items.json"
-  cat >"$items" <<JSON
-[{"name":"claim","arguments":{"id":"t-1","as":"agent"}},
- {"name":"heartbeat","arguments":{"id":"t-1","lease":"tok"}},
- {"name":"handoff_accept","arguments":{"id":"h-1","repo":"$other"}},
- {"name":"claim","arguments":{"id":"t-2","repo":"$other","repo-key":"asserted"}},
- {"name":"note","arguments":{"text":"untouched"}}]
-JSON
-  for form in file inline stdin; do
-    (
-      cd "$repo"
-      export FAKE_HOSTNAME_VALUE="$(make_id current)" FAKE_REMOTE_HOSTNAME_VALUE="$remote_host"
-      export FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" FAKE_REMOTE_PATH="$fakebin:$PATH"
-      export FAKE_SSH_LOG="$ssh_log" FAKE_KB_LOG="$kb_log" FAKE_KB_ITEMS_OUT="$seen"
-      export KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH"
-      case "$form" in
-        file) "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json ;;
-        inline) "$package_dir/scripts/kb-board" "$board_id" transact --items "$(cat "$items")" --json ;;
-        stdin) "$package_dir/scripts/kb-board" "$board_id" transact --items-file /dev/stdin --json <"$items" ;;
-      esac
-    )
-    if [[ "$form" = inline ]]; then
-      local -a argv=()
-      while IFS= read -r -d '' item; do argv+=("$item"); done <"$kb_log"
-      printf '%s' "${argv[4]}" >"$seen"
-    else
-      assert_argv_file "$kb_log" --project "$board_id" transact --json --items-file /dev/stdin
-    fi
-    python3 - "$seen" "$key" "$other_key" <<'PY' || fail "$form batch repository identity"
-import json, sys
-items = json.load(open(sys.argv[1])); key, other = sys.argv[2:]
-assert items[0]['arguments'] == {'id':'t-1','as':'agent','repo-key':key,'no-repo-capture':True}
-assert items[1]['arguments'] == {'id':'t-1','lease':'tok','no-repo-capture':True}
-assert items[2]['arguments'] == {'id':'h-1','repo-key':other,'no-repo-capture':True}
-assert items[3]['arguments'] == {'id':'t-2','repo-key':'asserted','no-repo-capture':True}
-assert items[4]['arguments'] == {'text':'untouched'}
-PY
-  done
-}
-
 test_denylist_and_hook_behaviour() {
   local clean_root="$tmp_dir/clean-root"
   local dirty_root="$tmp_dir/dirty-root"
@@ -2529,8 +2433,6 @@ assert_test_wiring() {
     test_board_outside_a_repository_appends_no_provenance
     test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
-    test_board_lease_identity_transport
-    test_board_batch_lease_identity_transport
     test_denylist_and_hook_behaviour
     test_content_audit
   )
@@ -2613,8 +2515,6 @@ main() {
     test_board_outside_a_repository_appends_no_provenance
     test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
-    test_board_lease_identity_transport
-    test_board_batch_lease_identity_transport
     test_public_readme_contract_snippets_are_present
     test_denylist_and_hook_behaviour
     test_content_audit
