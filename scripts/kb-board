@@ -235,11 +235,19 @@ if claim_identity_write "$command" "$@"; then
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)
+        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
         [[ $# -ge 2 ]] || die 'kb-board: --repo requires a path'
+        case "$2" in
+          --repo|--repo=*) die 'kb-board: duplicate --repo option' ;;
+        esac
         explicit_repo=$2
         repo_supplied=1
         shift 2 ;;
-      --repo=*) explicit_repo=${1#*=}; repo_supplied=1; shift ;;
+      --repo=*)
+        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
+        explicit_repo=${1#*=}
+        repo_supplied=1
+        shift ;;
       *) identity_args+=("$1"); shift ;;
     esac
   done
