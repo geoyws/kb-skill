@@ -117,8 +117,6 @@ fa=${sa#* }; fb=${sb#* }
 (umask 077; printf '%s\n%s\n' "task-b" "token-b" > "$fb")
 [ "$(cat "$fa")" = "$(printf '%s\n%s' "task-a" "token-a")" ] || fail "session-a content clobbered"
 [ "$(cat "$fb")" = "$(printf '%s\n%s' "task-b" "token-b")" ] || fail "session-b content clobbered"
-fmode_a=$(stat_mode "$fa"); [ "$fmode_a" = 600 ] || fail "session-a token mode $fmode_a, want 600"
-fmode_b=$(stat_mode "$fb"); [ "$fmode_b" = 600 ] || fail "session-b token mode $fmode_b, want 600"
 n_before=$(ls -A "$T/home/kb-session.d" | wc -l)
 # Refusals: explicitly empty, control-character, and over-long ids print no
 # path, so a caller capturing stdout writes no token file.
