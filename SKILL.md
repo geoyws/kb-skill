@@ -19,13 +19,13 @@ Output is **always JSON**, with or without `--json`.
 ## Board home host is the execution boundary
 
 The authoritative Kanban registry and boards live on the board home host chosen
-by the consumer table. Before any `/kb` read or write, check the current host
+by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
 **before attempting SSH**:
 
 ```bash
 hostname                   # if this prints exactly the selected board home host, stay here
-test "$(command -v kb)" = /root/.local/bin/kb
-/root/.local/bin/kb v
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
 ```
 
 If `hostname` prints anything other than the selected board home host, enter
@@ -34,8 +34,8 @@ the routed SSH target and verify the remote boundary there:
 ```bash
 ssh "$BOARD_SSH_TARGET"
 hostname                   # must now print exactly the selected remote hostname
-test "$(command -v kb)" = /root/.local/bin/kb
-/root/.local/bin/kb v
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
 ```
 
 An SSH one-shot does **not** load the interactive `PATH`, so it can report
@@ -50,7 +50,7 @@ bundled argv-preserving wrapper for one-shot commands:
 ```
 
 The wrapper verifies that the routed remote host matches the expected
-hostname, invokes the fixed installed path `/root/.local/bin/kb`, and
+hostname, invokes the fixed installed path `$KB_EXEC` from the routing table, and
 preserves spaces and shell metacharacters as literal arguments. In an
 interactive SSH shell, use the same exact fail-closed check and invocation as
 above; any other `kb` resolution is a stale or shadowed PATH. Use an
@@ -217,7 +217,7 @@ kb r new "All except project-a." --except-board project-a --as "$AGENT" --json
 kb r up r-12345678 --board kanban --as "$AGENT" --json
 
 # Namespaced subsystem tags intersect the board selector.
-kb r new "Queuer only." --tag geoyws/queuer --as "$AGENT" --json
+kb r new "Queuer only." --tag acme/queuer --as "$AGENT" --json
 kb r up r-12345678 --clear-tags --as "$AGENT" --json
 ```
 
@@ -292,7 +292,8 @@ There is deliberately no `info`: something that needs nobody is a note, and
 `kb n` already holds those.
 
 **Raise, do not resolve.** Agents raise and read; only the owner resolves. The
-owner's actor is `geoyws`: the binary gates `resolve` and `reopen` on it and the
+owner's actor is `geoyws` in the current binary (written `$OWNER` in examples):
+the binary gates `resolve` and `reopen` on that identity; it is not configurable. The
 refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
 `resolvedBy: geo` as a record, and `--as geo` today is refused like any other
 non-raiser. The one exception is an item this same session raised and has since
@@ -319,7 +320,7 @@ plus the one registry rules document. Each result has a stable
 ```bash
 kb search "resume the release handoff" --project kanban --json
 kb search t-12345678 --source task --limit 5 --max-chars 4000 --json
-kb search "authentication recovery" --tag geoyws/auth --all-boards --json
+kb search "authentication recovery" --tag acme/auth --all-boards --json
 kb search "retired decision" --all --json       # include archived history
 ```
 
@@ -528,8 +529,8 @@ When you claim or read a task whose previous holder died, the claim receipt and
 
 ```json
 { "agent": "claude@driver-2", "sessionID": "…", "expiredAt": 1788600000000,
-  "lastCheckpointAt": 1788599100000, "worktree": "/root/work/src/kanban",
-  "branch": "kanban-geoyws-driver", "headSha": "e87c5a6" }
+  "lastCheckpointAt": 1788599100000, "worktree": "/home/operator/work/src/example",
+  "branch": "kanban-example-driver", "headSha": "e87c5a6" }
 ```
 
 It is **absent**, not null, when there is nothing to report, and it describes
@@ -665,33 +666,33 @@ task contains nothing.
 
 ## Tags — which part of the system this is about
 
-**Tag your rows.** A board that cannot say whether a task is `geoyws/infra`,
-`geoyws/queuer` or `geoyws/askie` makes you read titles to find out, and you are
+**Tag your rows.** A board that cannot say whether a task is `acme/infra`,
+`acme/queuer` or `acme/askie` makes you read titles to find out, and you are
 the one who knows.
 
 Tags are namespaced `<estate>/<subsystem>` in storage and CLI
 (`--tag estate/subsystem`) — slash spelling only, per map rule r-98ff7ad2. The
-hyphen form (`geoyws-orchestration`) is superseded; never use it. Estate-neutral
-examples below use `geoyws/`: the package ships estate-neutral, so examples need
-a concrete estate, and the author's own estate is the illustration — not a
-default the consumer inherits. Prose renders a registered tag as
-`:estate/subsystem` (e.g. `:geoyws/infra`); the colon is only presentation
+hyphen form (`acme-orchestration`) is superseded; never use it. Estate-neutral
+examples below use `acme/`: the package ships estate-neutral, so examples need
+a concrete estate, and `acme` is a placeholder illustration — not a
+default the consumer inherits; substitute your own estate. Prose renders a registered tag as
+`:estate/subsystem` (e.g. `:acme/infra`); the colon is only presentation
 notation, do not create another sigil namespace inside KB tags. A tag already in
 use moves to its namespaced name with `kb tag rename`.
 
 ```bash
 kb tag ls --json                                   # the vocabulary, with use counts
-kb tag new geoyws/infra --description "hosts, containers, deploys" --as "$AGENT" --json
-kb t new "Retry backoff" --tag geoyws/queuer --tag geoyws/infra --json
-kb t up <id> --tag geoyws/queuer --as "$AGENT" --json     # replaces, does not append
+kb tag new acme/infra --description "hosts, containers, deploys" --as "$AGENT" --json
+kb t new "Retry backoff" --tag acme/queuer --tag acme/infra --json
+kb t up <id> --tag acme/queuer --as "$AGENT" --json     # replaces, does not append
 kb t up <id> --clear-tags --as "$AGENT" --json     # the only way to say "none"
-kb t ls --status todo --tag geoyws/queuer --json          # open work in one subsystem
+kb t ls --status todo --tag acme/queuer --json          # open work in one subsystem
 ```
 
 **Read `kb tag ls` before you tag.** The vocabulary is a per-board **master
 file**: only a registered tag can be attached, and attaching an unregistered one
 is refused naming the nearest match. That refusal is the feature — it is what
-stops `geoyws/infra`, `geoyws/Infra` and `geoyws/infrastructure` becoming three
+stops `acme/infra`, `acme/Infra` and `acme/infrastructure` becoming three
 answers to one question.
 
 **If nothing fits, register it** with a description, then use it. Do not leave
@@ -699,7 +700,7 @@ the row unfiled and do not smuggle the subject into the title. Registering is on
 command and it is paid once per concept, by whoever names it first.
 
 Names are `<estate>/<subsystem>`: each segment is lowercase letters, digits and
-inner hyphens, joined by one `/`. `geoyws/Infra` is refused rather than folded
+inner hyphens, joined by one `/`. `acme/Infra` is refused rather than folded
 — folding would decide for you which spelling you meant.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
@@ -711,7 +712,7 @@ on it; a tag is *what part of the system this touches*. Putting a subsystem in
 
 `@:team` is atmux routing identity, not a tag. Do not encode board, lane, team,
 host, tier, actor, priority, or typed row IDs as tags. In particular,
-`:geoyws/module` means the registered KB tag `geoyws/module`, while `@:team`
+`:acme/module` means the registered KB tag `acme/module`, while `@:team`
 names an atmux team; they are different types and must never be normalized into
 one another.
 
@@ -862,7 +863,7 @@ board path or root in the record.
 
 ```bash
 kb subscription add --project NAME --id sub-codex-queue \
-  --subject task:t-12345678 --kind checkpoint_added --tag geoyws/orchestration \
+  --subject task:t-12345678 --kind checkpoint_added --tag acme/orchestration \
   --consumer codex.queue --action enqueue-turn \
   --timeout-ms 30000 --max-retries 3 --rate-per-minute 60 \
   --max-concurrency 1 --secret-ref codex_queue_token --as "$OWNER" --json
@@ -937,7 +938,7 @@ kanban-dispatcher --db /exact/board.db [--once] [--json]
 ```
 
 On the board home host use the fixed installed path `/root/.local/bin/kanban-dispatcher` after
-the same host-boundary verification used for `/root/.local/bin/kb`. The worker
+the same host-boundary verification used for `$KB_EXEC`. The worker
 is not a `kb-board` subcommand. `--consumer` restricts execution to one consumer
 identity; `--once` performs one scheduler step; without `--once` it polls until
 SIGINT/SIGTERM. Help and version do not open board or registry state.
@@ -1012,8 +1013,8 @@ an explicit audited recovery override. See ADR-030.
 
 ## The web view
 
-`$BOARD_WEB_URL` — every board at once, behind shared Google SSO with only the
-allowed account list. Reads use the same Store as the CLI. Writes are a
+`$BOARD_WEB_URL` — every board at once, behind the operator's single sign-on with only the
+operator-managed account allowlist. Reads use the same Store as the CLI. Writes are a
 deliberately narrow, same-origin, owner-attributed set: resolving an attention
 item from its card, **undoing** one that was just decided (the audited
 `attention reopen`, not a second write path), opening a draft plan, and
@@ -1044,10 +1045,12 @@ Board texts (bodies, notes, plans, sitreps) render as markdown with raw HTML
 stripped server-side. Every reference link (task, board, deployment) shows a
 hover preview — previews nest — and opens the item in its own tab.
 
-It is `kanban serve` on loopback 14200, kept up by `kanban-serve.service` and
-fronted by nginx. It binds the loopback interface and has **no `--bind` flag** — kanban
+It is `kanban serve` bound to the loopback interface on the operator-configured
+loopback port, kept up by the operator's process supervisor and fronted by the
+operator's reverse proxy. It binds the loopback interface and has **no `--bind` flag** — kanban
 implements no authentication and trusts the edge, so the only correct value is
-the default. Updating is `install` then `systemctl restart kanban-serve`; the
+the default loopback binding. Updating is `install` then a restart via the
+operator's process supervisor; the
 MCP server's in-place swap does not apply to an HTTP server. `/live` upgrades to
 a WebSocket and sends revision-only refresh notifications; agent CLI/MCP access
 does not depend on that socket. That socket is compatibility invalidation only;
@@ -1076,14 +1079,15 @@ through SSH. That gives an interactive harness a connection it holds for the
 whole session instead of one handshake per read:
 
 ```bash
-ssh BOARD_SSH_TARGET /root/.local/bin/kb mcp     # the whole server command
+ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp     # the whole server command
 ```
 
-Register that command as a stdio MCP server in the harness — Claude Code:
-`claude mcp add --scope user --transport stdio kb -- ssh BOARD_SSH_TARGET
-/root/.local/bin/kb mcp`; Codex: an `[mcp_servers.kb]` block with
-`command = "ssh"` and `args = ["BOARD_SSH_TARGET", "/root/.local/bin/kb",
-"mcp"]`. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
+Register that command as a stdio MCP server in the harness. For Claude Code,
+run `claude mcp add --scope user --transport stdio kb -- ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`.
+For Codex, use an `[mcp_servers.kb]` block with `command = "ssh"` and
+`args = ["BOARD_SSH_TARGET", "/absolute/path/to/kb", "mcp"]`. Replace both
+placeholders with the routing table values: TOML argument strings do not expand
+shell variables. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
 connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
 call — about one round trip plus the query — against 2.5 s per CLI one-shot
 without a ControlMaster. This is the agent API; there is no HTTP service.
@@ -1092,8 +1096,8 @@ What does not change: every tool still takes its own `project`, because the
 server resolves a board per call and refuses `--project` on `kb mcp` itself
 rather than let one session silently answer about a board it was not asked
 about. The same rules, the same refusals, the same `readOnlyHint` — a tool
-call is the real binary on the real ledger, as root, on a production-bearing
-host. If the host is unreachable the server fails to start and the harness
+call is the real binary on the real ledger, with the installed identity, on the
+board home host. If the host is unreachable the server fails to start and the harness
 says so; that is the correct outcome. Never point the registration at a local
 `kb` or a local board file to make the error go away.
 
@@ -1113,7 +1117,7 @@ once a silent wrong answer.
 - `restore` takes the data root exclusively and refuses while anything else
   holds it.
 - A tag that is not in the board's master file is refused on attach **and on
-  filter**. `kb t ls --tag geoyws/infr` does not answer "nothing" — an empty list
+  filter**. `kb t ls --tag acme/infr` does not answer "nothing" — an empty list
   reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
