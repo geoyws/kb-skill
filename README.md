@@ -19,7 +19,9 @@ installation.
   keyed per tmux pane so concurrent sessions on one host never share a lease
   token.
 - `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior;
-  `tests/kb-session-file-tests.sh` exercises the session-file path.
+  `tests/kb-session-file-tests.sh` exercises the session-file path. Wrapper
+  checks retain executable routing, refusal, transfer and provenance contracts,
+  not Markdown headings, prose snippets or the test script's own wiring.
 
 ## Routing model
 

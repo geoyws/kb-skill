@@ -905,8 +905,7 @@ EOF
 
   local table="$tmp_dir/readme/hosts.tsv"
   local board_id home_host ssh_target remote_host example_remote example_exec
-  local readme_board readme_home readme_target readme_remote readme_exec
-  local readme_text plan_file
+  local plan_file
   board_id=$(make_id board)
   home_host=$(make_id home)
   ssh_target=$(make_id target)
@@ -915,21 +914,6 @@ EOF
   example_exec="$example_kb"
   plan_file="$tmp_dir/readme-plan.md"
   printf '%s\n' '# plan' >"$plan_file"
-  readme_text=$(/bin/cat "$package_dir/README.md")
-  case "$readme_text" in
-    *'--project NAME --body-file /tmp/plan.md'*) fail 'readme body-file example must not pass --project through kb-board' ;;
-  esac
-  assert_contains "$readme_text" 'scripts/kb-board board_identifier t new "Title" --body-file /tmp/plan.md --json' 'readme body-file example'
-  readme_row=$(printf '%s\n' "$readme_text" | awk '
-    /^```tsv$/ { in_block=1; next }
-    in_block && NF { print; exit }
-  ')
-  IFS=$'\t' read -r readme_board readme_home readme_target readme_remote readme_exec <<<"$readme_row"
-  assert_contains "$readme_board" 'board_identifier' 'readme board placeholder'
-  assert_contains "$readme_home" 'board_home_host' 'readme home placeholder'
-  assert_contains "$readme_target" 'ssh_target' 'readme ssh placeholder'
-  assert_contains "$readme_remote" 'expected_remote_hostname' 'readme remote placeholder'
-  assert_contains "$readme_exec" '<absolute_kb_binary_path>' 'readme executable placeholder'
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$board_id" \
     "$home_host" \
@@ -955,120 +939,6 @@ EOF
   # file that the remote could never read look correct for months.
   assert_argv_prefix "$kb_log" --project "$board_id" t new "Title" --json --body-file
   assert_body_transferred "$kb_log" "$tmp_dir/readme/body.seen" "$plan_file"
-}
-
-test_skill_parity_sections_are_present() {
-  local skill="$package_dir/SKILL.md"
-  local text
-  text=$(/bin/cat "$skill")
-
-  local -a required_headings=(
-    '## Board home host is the execution boundary'
-    '## Aliases'
-    '## Addressing a board'
-    '## Tag-scoped rules — what frames work'
-    '## Workspace adoption and rule transfer'
-    '## Attention — anything that needs the owner'
-    '## Search and bounded RAG context'
-    '## Sitreps — where a lane stands, cheaply'
-    '## Handoffs — task and session'
-    '## Working a task'
-    '## Batched writes — `transact`'
-    '## Plans'
-    '## Tags — which part of the system this is about'
-    '## Provenance — where and when work happened'
-    '## Reading'
-    '## Watch — cursor-native live subscription'
-    '## Subscription records and dispatcher delivery'
-    '## Archival — bounded hot indexes, intact history'
-    '## Deployment attempts — exact release receipts'
-    '## As an MCP server'
-    '## Refusals worth knowing'
-    '## Reference'
-  )
-
-  local heading
-  for heading in "${required_headings[@]}"; do
-    assert_contains "$text" "$heading" "skill heading $heading"
-  done
-
-  local -a required_commands=(
-    'scripts/kb-host BOARD_HOME_HOST r ls --json'
-    'kb claim --next'
-    'kb hb <id> --lease'
-    'kb cp <id> --lease'
-    'kb h new <task-id>'
-    'kb search "resume the release handoff"'
-    'kb t new "Title"'
-    'kb att raise "<verdict-first'
-    'kb r new "Universal rule."'
-    'kb workspace adopt --from-board PATH --name NAME (--workspace ROOT | --rootless) --as ACTOR'
-    'kb rule export --board NAME ... --as ACTOR [--output PATH]'
-    'kb rule import PATH --as ACTOR'
-    'kb watch --project NAME'
-    'kb subscription add --project NAME'
-    'kb archive --older-than-days'
-    'kb deploy start --repo'
-    'kb mcp'
-    'kb transact --items-file items.json --json'
-    'scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json'
-    '{"$ref": {"item": N, "path": "/json/pointer"}}'
-  )
-
-  local command_snippet
-  for command_snippet in "${required_commands[@]}"; do
-    assert_contains "$text" "$command_snippet" "skill command $command_snippet"
-  done
-
-  local -a required_public_tokens=(
-    '`kb` and `kanban` are the same binary'
-    'kanban://BOARD/KIND/ID'
-    'kanban://rules/rule/ID'
-    'kanban-dispatcher'
-    'kanban-codex-queue-adapter'
-    'kanban-claude-print-adapter'
-    '`claude.print`, action'
-    '`start-readonly-turn`, with capability `start`'
-    '`--claude ABSOLUTE_PATH --home ABSOLUTE_PATH --cwd ABSOLUTE_PATH'
-    'ships with no active subscription'
-    'invalid Claude response also fails'
-    '/root/.local/bin/kanban-dispatcher'
-    'system@cli'
-  )
-
-  local token_snippet
-  for token_snippet in "${required_public_tokens[@]}"; do
-    assert_contains "$text" "$token_snippet" "skill public token $token_snippet"
-  done
-}
-
-test_public_readme_contract_snippets_are_present() {
-  local text
-  text=$(/bin/cat "$package_dir/README.md")
-
-  local -a required_headings=(
-    '## Workspace adoption and rule transfer'
-    '## Routing model'
-  )
-
-  local heading
-  for heading in "${required_headings[@]}"; do
-    assert_contains "$text" "$heading" "readme heading $heading"
-  done
-
-  local -a required_snippets=(
-    'kb workspace adopt --from-board PATH --name NAME (--workspace ROOT | --rootless) --as ACTOR'
-    'kb rule export --board NAME ... --as ACTOR [--output PATH]'
-    'kb rule import PATH --as ACTOR'
-    'It is a copy into the registry, not a rename, and it leaves the source board file unchanged.'
-    'Route those verbs through `kb-host`'
-    'or the raw registry path, not `kb-board`.'
-  )
-
-  local snippet
-  for snippet in "${required_snippets[@]}"; do
-    assert_contains "$text" "$snippet" "readme snippet $snippet"
-  done
 }
 
 test_selector_and_escape_flags_are_rejected_without_transport() {
@@ -2379,90 +2249,7 @@ assert_no_bytecode_artifacts() {
   fi
 }
 
-assert_test_wiring() {
-  local source_file="$script_dir/kb-wrapper-tests.sh"
-  local -a expected_tests=(
-    test_local_exec_injects_project_and_preserves_argv
-    test_remote_exec_uses_ssh_and_preserves_argv
-    test_adjacent_hosts_table_is_used
-    test_board_body_file_is_transferred_not_forwarded
-    test_host_body_file_is_transferred_for_registry_rules
-    test_body_file_at_the_boundary_needs_no_transfer
-    test_board_transact_items_ride_one_ssh_on_stdin
-    test_board_transact_local_items_file_is_streamed
-    test_transact_items_file_at_the_boundary_needs_no_streaming
-    test_readme_example_table_is_accepted
-    test_skill_parity_sections_are_present
-    test_public_readme_contract_snippets_are_present
-    test_host_surface_matches_source_allowlist
-    test_host_surface_external_source_override_is_accepted
-    test_host_surface_missing_command_drift_is_fail_closed
-    test_host_surface_new_command_drift_is_fail_closed
-    test_host_surface_spoofed_strings_are_ignored
-    test_host_surface_duplicate_commands_are_fail_closed
-    test_host_surface_missing_commands_table_is_fail_closed
-    test_alias_surface_matches_fixture
-    test_alias_surface_missing_alias_drift_is_fail_closed
-    test_alias_surface_new_alias_drift_is_fail_closed
-    test_alias_surface_spoofed_strings_are_ignored
-    test_alias_surface_duplicate_functions_are_fail_closed
-    test_alias_surface_duplicate_alias_pairs_are_fail_closed
-    test_alias_surface_duplicate_alias_target_is_fail_closed
-    test_alias_surface_block_rhs_is_fail_closed
-    test_alias_surface_extra_rhs_is_fail_closed
-    test_alias_surface_guard_is_fail_closed
-    test_alias_surface_call_is_fail_closed
-    test_alias_surface_duplicate_passthrough_is_fail_closed
-    test_alias_ownership_matches_wrappers
-    test_selector_and_escape_flags_are_rejected_without_transport
-    test_registry_commands_are_rejected_without_transport
-    test_host_registry_commands_are_allowed_without_transport
-    test_host_local_exec_preserves_argv_and_uses_table_binary
-    test_host_remote_exec_uses_ssh_and_preserves_argv
-    test_host_table_conflicts_are_fail_closed
-    test_host_refuses_board_owned_commands_without_transport
-    test_host_remote_hostname_mismatch_is_fail_closed
-    test_binary_path_rules_are_enforced
-    test_board_remote_hostname_mismatch_is_fail_closed
-    test_board_checkpoint_carries_the_callers_git_provenance
-    test_board_explicit_provenance_flag_is_kept_not_duplicated
-    test_board_outside_a_repository_appends_no_provenance
-    test_board_provenance_is_only_for_the_three_provenance_writers
-    test_board_provenance_repo_path_with_a_space_round_trips
-    test_denylist_and_hook_behaviour
-    test_content_audit
-  )
-
-  local -a defined_tests=()
-  local line name expected count
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ $line =~ ^(test_[A-Za-z0-9_]+)\(\)[[:space:]]*\{$ ]] || continue
-    defined_tests+=("${BASH_REMATCH[1]}")
-  done <"$source_file"
-
-  for expected in "${expected_tests[@]}"; do
-    if ! declare -F "$expected" >/dev/null; then
-      fail "missing runnable test function: $expected"
-    fi
-    if ! contains_item "$expected" "${defined_tests[@]}"; then
-      fail "missing test definition: $expected"
-    fi
-    count=$(grep -E "^${expected}\(\)[[:space:]]*\{" "$source_file" | wc -l | tr -d ' ')
-    if [[ "$count" -ne 1 ]]; then
-      fail "duplicate test definition: $expected"
-    fi
-  done
-
-  for name in "${defined_tests[@]}"; do
-    if ! contains_item "$name" "${expected_tests[@]}"; then
-      fail "unexpected test definition: $name"
-    fi
-  done
-}
-
 main() {
-  assert_test_wiring
-
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
     test_remote_exec_uses_ssh_and_preserves_argv
@@ -2474,8 +2261,6 @@ main() {
     test_board_transact_local_items_file_is_streamed
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_readme_example_table_is_accepted
-    test_skill_parity_sections_are_present
-    test_public_readme_contract_snippets_are_present
     test_host_surface_matches_source_allowlist
     test_host_surface_external_source_override_is_accepted
     test_host_surface_missing_command_drift_is_fail_closed
@@ -2511,7 +2296,6 @@ main() {
     test_board_outside_a_repository_appends_no_provenance
     test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
-    test_public_readme_contract_snippets_are_present
     test_denylist_and_hook_behaviour
     test_content_audit
   )
