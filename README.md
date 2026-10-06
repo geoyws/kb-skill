@@ -15,9 +15,12 @@ installation.
   `.githooks/pre-commit` enforce the publication hygiene gate.
 - `scripts/install-hooks` and `scripts/check-hooks` manage the versioned hook
   path.
-- `scripts/kb-session-file` prints this session's heartbeat session-file path,
-  keyed per tmux pane so concurrent sessions on one host never share a lease
-  token.
+- `scripts/kb-session-file` prints this session's heartbeat session-file path.
+  A nonempty `KB_SESSION_ID` takes precedence and maps deterministically to
+  one `kb-session.d/session-<full sha256 hex>` file per id; otherwise the
+  path is keyed per tmux pane, falling back to the legacy single file outside tmux, so
+  concurrent sessions on one host never share a lease token. The id is a
+  filename namespace only and grants no authority.
 - `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior;
   `tests/kb-session-file-tests.sh` exercises the session-file path. Wrapper
   checks retain executable routing, refusal, transfer and provenance contracts,

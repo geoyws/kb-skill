@@ -266,11 +266,20 @@ same failure the harness-qualified actor caused, wearing different clothes.
 then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
 PostToolUse heartbeat hook (`claude/hooks/kb-heartbeat.sh`) runs the same
 helper and reads exactly that file; it never guesses, and no file means no
-heartbeats and the lease quietly expires. The path is one file per tmux pane
-(`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes on
-one host never overwrite each other's token (kb infra t-c827bfb2). Run the
+heartbeats and the lease quietly expires. With a nonempty `KB_SESSION_ID` in
+the environment, the path is a deterministic per-session file
+(`~/.claude/kb-session.d/session-<full sha256 hex of the id>`), which takes precedence
+over tmux detection: two concurrent sessions with different ids get different
+files holding their own task id and lease token, and reopening the same id
+derives the same path. Without `KB_SESSION_ID` the path is one file per tmux
+pane (`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes
+on one host never overwrite each other's token (kb infra t-c827bfb2). Run the
 helper from the shell of the pane your harness runs in; never write the path
-by hand. Outside tmux it prints the legacy single file `~/.claude/kb-session`
+by hand. An explicitly empty, over-long (>256 bytes), newline-bearing, or
+control-character session id is refused with no path printed, so set no token file. The session id is only a
+filename namespace: it grants no board, lane, role, or lease authority, and
+both sides must already agree on the id out of band. Without `KB_SESSION_ID`,
+outside tmux it prints the legacy single file `~/.claude/kb-session`
 and exits 3, which is safe only while one session per host claims. One
 session holds one task, so a second claim overwrites. Rewrite both lines
 whenever the token changes. The board is resolved off the session cwd by
