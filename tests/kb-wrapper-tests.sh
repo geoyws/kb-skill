@@ -874,7 +874,7 @@ test_transact_items_file_at_the_boundary_needs_no_streaming() {
   cmp -s "$seen" "$items" || fail 'the local items were not the caller file'
 }
 
-test_readme_example_table_is_accepted() {
+test_generated_table_transfers_body_file() {
   local fakebin="$tmp_dir/readme/fakebin"
   local ssh_log="$tmp_dir/readme/ssh.argv"
   local kb_log="$tmp_dir/readme/kb.argv"
@@ -2260,7 +2260,7 @@ main() {
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
     test_transact_items_file_at_the_boundary_needs_no_streaming
-    test_readme_example_table_is_accepted
+    test_generated_table_transfers_body_file
     test_host_surface_matches_source_allowlist
     test_host_surface_external_source_override_is_accepted
     test_host_surface_missing_command_drift_is_fail_closed
