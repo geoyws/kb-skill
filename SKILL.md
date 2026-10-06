@@ -1027,7 +1027,8 @@ is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
 carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
 streams a local `--items-file PATH` on the single ssh connection's stdin and
 rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
-bytes arrive verbatim.
+unmodified items arrive byte-for-byte; the three lease-write items receive
+caller-side identity before streaming (see Provenance).
 
 **An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
 shape. `TOOL` is an MCP tool name, which is the command with its subcommand
@@ -1137,8 +1138,10 @@ dirty_summary missing … Pass --repo PATH --branch NAME --head SHA --dirty TEXT
 So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
 `git rev-parse --show-toplevel`, `git symbolic-ref --short HEAD`,
 `git rev-parse HEAD` and a count of `git status --porcelain` lines (`clean`,
-`1 file changed`, `N files changed`). Every other write — `claim`, `heartbeat`,
-`note`, `release`, `task update` — needs nothing extra.
+`1 file changed`, `N files changed`). The separate overlap identity for
+`claim`, `heartbeat`, and `handoff_accept` **is** handled in
+batch items by `kb-board` on the caller (see Provenance). `note`,
+`release` and `task update` need nothing extra.
 
 ## Plans
 
@@ -1466,6 +1469,19 @@ Recorded automatically. You do not pass it, and you should not have to:
   detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
   you pass is left alone. All three refuse a row whose provenance would be
   blank, so in an interactive board-host shell, pass the four yourself.
+- **Cross-board overlap uses a separate repository key.** Routed `kb-board`
+  claim and task handoff acceptance derive it on the caller from the canonical
+  Git common-dir and stable local machine ID. Linked worktrees of one repository
+  share the same key; another repository or machine does not. `--repo-key KEY`
+  explicitly asserts identity and wins over `--repo PATH`; the wrapper
+  consumes that path locally rather than forwarding it. `--no-repo-capture`
+  suppresses implicit capture, and the wrapper always forwards it to keep the
+  board host cwd out of routed writes. Heartbeat never derives from cwd: absent
+  an explicit key or repo move, it preserves the saved key. A caller outside a
+  repository forwards no inferred key. This is not the checkpoint/handoff/sitrep
+  provenance above. Routed `transact` applies these rules inside only
+  `claim`, `heartbeat` and `handoff_accept` items (both `--items`
+  and `--items-file`); `kb-host` refuses these board-owned writes.
 - **Timestamps** are on every row already — `createdAt`, `updatedAt`,
   `completedAt`, `claimedAt`, `heartbeatAt`, `expiresAt`, `acceptedAt`,
   `resolvedAt`.

@@ -6,11 +6,14 @@ installation.
 ## What is here
 
 - `SKILL.md` documents the public skill surface.
-- `scripts/kb-board` routes commands by board and preserves argv literally; on
-  `checkpoint` and `handoff create` it also forwards the caller's git checkout
-  as `--repo`, `--branch`, `--head` and `--dirty` unless the caller passed them.
-- `scripts/kb-host` routes registry commands by board home host and preserves
-  argv literally.
+- `scripts/kb-board` routes board-owned commands. For claim, heartbeat and
+  task handoff acceptance it derives caller-side repository identity and prevents
+  remote-cwd capture; for checkpoint, handoff creation and sitrep posting it
+  preserves the separate existing git provenance capture.
+- `scripts/kb-repo-identity.py` computes local common-dir identities and
+  rewrites only supported lease writes inside routed transaction JSON.
+- `scripts/kb-host` routes registry commands by board home host, preserving
+  argv; board-owned lease writes are intentionally refused there.
 - `scripts/denylist-check`, `scripts/leak-gate`, `scripts/commit-gate`, and
   `.githooks/pre-commit` enforce the publication hygiene gate.
 - `scripts/install-hooks` and `scripts/check-hooks` manage the versioned hook
@@ -42,6 +45,26 @@ The KB executable path must be absolute. `kb-board` injects the project
 selector for board-owned commands; `kb-host` preserves registry commands
 without a board selector. Remote execution uses the board home host identity,
 the SSH target, and the remote hostname check is fail-closed.
+
+## Routed lease identity
+
+`kb-board BOARD claim` and `kb-board BOARD h accept` derive a key from
+the caller current checkout unless given `--repo-key KEY`,
+`--repo PATH`, or `--no-repo-capture`. An explicit opaque key wins;
+`--repo PATH` is resolved on the caller and its path is never forwarded.
+The wrapper always sends `--no-repo-capture` so the board host cannot
+mistake its own cwd for the caller. Heartbeat (`hb`) never infers a
+key from cwd: it retains the saved identity unless an explicit key or repo
+move is supplied. Rootless calls send no key. The key uses the caller's stable
+machine ID and canonical Git common-dir path; linked worktrees share a key.
+
+`transact --items JSON` and `--items-file PATH` (including
+`/dev/stdin`) apply the same rules only to `claim`, `heartbeat`
+and `handoff_accept` items; unrelated item arguments remain unchanged.
+The local file or stdin is read once, rewritten locally, and remote batches
+still use one SSH connection. This identity is distinct from the historical
+`--repo`/`--branch`/`--head`/`--dirty` provenance
+recorded by checkpoint, handoff create and sitrep.
 
 ## Workspace adoption and rule transfer
 

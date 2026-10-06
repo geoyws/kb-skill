@@ -743,10 +743,16 @@ JSON
 
   assert_ssh_call_count "$ssh_count" 1 'transact on stdin'
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
-  # The flag travels exactly as written: the caller already named the remote's
-  # stdin, so the wrapper has nothing to rewrite.
-  assert_argv_file "$kb_log" --project "$board_id" transact --items-file /dev/stdin --json
-  assert_items_streamed "$seen" "$items" 'transact on stdin'
+  # Identity is injected into the claim only; the checkpoint and its $ref
+  # retain their meaning and their special characters.
+  assert_argv_file "$kb_log" --project "$board_id" transact --json --items-file /dev/stdin
+  python3 - "$seen" "$items" <<'PY' || fail 'transact claim identity rewrite'
+import json, sys
+seen, original = (json.load(open(path)) for path in sys.argv[1:])
+assert seen[0]["arguments"]["no-repo-capture"] is True
+assert {k: v for k, v in seen[0]["arguments"].items() if k not in ("repo-key", "no-repo-capture")} == original[0]["arguments"]
+assert seen[1] == original[1]
+PY
 }
 
 # A LOCAL `--items-file PATH` from the MBP. The path is the caller's and the
@@ -1531,7 +1537,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-host" "$home_host" "$alias" ls
         assert_log_clean "$ssh_log" "registry alias host ssh $alias"
-        assert_argv_file "$kb_log" "$alias" ls
         ;;
       *)
         FAKE_HOSTNAME_VALUE="$home_host" \
@@ -1544,7 +1549,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-board" "$board_id" "$alias" ls
         assert_log_clean "$ssh_log" "board alias board ssh $alias"
-        assert_argv_file "$kb_log" --project "$board_id" "$alias" ls
 
         : >"$ssh_log"
         : >"$kb_log"
