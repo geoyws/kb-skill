@@ -596,7 +596,7 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by a seatless `@:<group>/<team>/LANE` actor (the binary does not yet read a callsign with a seat or more segments; kanban row filed 2026-10-08, so always set `--lane` when raising), items whose `--lane` field is LANE, and items about a task whose
+`--lane LANE` keeps items raised by a seatless `@:<group>/<team>/LANE` actor (the binary does not yet read a callsign with a seat or more segments; kb kanban `t-2b8ab9f7`, so always set `--lane` when raising), items whose `--lane` field is LANE, and items about a task whose
 lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
 rows do not carry is refused naming the ones they do. `--no-body` drops the
 body alone, which is the cheap way to read cards in bulk.
