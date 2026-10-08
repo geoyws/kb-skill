@@ -1131,6 +1131,11 @@ test_registry_commands_are_rejected_without_transport() {
     ws
     workspace
     access
+    plugin
+    worker
+    link
+    scope
+    contrib
   )
 
   local command
@@ -1177,6 +1182,11 @@ test_host_surface_matches_source_allowlist() {
     schema
     mcp
     access
+    plugin
+    worker
+    link
+    scope
+    contrib
   )
   local denied=(
     deploy
@@ -1203,6 +1213,8 @@ test_host_surface_matches_source_allowlist() {
     stale
     transact
     sprint
+    batch
+    incident
   )
 
   local command
@@ -1704,6 +1716,11 @@ test_host_registry_commands_are_allowed_without_transport() {
     'restore --json'
     'schema --json'
     'mcp'
+    'plugin list --json'
+    'worker list --json'
+    'link show --board demo --id t-1'
+    'scope show --set demo'
+    'contrib status --board demo --id t-1'
   )
 
   local entry command_arg
@@ -1859,7 +1876,7 @@ test_host_refuses_board_owned_commands_without_transport() {
     deploy import tag archive search search-rebuild
     task t story s handoff h attention att attn claim checkpoint cp
     heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale transact
+    subscription todo stale transact sprint batch incident
   )
 
   local command

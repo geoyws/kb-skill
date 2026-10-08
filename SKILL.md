@@ -84,8 +84,9 @@ Outside the board home host, do not call `kb` directly.
 - Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
   board-owned one-shot command. It injects exactly one project selector, rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
-  `r` / `rule` and the policy-registry `access` verbs so registry operations
-  cannot be routed through a board helper. `sprint` is board-owned and routes
+  `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
+  `contrib` and `plugin` verbs so registry operations cannot be routed through a
+  board helper. `sprint`, `batch` and `incident` are board-owned and route
   here.
   On `checkpoint` and `handoff create` it also forwards your checkout as
   `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
@@ -93,8 +94,9 @@ Outside the board home host, do not call `kb` directly.
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
-  and preserves argv literally. Registry `rule` and `access` verbs stay on the
-  raw registry routing path rather than `kb-board`.
+  and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
+  `scope`, `contrib` and `plugin` verbs stay on the raw registry routing path
+  rather than `kb-board`.
 
 ```bash
 <skill-dir>/scripts/kb-board BOARD_ID t ls --status todo --json

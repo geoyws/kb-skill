@@ -3,9 +3,11 @@ archive
 attention
 audit
 backup
+batch
 checkpoint
 claim
 context
+contrib
 dashboard
 deploy
 doctor
@@ -13,13 +15,17 @@ events
 handoff
 heartbeat
 import
+incident
 init
+link
 mcp
 note
+plugin
 release
 restore
 rule
 schema
+scope
 search
 search-rebuild
 sitrep
@@ -32,4 +38,5 @@ task
 todo
 transact
 watch
+worker
 workspace
