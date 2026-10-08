@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# kb-session-file — print the path of THIS session's heartbeat session file.
+#
+# The file holds two lines, task id then lease token, written by the claimant
+# right after `kb claim` and read by a harness heartbeat hook. One file per
+# host let every concurrent session on that host overwrite the others' lease
+# token, so the path is keyed per terminal pane: the tmux socket path (hashed,
+# because two tmux servers both number their panes from %0) plus $TMUX_PANE.
+# The claimant's shell and the harness hook run in the same pane, so both
+# derive the same path without sharing anything else.
+#
+# Outside tmux there is no stable per-session key both sides can see, so the
+# legacy single file is printed and the exit status is 3: correct only when
+# one session per host claims at a time.
+#
+#   kb-session-file            print the path; create its directory (0700)
+#   kb-session-file --legacy   print the legacy single-file path only
+#
+# Environment: KB_SESSION_HOME (default $HOME/.claude) is where both live.
+set -euo pipefail
+
+base="${KB_SESSION_HOME:-$HOME/.claude}"
+legacy="$base/kb-session"
+
+if [ "${1:-}" = "--legacy" ]; then
+  printf '%s\n' "$legacy"
+  exit 0
+fi
+[ $# -eq 0 ] || { printf 'usage: kb-session-file [--legacy]\n' >&2; exit 64; }
+
+if [ -z "${TMUX:-}" ] || [ -z "${TMUX_PANE:-}" ]; then
+  printf '%s\n' "$legacy"
+  exit 3
+fi
+
+socket=${TMUX%%,*}
+if command -v sha256sum >/dev/null 2>&1; then
+  hash=$(printf '%s' "$socket" | sha256sum)
+else
+  hash=$(printf '%s' "$socket" | shasum -a 256)
+fi
+pane=${TMUX_PANE#%}
+case "$pane" in ''|*[!0-9]*) printf 'kb-session-file: unexpected TMUX_PANE %s\n' "$TMUX_PANE" >&2; exit 65;; esac
+
+dir="$base/kb-session.d"
+mkdir -p "$dir"
+chmod 700 "$dir"
+printf '%s/tmux-%s-%s\n' "$dir" "${hash:0:12}" "$pane"

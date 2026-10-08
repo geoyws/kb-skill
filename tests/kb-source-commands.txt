@@ -21,7 +21,6 @@ rule
 schema
 search
 search-rebuild
-serve
 sitrep
 stale
 story
@@ -29,5 +28,6 @@ subscription
 tag
 task
 todo
+transact
 watch
 workspace

@@ -15,7 +15,13 @@ installation.
   `.githooks/pre-commit` enforce the publication hygiene gate.
 - `scripts/install-hooks` and `scripts/check-hooks` manage the versioned hook
   path.
-- `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior.
+- `scripts/kb-session-file` prints this session's heartbeat session-file path,
+  keyed per tmux pane so concurrent sessions on one host never share a lease
+  token.
+- `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior;
+  `tests/kb-session-file-tests.sh` exercises the session-file path. Wrapper
+  checks retain executable routing, refusal, transfer and provenance contracts,
+  not Markdown headings, prose snippets or the test script's own wiring.
 
 ## Routing model
 
