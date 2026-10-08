@@ -292,9 +292,10 @@ Run `/whoami` for your callsign: it traces the pane from the cockpit root to
 `@:<group>/<team>/<lane>/<seat>` (George, 2026-10-05; seat 2026-10-08) —
 `@:ifca/prjx/superdriver/planner`, `@:geoyws/acies/driver/executor`. The team
 segment is your cage's name and stays the same when you write another board's
-row. A cockpit-side pane (`_medic`, `_superdriver`) holds no lane and repeats
-its window token in the first three segments, then its seat —
-`@:medic/medic/medic/executor` — so the shape never degrades to a bare team.
+row. A callsign's length is dynamic (George, 2026-10-08): it ends where the
+identifiers run out. A cockpit-side pane (`_medic`, `_superdriver`) has no
+group, team or lane, so its callsign is the window token, then its seat —
+`@:superdriver/executor`, `@:medic/planner` — with `--lane` set to that token.
 
 Nothing verifies the two agree today. If you write `--as
 "@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
