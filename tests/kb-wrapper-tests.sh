@@ -847,6 +847,60 @@ JSON
     --items-file "$items" --body-file "$body"
 }
 
+# Every occurrence is a duplicate regardless of whether the first value was
+# /dev/stdin (which has no caller-side path) or a local file. Refuse before
+# either the local binary or SSH sees ambiguous flags.
+test_board_transact_rejects_all_duplicate_items_file_forms() {
+  local fakebin="$tmp_dir/transact-duplicates/fakebin"
+  local ssh_log="$tmp_dir/transact-duplicates/ssh.argv"
+  local kb_log="$tmp_dir/transact-duplicates/kb.argv"
+  local ssh_count="$tmp_dir/transact-duplicates/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id table items route first second output
+  board_id=$(make_id board)
+  table="$tmp_dir/transact-duplicates/hosts.tsv"
+  items="$tmp_dir/transact-duplicates/items.json"
+  printf '%s\n' '[]' >"$items"
+  local -a first_args second_args
+
+  for route in remote local; do
+    if [[ "$route" == local ]]; then
+      make_table "$table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    else
+      make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    fi
+    for first in 0 1 2 3; do
+      case "$first" in
+        0) first_args=(--items-file /dev/stdin) ;;
+        1) first_args=(--items-file=/dev/stdin) ;;
+        2) first_args=(--items-file "$items") ;;
+        3) first_args=("--items-file=$items") ;;
+      esac
+      for second in 0 1 2 3; do
+        case "$second" in
+          0) second_args=(--items-file /dev/stdin) ;;
+          1) second_args=(--items-file=/dev/stdin) ;;
+          2) second_args=(--items-file "$items") ;;
+          3) second_args=("--items-file=$items") ;;
+        esac
+        output=$(FAKE_SSH_MODE=fail \
+          FAKE_SSH_LOG="$ssh_log" \
+          FAKE_SSH_COUNT_FILE="$ssh_count" \
+          FAKE_KB_LOG="$kb_log" \
+          KB_HOSTS_TABLE="$table" \
+          PATH="$fakebin:$PATH" \
+          run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+            "${first_args[@]}" --json "${second_args[@]}")
+        assert_contains "$output" '--items-file given twice' "$route duplicate items-file $first/$second"
+        assert_ssh_call_count "$ssh_count" 0 "$route duplicate items-file $first/$second"
+        assert_log_clean "$ssh_log" "$route duplicate items-file $first/$second SSH"
+        assert_log_clean "$kb_log" "$route duplicate items-file $first/$second binary"
+      done
+    done
+  done
+}
+
 test_transact_items_file_at_the_boundary_needs_no_streaming() {
   local fakebin="$tmp_dir/transact-boundary/fakebin"
   local ssh_log="$tmp_dir/transact-boundary/ssh.argv"
@@ -2312,6 +2366,7 @@ main() {
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
+    test_board_transact_rejects_all_duplicate_items_file_forms
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_generated_table_transfers_body_file
     test_host_surface_matches_source_allowlist
