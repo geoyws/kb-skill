@@ -216,8 +216,12 @@ if youre codex or claude"*, and *"write to the skill for all lane executors to
 just claim the lane work even if it has codex or claude or anything and rename
 it to canonical @:geoyws/acies/driver etc"*.
 
-**An agent's `--as` is its lane, spelled `@:<team>/<board>/<lane>`** —
-`@:geoyws/acies/driver`, `@:geoyws/px/driver-3`. The harness never appears in
+**An agent's `--as` is its actor's name, its callsign** (George, 2026-10-08:
+"the NAME of the ACTOR, is a CALLSIGN"): a path, `@:` then one segment per
+identifier from the cockpit root down, ending where the identifiers run out.
+A traced pane signs `@:<group>/<team>/<lane>/<seat>` —
+`@:geoyws/acies/driver/executor`, `@:ifca/px/driver-3/planner`; the lane is
+always the third segment. The harness never appears in
 it. `claude@driver` and `codex@driver` were one lane wearing two labels, and
 every check that compared whole actor strings turned that into a fake
 ownership boundary: a lane's own rows read as assigned to someone else, so its
@@ -229,8 +233,8 @@ Consequences, all of them load-bearing:
   of `claude@…`, `codex@…` or `kimi@…` on your lane is you. Only a different
   LANE is a different worker.
 - **Rename the rows you touch**, so the estate converges without a mass
-  rewrite: `kb t up <id> --assignee "@:<team>/<board>/<lane>" --as
-  "@:<team>/<board>/<lane>"` before you claim.
+  rewrite: `kb t up <id> --assignee "<your callsign>" --as
+  "<your callsign>"` before you claim.
 - **A live lease still stops you.** Identity is not a licence to `--force`
   over another session that is working right now.
 - **`geoyws` remains the owner identity**, and only it resolves or reopens an
@@ -241,17 +245,20 @@ Consequences, all of them load-bearing:
 
 Measured on the acies board 2026-09-17: the ledger accepts both
 `--as "@:geoyws/acies/driver"` and `--as "geoyws/acies/driver"` on notes,
-updates and claims. Write the sigil form.
+updates and claims. Write the full callsign. Seatless three-segment actors
+written before 2026-10-08 are history, not errors; the lane is the third
+segment of either form.
 
 **The longer name wins, and the lane field lives alongside it** (George,
-2026-09-17, reconciling this section with the sigil rule in the root
+2026-09-17, reconciling this section with the callsign rule in the root
 `AGENTS.md`). Where a short and a long spelling of one identity are both
-defensible, write the long one — so `@:geoyws/acies/driver`, never `@:geoyws`
-and never `driver`. And the actor never *replaces* the lane field:
+defensible, write the long one — so `@:geoyws/acies/driver/executor`, never
+`@:geoyws` and never `driver`. And the actor never *replaces* the lane field,
+which never carries the seat:
 
 ```bash
-kb att raise "…" --as "@:geoyws/px/driver-3" --lane driver-3 …
-kb sr new "…"   --as "@:geoyws/px/driver-3" --lane driver-3
+kb att raise "…" --as "@:geoyws/px/driver-3/planner" --lane driver-3 …
+kb sr new "…"   --as "@:geoyws/px/driver-3/executor" --lane driver-3
 ```
 
 Both, never either. They answer different questions and are read by different
@@ -281,14 +288,16 @@ f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
 (umask 077; printf '%s\n%s\n' "$TASK" "$TOKEN" > "$f")
 ```
 
-A pane that holds no driver lane repeats its own derived team token in the
-lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
-board — so the shape never degrades to a bare team and a reader always knows
-all three answers were given. The board segment is the board being written to,
-not the agent's home board.
+Run `/whoami` for your callsign: it traces the pane from the cockpit root to
+`@:<group>/<team>/<lane>/<seat>` (George, 2026-10-05; seat 2026-10-08) —
+`@:ifca/prjx/superdriver/planner`, `@:geoyws/acies/driver/executor`. The team
+segment is your cage's name and stays the same when you write another board's
+row. A cockpit-side pane (`_medic`, `_superdriver`) holds no lane and repeats
+its window token in the first three segments, then its seat —
+`@:medic/medic/medic/executor` — so the shape never degrades to a bare team.
 
 Nothing verifies the two agree today. If you write `--as
-"@:geoyws/px/driver-3" --lane driver-2`, the ledger stores both without
+"@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
 complaint — see the `kanban` board for the refusal that should exist.
 
 ## Tag-scoped rules — what frames work
@@ -363,7 +372,7 @@ paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
 
 ```bash
 kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
-  --as "@:<team>/<board>/<lane>" --lane <lane> --kind blocking --task <ID if it is about one> \
+  --as "<your callsign>" --lane <lane> --kind blocking --task <ID if it is about one> \
   --question "<the decision, one sentence, ending in ?>" \
   --context "<what is true now, what is blocked, what waiting costs>" \
   --choice "<key>=<verb-phrase label>|approve" \
@@ -538,7 +547,7 @@ choices is served — CLI, MCP and web alike — as `approve` ("Approve - procee
 and `reject` ("Reject - do not proceed") with **no recommendation**, because
 nobody authored that pair and nothing may claim it was recommended, and its
 body serves as both question and context. That is the only shape in the model
-with zero recommendations. `kb att update <id> --as "@:<team>/<board>/<lane>"` takes the
+with zero recommendations. `kb att update <id> --as "<your callsign>"` takes the
 same five card flags, so an item still open can be given a card later, and
 `--clear-card` returns it to the default pair. A resolved item's card is
 history and is refused.
@@ -587,7 +596,7 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by `@:<team>/<board>/LANE`, items whose `--lane` field is LANE, and items about a task whose
+`--lane LANE` keeps items raised by a seatless `@:<group>/<team>/LANE` actor (the binary does not yet read a callsign with a seat or more segments; kanban row filed 2026-10-08, so always set `--lane` when raising), items whose `--lane` field is LANE, and items about a task whose
 lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
 rows do not carry is refused naming the ones they do. `--no-body` drops the
 body alone, which is the cheap way to read cards in bulk.
@@ -720,7 +729,7 @@ It keeps your lease, so nobody else can take the row.
 REQUIRED ACTION, task handoff. A claimed task returns to the queue with its
 lease released in the same transaction:
 
-1. Run `kb h new <task-id> --lease "$TOKEN" --as "$ACTOR" --summary "…" --intent "…" --next-action "…" --reason token_pressure --json` in the board home host shell. `$ACTOR` is the canonical lane actor `@:<team>/<board>/<lane>`, never a bare lane and never harness-qualified.
+1. Run `kb h new <task-id> --lease "$TOKEN" --as "$ACTOR" --summary "…" --intent "…" --next-action "…" --reason token_pressure --json` in the board home host shell. `$ACTOR` is your callsign from `/whoami` (`@:<group>/<team>/<lane>/<seat>`), never a bare lane and never harness-qualified.
 2. The task id and `--lease` travel together. Each half alone is refused, because a lease exists only over a task and a task cannot be handed over without one.
 
 REQUIRED ACTION, session handoff. The lane's position as a whole: no task,
