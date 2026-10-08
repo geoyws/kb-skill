@@ -1,3 +1,4 @@
+access
 archive
 attention
 audit
@@ -22,6 +23,7 @@ schema
 search
 search-rebuild
 sitrep
+sprint
 stale
 story
 subscription
