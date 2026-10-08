@@ -1200,6 +1200,7 @@ test_registry_commands_are_rejected_without_transport() {
     w
     ws
     workspace
+    access
   )
 
   local command
@@ -1245,6 +1246,7 @@ test_host_surface_matches_source_allowlist() {
     rule r
     schema
     mcp
+    access
   )
   local denied=(
     deploy
@@ -1270,6 +1272,7 @@ test_host_surface_matches_source_allowlist() {
     todo
     stale
     transact
+    sprint
   )
 
   local command
@@ -1446,6 +1449,51 @@ test_alias_surface_duplicate_functions_are_fail_closed() {
     fail 'duplicate canonical_command functions should fail closed'
   fi
   assert_contains "$output" 'duplicate canonical_command function' 'duplicate canonical functions'
+}
+
+# The real lib.rs has more functions after canonical_command, and several of
+# them `match value`. Only the match inside canonical_command's own body may
+# count; the scan used to run on to EOF and refuse the real source.
+test_alias_surface_later_function_match_is_ignored() {
+  local fixture_file="$script_dir/kb-canonical-aliases.txt"
+  local source_file="$tmp_dir/alias-later-match/rust/lib.rs"
+  make_synthetic_canonical_alias_source "$source_file" "$fixture_file"
+  {
+    printf '%s\n' 'fn later_lookup(value: &str) -> &str {'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "zz" => "sitrep",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  }'
+    printf '%s\n' '}'
+  } >>"$source_file"
+  assert_exact_alias_surface "$source_file" "$fixture_file"
+}
+
+test_alias_surface_duplicate_match_is_fail_closed() {
+  local source_file="$tmp_dir/alias-dup-match/rust/lib.rs"
+  mkdir -p "$(dirname -- "$source_file")"
+  {
+    printf '%s\n' 'fn canonical_command(value: &str) -> &str {'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "bk" => "backup",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  };'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "zz" => "sitrep",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  }'
+    printf '%s\n' '}'
+  } >"$source_file"
+
+  local output status
+  set +e
+  output=$(assert_exact_alias_surface "$source_file" "$script_dir/kb-canonical-aliases.txt" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'a second match inside canonical_command should fail closed'
+  fi
+  assert_contains "$output" 'duplicate canonical_command match' 'duplicate match'
 }
 
 test_alias_surface_duplicate_alias_pairs_are_fail_closed() {
@@ -2406,6 +2454,8 @@ assert_test_wiring() {
     test_alias_surface_new_alias_drift_is_fail_closed
     test_alias_surface_spoofed_strings_are_ignored
     test_alias_surface_duplicate_functions_are_fail_closed
+    test_alias_surface_later_function_match_is_ignored
+    test_alias_surface_duplicate_match_is_fail_closed
     test_alias_surface_duplicate_alias_pairs_are_fail_closed
     test_alias_surface_duplicate_alias_target_is_fail_closed
     test_alias_surface_block_rhs_is_fail_closed
@@ -2488,6 +2538,8 @@ main() {
     test_alias_surface_new_alias_drift_is_fail_closed
     test_alias_surface_spoofed_strings_are_ignored
     test_alias_surface_duplicate_functions_are_fail_closed
+    test_alias_surface_later_function_match_is_ignored
+    test_alias_surface_duplicate_match_is_fail_closed
     test_alias_surface_duplicate_alias_pairs_are_fail_closed
     test_alias_surface_duplicate_alias_target_is_fail_closed
     test_alias_surface_block_rhs_is_fail_closed
