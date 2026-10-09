@@ -26,9 +26,13 @@ set -euo pipefail
 if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
   printf 'show\n' >>"$CALLS"
   [[ ${NO_GROUP:-0} = 0 ]] || exit 64
-  if [[ ${RACE_MEMBER:-0} = 1 ]]; then
+  if [[ ${RACE_MEMBER:-0} = 1 || ${RACE_RECREATE:-0} = 1 ]]; then
     if [[ -e "$SEEN_SHOW" ]]; then
-      printf '%s\n' '{"groupName":"group/test","revision":4,"groupSnapshot":"bg1.changed","members":[{"boardName":"kanban"},{"boardName":"px"},{"boardName":"alien"}]}'
+      if [[ ${RACE_RECREATE:-0} = 1 ]]; then
+        printf '{"groupName":"group/test","revision":3,"groupSnapshot":"%s","members":[{"boardName":"kanban"},{"boardName":"px"}]}\n' "$RECREATED_SNAPSHOT"
+      else
+        printf '%s\n' '{"groupName":"group/test","revision":4,"groupSnapshot":"bg1.changed","members":[{"boardName":"kanban"},{"boardName":"px"},{"boardName":"alien"}]}'
+      fi
       exit 0
     fi
     : >"$SEEN_SHOW"
@@ -41,14 +45,15 @@ if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
 else
   printf 'operation\n' >>"$CALLS"
   printf '%s\0' "$@" >"$ARGS"
-  if [[ ${RACE_MEMBER:-0} = 1 ]]; then
-    # The compiled resolver now sees a newly added member whose hosts.tsv
-    # entry points elsewhere. A stale snapshot/revision must refuse it.
+  if [[ ${RACE_MEMBER:-0} = 1 || ${RACE_RECREATE:-0} = 1 ]]; then
+    # The compiled resolver sees either a new cross-home member or a new
+    # group UUID under the same name and revision after wrapper verification.
     current=$("$0" workspace tag show group/test --json)
-    [[ "$current" = *'"boardName":"alien"'* ]] || exit 98
+    actual=$(printf '%s' "$current" | jq -r '.groupSnapshot')
+    [[ "$actual" != "$TEST_SNAPSHOT" ]] || exit 98
     case " $* " in
-      *" --group-snapshot $TEST_SNAPSHOT "*|*' --expect-group-revision 3 '*)
-        printf '%s\n' 'board group group/test changed since revision 3; re-run `kanban workspace tag show group/test` and retry' >&2
+      *" --group-snapshot $TEST_SNAPSHOT "*|*" --expect-group-snapshot $TEST_SNAPSHOT "*)
+        printf '%s\n' 'board group group/test changed since --expect-group-snapshot was issued; re-run `kanban workspace tag show group/test` and retry' >&2
         exit 64 ;;
     esac
     printf '%s\n' 'unchecked group operation' >"$ACTED"
@@ -67,6 +72,14 @@ print('bg1.' + base64.urlsafe_b64encode(json.dumps(assertion, separators=(',', '
 PY
 )
 export TEST_SNAPSHOT
+RECREATED_SNAPSHOT=$(python3 - "$TEST_SNAPSHOT" <<'PY'
+import base64, json, sys
+assertion = json.loads(base64.urlsafe_b64decode(sys.argv[1].split('.', 1)[1] + '==='))
+assertion['groupId'] = 'group-2'
+print('bg1.' + base64.urlsafe_b64encode(json.dumps(assertion, separators=(',', ':')).encode()).decode().rstrip('='))
+PY
+)
+export RECREATED_SNAPSHOT
 kb="$t/bin/kb"
 make_table() {
   printf 'kanban\thome-local\thome-target\thome-remote\t%s\npx\t%s\t%s\t%s\t%s\n' "$kb" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" >"$KB_HOSTS_TABLE"
@@ -110,12 +123,12 @@ assert args == [b'attention', b'list', b'--group-snapshot', os.environ['TEST_SNA
 PY
 ok
 : >"$CALLS"
-"$here/scripts/kb-group" group/test claim --next --as worker --expect-group-revision 3 >/dev/null
+"$here/scripts/kb-group" group/test claim --next --as worker --expect-group-snapshot "$TEST_SNAPSHOT" >/dev/null
 check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--expect-group-revision', b'3', b'--board-tag', b'group/test']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--expect-group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode(), b'--board-tag', b'group/test']
 PY
 ok
 : >"$CALLS"
@@ -124,27 +137,58 @@ check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--candidates', b'--as', b'name; $HOME', b'--limit', b'2', b'--board-tag', b'group/test', b'--expect-group-revision', b'3']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--candidates', b'--as', b'name; $HOME', b'--limit', b'2', b'--board-tag', b'group/test', b'--expect-group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode()]
 PY
 ok
-# The fake compiled command resolves the group after show, now with an
-# unverified cross-home member. Only its precondition may stop the mutation.
-for verb in '--next' '--candidates'; do
+# The fake compiled resolver sees an added cross-home member on its second
+# show. The checked token must refuse both claims and watch bootstrap.
+for mode in next candidates watch; do
   : >"$CALLS"; rm -f "$ACTED" "$ARGS" "$SEEN_SHOW"
   status=0
-  output=$(RACE_MEMBER=1 "$here/scripts/kb-group" group/test claim "$verb" --as worker 2>&1) || status=$?
-  [[ $status != 0 && "$output" = *'board group group/test changed since revision 3'* ]] || fail "race was not refused: $status $output"
+  if [[ "$mode" = watch ]]; then
+    output=$(RACE_MEMBER=1 "$here/scripts/kb-group" group/test watch --cursor 0 --json 2>&1) || status=$?
+  else
+    output=$(RACE_MEMBER=1 "$here/scripts/kb-group" group/test claim "--$mode" --as worker 2>&1) || status=$?
+  fi
+  [[ $status != 0 && "$output" = *'board group group/test changed since --expect-group-snapshot was issued'* ]] || fail "race was not refused: $status $output"
   check_calls $'ssh\nshow\noperation\nshow'
   [[ ! -e "$ACTED" ]] || fail 'race acted on unchecked member'
   ok
 done
+# Same revision is insufficient after deletion/recreation: the compiled token
+# also binds the immutable group ID.
+: >"$CALLS"; rm -f "$ACTED" "$ARGS" "$SEEN_SHOW"
+status=0
+output=$(RACE_RECREATE=1 "$here/scripts/kb-group" group/test claim --next --as worker 2>&1) || status=$?
+[[ $status != 0 && "$output" = *'board group group/test changed since --expect-group-snapshot was issued'* ]] || fail "name reuse was not refused: $status $output"
+check_calls $'ssh\nshow\noperation\nshow'
+[[ ! -e "$ACTED" ]] || fail 'name reuse acted on unchecked group'
+ok
+: >"$CALLS"
+"$here/scripts/kb-group" group/test watch --cursor 0 --json >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'watch', b'--cursor', b'0', b'--json', b'--board-tag', b'group/test', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode()]
+PY
+ok
+: >"$CALLS"
+"$here/scripts/kb-group" group/test watch --cursor 0 --expect-group-snapshot "$TEST_SNAPSHOT" --json >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'watch', b'--cursor', b'0', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode(), b'--json', b'--board-tag', b'group/test']
+PY
+ok
 : >"$CALLS"
 "$here/scripts/kb-group" group/test claim --next --as worker >/dev/null
 check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--board-tag', b'group/test', b'--expect-group-revision', b'3']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--board-tag', b'group/test', b'--expect-group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode()]
 PY
 ok
 python3 - "$here/SKILL.md" <<'PY'
@@ -154,7 +198,7 @@ recipe = Path(sys.argv[1]).read_text().split('## Explicit board-group routing (c
 assert 'claim --candidates --as ACTOR --limit N --json' in recipe
 assert 'claim --candidates --as ACTOR --limit N --group-snapshot' not in recipe
 assert 'claim --next --as ACTOR --json' in recipe
-assert '--expect-group-revision' in recipe
+assert '--expect-group-snapshot' in recipe
 PY
 ok
 refuse 'group tag must start with group/' board/test attention list
@@ -175,7 +219,11 @@ PY
 )
 refuse 'board group group/test changed since --group-snapshot was issued; re-run `kanban workspace tag show group/test`' group/test attention list --group-snapshot "$stale"
 check_calls $'ssh\nshow'
-refuse 'board group group/test changed since revision 4; re-run `kanban workspace tag show group/test` and retry' group/test claim --next --expect-group-revision 4
+refuse 'board group group/test changed since --expect-group-snapshot was issued' group/test claim --next --expect-group-snapshot "$RECREATED_SNAPSHOT"
+check_calls $'ssh\nshow'
+refuse 'unknown precondition --expect-group-revision' group/test claim --next --expect-group-revision 4
+check_calls ''
+refuse 'board group group/test changed since --expect-group-snapshot was issued' group/test watch --cursor 0 --expect-group-snapshot "$RECREATED_SNAPSHOT"
 check_calls $'ssh\nshow'
 refuse 'invalid group snapshot' group/test attention list --group-snapshot bg1.other
 refuse 'file selector is not applicable' group/test attention list --body-file 'body space.txt'

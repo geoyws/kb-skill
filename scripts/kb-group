@@ -26,6 +26,8 @@ for arg in "$@"; do
   case "$arg" in
     --project|--project=*|--db|--db=*|--workspace|--workspace=*|--all|--all=*|--all-boards|--all-boards=*|--board-tag|--board-tag=*|--except-board-tag|--except-board-tag=*|--registry|--registry=*)
       die "conflicting scope selector: $arg" ;;
+    --expect-group-revision|--expect-group-revision=*)
+      die 'unknown precondition --expect-group-revision; use --expect-group-snapshot TOKEN' ;;
     --body-file|--body-file=*|--items-file|--items-file=*)
       # No compiled group operation consumes either file; never forward a
       # caller-side path that the registry host cannot read.
@@ -87,36 +89,33 @@ if [[ -n "$members" ]]; then
     [[ "$found" = 1 ]] || die "unregistered group member: $member"
   done <<<"$members"
 fi
-# Preserve caller assertions rather than overwriting them with a fresh show:
-# the caller may deliberately demand the scope it saw before this invocation.
+# A caller may assert an older scope. Never substitute the fresh show for it.
 argv=("$@")
-caller_snapshot=''; caller_revision=''
-snapshot_given=0; revision_given=0
+caller_snapshot=''; caller_flag=''
 for ((i=0; i<${#argv[@]}; i++)); do
   arg=${argv[$i]}
   case "$arg" in
-    --group-snapshot|--expect-group-revision)
+    --group-snapshot|--expect-group-snapshot)
       ((i+1 < ${#argv[@]})) || die "missing value for $arg"
       value=${argv[$((i+1))]}
       [[ "$value" != --* && -n "$value" ]] || die "missing value for $arg"
-      ((i+=1))
-      ;;
-    --group-snapshot=*|--expect-group-revision=*) value=${arg#*=} ;;
+      ((i+=1)) ;;
+    --group-snapshot=*|--expect-group-snapshot=*) value=${arg#*=} ;;
     *) continue ;;
   esac
-  case "$arg" in
-    --group-snapshot|--group-snapshot=*)
-      ((snapshot_given == 0)) || die 'group snapshot given twice'
-      snapshot_given=1; caller_snapshot=$value ;;
-    *)
-      ((revision_given == 0)) || die 'group revision given twice'
-      revision_given=1; caller_revision=$value ;;
-  esac
+  [[ -z "$caller_flag" ]] || die 'group snapshot precondition given twice'
+  caller_flag=${arg%%=*}
+  caller_snapshot=$value
 done
-if ((snapshot_given)); then
-  [[ "$1" != claim && "$1" != watch ]] || die '--group-snapshot is not accepted by claim or watch'
-  # Rust issues bg1.URL_SAFE_NO_PAD(JSON), with an integer revision. jq's
-  # decoder needs the URL alphabet converted and '=' padding restored.
+if [[ -n "$caller_flag" ]]; then
+  if [[ "$1" = claim || "$1" = watch ]]; then
+    [[ "$caller_flag" = --expect-group-snapshot ]] || die 'claim and watch require --expect-group-snapshot, not --group-snapshot'
+  else
+    [[ "$caller_flag" = --group-snapshot ]] || die 'group reads require --group-snapshot, not --expect-group-snapshot'
+  fi
+  # Rust issues bg1.URL_SAFE_NO_PAD(JSON). Decode the revision to identify a
+  # stale assertion, then compare the entire token: equal revisions alone do
+  # not identify the same group or member incarnations.
   claimed_revision=$(jq -nr --arg token "$caller_snapshot" '
     ($token | split(".")) as $parts |
     if ($parts | length) != 2 or $parts[0] != "bg1" then error("bad token") else
@@ -127,25 +126,17 @@ if ((snapshot_given)); then
       else error("bad assertion") end
     end' 2>/dev/null) || die "invalid group snapshot; re-run \`kanban workspace tag show $tag\` and retry"
   [[ "$claimed_revision" = "$revision" && "$caller_snapshot" = "$snapshot" ]] ||
-    die "board group $tag changed since --group-snapshot was issued; re-run \`kanban workspace tag show $tag\` for a fresh snapshot and retry"
+    die "board group $tag changed since $caller_flag was issued; re-run \`kanban workspace tag show $tag\` for a fresh snapshot and retry"
 fi
-if ((revision_given)); then
-  [[ "$1" = claim ]] || die '--expect-group-revision is only accepted by claim'
-  [[ "$caller_revision" =~ ^[0-9]+$ ]] || die 'invalid --expect-group-revision; pass a revision from workspace tag show'
-  [[ "$caller_revision" = "$revision" ]] ||
-    die "board group $tag changed since revision $caller_revision; re-run \`kanban workspace tag show $tag\` and retry"
-fi
-# One compiled operation, bound to the checked scope. Claim needs the
-# compiled revision precondition; watch uses its separate cursor.
-if [[ "$1" = claim ]]; then
-  if ((revision_given)); then
+# The compiled claim/watch precondition binds group identity, revision and
+# membership, including a deleted/recreated name with the same revision.
+if [[ "$1" = claim || "$1" = watch ]]; then
+  if [[ -n "$caller_flag" ]]; then
     exec "$kb_bin" "$@" --board-tag "$tag"
   fi
-  exec "$kb_bin" "$@" --board-tag "$tag" --expect-group-revision "$revision"
-elif [[ "$1" = watch ]]; then
-  exec "$kb_bin" "$@" --board-tag "$tag"
+  exec "$kb_bin" "$@" --board-tag "$tag" --expect-group-snapshot "$snapshot"
 else
-  if ((snapshot_given)); then
+  if [[ -n "$caller_flag" ]]; then
     exec "$kb_bin" "$@" --board-tag "$tag"
   fi
   exec "$kb_bin" "$@" --board-tag "$tag" --group-snapshot "$snapshot"
