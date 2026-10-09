@@ -26,6 +26,8 @@ for arg in "$@"; do
   case "$arg" in
     --project|--project=*|--db|--db=*|--workspace|--workspace=*|--all|--all=*|--all-boards|--all-boards=*|--board-tag|--board-tag=*|--except-board-tag|--except-board-tag=*|--registry|--registry=*)
       die "conflicting scope selector: $arg" ;;
+    --group-snapshot|--group-snapshot=*|--expect-group-revision|--expect-group-revision=*)
+      die "group preconditions are supplied from the verified registry show: $arg" ;;
     --body-file|--body-file=*|--items-file|--items-file=*)
       # No compiled group operation consumes either file; never forward a
       # caller-side path that the registry host cannot read.
@@ -68,6 +70,9 @@ if ! printf '%s' "$show" | jq -e --arg tag "$tag" \
   die "invalid group snapshot: $tag"
 fi
 members=$(printf '%s' "$show" | jq -r '.members[].boardName') || die "invalid group snapshot: $tag"
+revision=$(printf '%s' "$show" | jq -r '.revision') || die "invalid group snapshot: $tag"
+snapshot=$(printf '%s' "$show" | jq -r '.groupSnapshot') || die "invalid group snapshot: $tag"
+test -n "$snapshot" || die "invalid group snapshot: $tag"
 if [[ -n "$members" ]]; then
   while IFS= read -r member; do
     found=0
@@ -84,9 +89,15 @@ if [[ -n "$members" ]]; then
     [[ "$found" = 1 ]] || die "unregistered group member: $member"
   done <<<"$members"
 fi
-# The catalogue read above checks membership, but only this exec is the
-# requested compiled group operation; no member-by-member invocation exists.
-exec "$kb_bin" "$@" --board-tag "$tag"
+# One compiled operation, bound to the checked scope. Claim needs the
+# compiled revision precondition; watch uses its separate cursor.
+if [[ "$1" = claim ]]; then
+  exec "$kb_bin" "$@" --board-tag "$tag" --expect-group-revision "$revision"
+elif [[ "$1" = watch ]]; then
+  exec "$kb_bin" "$@" --board-tag "$tag"
+else
+  exec "$kb_bin" "$@" --board-tag "$tag" --group-snapshot "$snapshot"
+fi
 REMOTE
 )
 

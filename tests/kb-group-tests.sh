@@ -26,6 +26,13 @@ set -euo pipefail
 if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
   printf 'show\n' >>"$CALLS"
   [[ ${NO_GROUP:-0} = 0 ]] || exit 64
+  if [[ ${RACE_MEMBER:-0} = 1 ]]; then
+    if [[ -e "$SEEN_SHOW" ]]; then
+      printf '%s\n' '{"groupName":"group/test","revision":4,"groupSnapshot":"bg1.changed","members":[{"boardName":"kanban"},{"boardName":"px"},{"boardName":"alien"}]}'
+      exit 0
+    fi
+    : >"$SEEN_SHOW"
+  fi
   if [[ ${SNAPSHOT+x} = x ]]; then
     printf '%s\n' "$SNAPSHOT"
   else
@@ -34,11 +41,25 @@ if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
 else
   printf 'operation\n' >>"$CALLS"
   printf '%s\0' "$@" >"$ARGS"
+  if [[ ${RACE_MEMBER:-0} = 1 ]]; then
+    # The compiled resolver now sees a newly added member whose hosts.tsv
+    # entry points elsewhere. A stale snapshot/revision must refuse it.
+    current=$("$0" workspace tag show group/test --json)
+    [[ "$current" = *'"boardName":"alien"'* ]] || exit 98
+    case " $* " in
+      *' --group-snapshot bg1.test '*|*' --expect-group-revision 3 '*)
+        printf '%s\n' 'board group group/test changed since revision 3; re-run `kanban workspace tag show group/test` and retry' >&2
+        exit 64 ;;
+    esac
+    printf '%s\n' 'unchecked group operation' >"$ACTED"
+  fi
 fi
 SH
 chmod +x "$t/bin/"*
 export KB_SSH_BIN="$t/bin/ssh" KB_HOSTS_TABLE="$t/hosts.tsv" CALLS="$t/calls" ARGS="$t/args"
 export REMOTE_HOSTNAME_BIN="$t/bin/hostname" REMOTE_HOST=home-remote
+export ACTED="$t/acted"
+export SEEN_SHOW="$t/seen-show"
 kb="$t/bin/kb"
 make_table() {
   printf 'kanban\thome-local\thome-target\thome-remote\t%s\npx\t%s\t%s\t%s\t%s\n' "$kb" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" >"$KB_HOSTS_TABLE"
@@ -67,7 +88,7 @@ check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'attention', b'list', b'--json', b'--label', b"two words ' $(touch nope); *", b'--board-tag', b'group/test']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'attention', b'list', b'--json', b'--label', b"two words ' $(touch nope); *", b'--board-tag', b'group/test', b'--group-snapshot', b'bg1.test']
 PY
 [[ ! -e nope ]] || fail 'shell expansion executed'
 ok
@@ -77,7 +98,37 @@ check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--candidates', b'--as', b'name; $HOME', b'--limit', b'2', b'--board-tag', b'group/test']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--candidates', b'--as', b'name; $HOME', b'--limit', b'2', b'--board-tag', b'group/test', b'--expect-group-revision', b'3']
+PY
+ok
+# The fake compiled command resolves the group after show, now with an
+# unverified cross-home member. Only its precondition may stop the mutation.
+for verb in '--next' '--candidates'; do
+  : >"$CALLS"; rm -f "$ACTED" "$ARGS" "$SEEN_SHOW"
+  status=0
+  output=$(RACE_MEMBER=1 "$here/scripts/kb-group" group/test claim "$verb" --as worker 2>&1) || status=$?
+  [[ $status != 0 && "$output" = *'board group group/test changed since revision 3'* ]] || fail "race was not refused: $status $output"
+  check_calls $'ssh\nshow\noperation\nshow'
+  [[ ! -e "$ACTED" ]] || fail 'race acted on unchecked member'
+  ok
+done
+: >"$CALLS"
+"$here/scripts/kb-group" group/test claim --next --as worker >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--board-tag', b'group/test', b'--expect-group-revision', b'3']
+PY
+ok
+python3 - "$here/SKILL.md" <<'PY'
+from pathlib import Path
+import sys
+recipe = Path(sys.argv[1]).read_text().split('## Explicit board-group routing (coordinator only)', 1)[1].split('## Board home host', 1)[0]
+assert 'claim --candidates --as ACTOR --limit N --json' in recipe
+assert 'claim --candidates --as ACTOR --limit N --group-snapshot' not in recipe
+assert 'claim --next --as ACTOR --json' in recipe
+assert '--expect-group-revision' in recipe
 PY
 ok
 refuse 'group tag must start with group/' board/test attention list
@@ -89,6 +140,8 @@ for selector in --project=px --db=/tmp/foo --workspace=. --all --all-boards --bo
 done
 refuse 'conflicting scope selector' group/test attention list --project px
 refuse 'conflicting scope selector' group/test attention list --board-tag group/else
+refuse 'group preconditions are supplied' group/test attention list --group-snapshot bg1.other
+refuse 'group preconditions are supplied' group/test claim --next --expect-group-revision 4
 refuse 'file selector is not applicable' group/test attention list --body-file 'body space.txt'
 refuse 'file selector is not applicable' group/test attention list --items-file=/dev/stdin
 KANBAN_PROJECT=px refuse 'ambient KANBAN_PROJECT or KANBAN_DB' group/test attention list
