@@ -792,13 +792,15 @@ against the task's list the same way a claim is.
 
 **A unit of work is two write round trips**, one at each boundary, with a single
 read before them — on the measured link that is two round trips where there were
-six (ADR-041, Consequences). The reads collapse into the MCP `batch` tool: up to
-32 of them on one request, `readOnlyHint: true`, described under **As an MCP
-server**, so `t cat`, `ctx`, `r ls` and `att ls` for the task you are about to
-pick up all arrive together. `batch` is an MCP tool and the CLI has no
-counterpart, so interactively those are the same `kb` reads typed one at a time
-in the one open board-host shell. Each boundary is one `transact` (**Batched
-writes — `transact`**), which lands entirely or not at all.
+six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
+in one request, answered by one process with one board open — `kb batch
+--items-file items.json --json` from the CLI, or the MCP `batch` tool
+(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx`, `r ls`
+and `att ls` for the task you are about to pick up all arrive together. A batch
+is reads only: an item that writes refuses the whole batch before anything runs.
+Each boundary is one `transact` (**Batched writes — `transact`**), which lands
+entirely or not at all. The three together are **The loop in three batches**,
+below.
 
 **The START batch** — take the task, and say what you are about to do:
 
@@ -1150,6 +1152,78 @@ So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
 `claim`, `heartbeat`, and `handoff_accept` **is** handled in
 batch items by `kb-board` on the caller (see Provenance). `note`,
 `release` and `task update` need nothing extra.
+
+### The loop in three batches
+
+One unit of work, start to finish: claim, read, checkpoint. Two `transact`s
+for the writes, one `batch` for the reads between them.
+
+**1. START** — `start.json`, one `transact`: the claim and the plan note.
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver/executor",
+                   "lane": "driver", "lease-minutes": 120 } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan",
+                   "as": "@:geoyws/kanban/driver/executor",
+                   "text": "read the context, then the wrapper change" } }
+]
+```
+
+Keep `TOKEN` from `results[0].result.leaseToken`; the END batch needs it.
+
+**2. READ** — `read.json`, one `batch`: everything about the task you now hold.
+
+```json
+[
+  { "name": "task_show",      "arguments": { "id": "t-1a2b3c4d", "limit": 200 } },
+  { "name": "context",        "arguments": { "id": "t-1a2b3c4d" } },
+  { "name": "rule_list",      "arguments": {} },
+  { "name": "attention_list", "arguments": { "status": "open", "task": "t-1a2b3c4d" } }
+]
+```
+
+Each item answers on its own, in order, as `{"index": N, "ok": true, "result":
+…}` or `{"index": N, "ok": false, "error": …}`; `result` is exactly what that
+read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). A
+failed item does not stop the others, and the batch exits zero. Item names are
+the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
+`ctx` is `context`); argument keys are the flag names without `--`
+(`"with-relations": true`).
+
+**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
+note. `state: done` releases the lease in the same transaction, so no
+`release` follows it.
+
+```json
+[
+  { "name": "checkpoint",
+    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
+                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
+                   "summary": "wrapper change merged and gated",
+                   "intent": "close the unit",
+                   "next-action": "none; the train carries it",
+                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
+                   "head": "da9a794", "dirty": "clean" } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
+                   "as": "@:geoyws/kanban/driver/executor",
+                   "text": "gate green at da9a794" } }
+]
+```
+
+```bash
+kb transact --items-file start.json --json
+kb batch    --items-file read.json  --json
+kb transact --items-file end.json   --json
+# through the wrapper, each file travels on the one ssh's stdin:
+<skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
+```
+
+Replace `TOKEN` with the real token before sending: `$ref` reaches earlier
+items of its own batch only, never back into the START batch.
 
 ## Plans
 
