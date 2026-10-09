@@ -38,18 +38,6 @@ reject_registry_commands() {
   esac
 }
 
-has_flag() {
-  local name=$1
-  shift
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      "$name"|"$name="*) return 0 ;;
-    esac
-  done
-  return 1
-}
-
 claim_identity_write() {
   case "$1" in
     claim)
@@ -154,48 +142,8 @@ fi
 
 # A routed lease write must identify the caller checkout, never the board host cwd.
 if claim_identity_write "$command" "$@"; then
-  explicit_repo=""
-  repo_supplied=0
-  identity_args=()
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --repo)
-        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
-        [[ $# -ge 2 ]] || die 'kb-board: --repo requires a path'
-        case "$2" in
-          --repo|--repo=*) die 'kb-board: duplicate --repo option' ;;
-        esac
-        explicit_repo=$2
-        repo_supplied=1
-        shift 2 ;;
-      --repo=*)
-        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
-        explicit_repo=${1#*=}
-        repo_supplied=1
-        shift ;;
-      *) identity_args+=("$1"); shift ;;
-    esac
-  done
-  set -- "${identity_args[@]+${identity_args[@]}}"
-  # The binary refuses this pair before any write (OV-16/A16); stripping
-  # --repo below would hide it, so the wrapper refuses first, before ssh.
-  if [[ "$repo_supplied" -eq 1 ]] && has_flag --no-repo-capture "$@"; then
-    die 'kb-board: --repo and --no-repo-capture are mutually exclusive'
-  fi
-  if ! has_flag --repo-key "$@" && { [[ "$repo_supplied" -eq 1 ]] || ! has_flag --no-repo-capture "$@"; }; then
-    if [[ "$repo_supplied" -eq 1 ]]; then
-      repo_path=$explicit_repo
-    elif [[ "$command" = heartbeat || "$command" = hb ]]; then
-      repo_path=""
-    else
-      repo_path=$PWD
-    fi
-    if [[ -n "$repo_path" ]]; then
-      key=$(python3 "$script_dir/kb-repo-identity.py" key "$repo_path") || die 'kb-board: cannot derive repository identity'
-      [[ -z "$key" ]] || set -- "$@" --repo-key "$key"
-    fi
-  fi
-  has_flag --no-repo-capture "$@" || set -- "$@" --no-repo-capture
+  capture_repo_identity "$command" "$@"
+  set -- "${repo_identity_args[@]}"
 fi
 
 # `--body-file PATH` names a file on the CALLER, and the binary runs on the
