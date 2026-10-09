@@ -1321,6 +1321,15 @@ plan died with the remote shell's own `Argument list too long` -- Linux caps a
 single argument at 131072 bytes whatever `ARG_MAX` says -- which is a shell
 error, not a refusal this wrapper could explain.
 
+**An explicit session context travels the same way.** `kb-board
+--session-context ctx.json` reads the context file on your machine (at most
+64 KiB), recreates it in a private temp file on the board host for that one
+call, and removes it afterwards. Because ssh carries no environment, a set
+`KB_SESSION_ID` is passed to the board host explicitly, an empty one
+included, so the core's agreement check sees exactly what you exported.
+Unreadable, oversized or repeated `--session-context` refuses on your machine
+before any connection.
+
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
 `kb ev --task <epic-id> --json` and needs nobody to have kept a copy:

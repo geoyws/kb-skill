@@ -172,6 +172,7 @@ fi
 # /dev/stdin is staged only for identity-bearing batches; unchanged items
 # retain their bytes even when the wrapper must replay the consumed stream.
 body_file=""
+session_context=""
 items_file=""
 args=()
 items_json=""
@@ -189,6 +190,15 @@ while [[ $# -gt 0 ]]; do
       body_file=${1#*=}
       shift
       ;;
+    --session-context)
+      [[ $# -ge 2 ]] || die 'kb-board: --session-context requires a path'
+      [[ -z "$session_context" ]] || die 'kb-board: --session-context given twice'
+      session_context=$2
+      shift 2 ;;
+    --session-context=*)
+      [[ -z "$session_context" ]] || die 'kb-board: --session-context given twice'
+      session_context=${1#*=}
+      shift ;;
     --items-file)
       [[ $# -ge 2 ]] || die 'kb-board: --items-file requires a path'
       [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
@@ -225,6 +235,24 @@ if [[ -n "$items_file" ]]; then
   [[ -z "$body_file" ]] ||
     die 'kb-board: --body-file and --items-file both need the ssh channel; pass one'
 fi
+# `--session-context PATH` is the caller's explicit context file (KBAT-01). Like
+# `--body-file` it names a file on the CALLER, so it is transferred: a small
+# JSON document, base64 inside the remote command (stdin may already carry a
+# body or items), decoded into a private temp file on the board host and
+# removed whatever the exit status. The core requires `KB_SESSION_ID` to agree
+# with the file, and ssh carries no environment, so a set `KB_SESSION_ID` is
+# forwarded explicitly — empty included, so the board host refuses exactly as
+# it would locally.
+session_context_b64=""
+if [[ -n "$session_context" ]]; then
+  [[ -r "$session_context" && -f "$session_context" ]] ||
+    die "kb-board: cannot read --session-context $session_context"
+  context_bytes=$(wc -c <"$session_context" | tr -d ' ')
+  [[ "$context_bytes" -le 65536 ]] ||
+    die "kb-board: --session-context $session_context is $context_bytes bytes; a session context is at most 65536"
+  session_context_b64=$(base64 <"$session_context" | tr -d '\n') ||
+    die "kb-board: cannot encode --session-context $session_context"
+fi
 
 staged=""
 if [[ "$command" = transact && ( -n "$items_file" || "$items_arg_index" -ge 0 ) ]]; then
@@ -256,7 +284,9 @@ set -- "${args[@]+${args[@]}}"
 current_host=$(/bin/hostname)
 
 if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
-  # Already at the boundary: the caller's path IS the board host's path.
+  # Already at the boundary: the caller's path IS the board host's path, and
+  # the caller's KB_SESSION_ID is already in this process's environment.
+  [[ -z "$session_context" ]] || set -- "$@" --session-context "$session_context"
   if [[ -n "$body_file" ]]; then
     exec "$kb_bin" --project "$board" "$command" "$@" --body-file "$body_file"
   fi
@@ -275,21 +305,45 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
 fi
 
 remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
+# Decoded temp files the remote must remove on exit; while any exists the
+# binary is not `exec`ed, so the EXIT trap still runs.
+remote_cleanup=""
+if [[ -n "$session_context" ]]; then
+  remote_cmd+=" ctx=\$(mktemp \"\${TMPDIR:-/tmp}/kb-ctx.XXXXXX\") || exit 70;"
+  remote_cleanup+=" \"\$ctx\""
+  remote_cmd+=" trap $(shell_quote "rm -f$remote_cleanup") EXIT;"
+fi
 if [[ -n "$body_file" ]]; then
   # The body rides ssh's STDIN, not the command string. Embedding it as an
   # argument capped the body at the board host's ARG_MAX: a 128KB plan died
   # with the shell's own `Argument list too long`, which is not a refusal this
   # wrapper could name. Streaming has no ceiling.
   remote_cmd+=" body=\$(mktemp \"\${TMPDIR:-/tmp}/kb-body.XXXXXX\") || exit 70;"
-  remote_cmd+=" trap 'rm -f \"\$body\"' EXIT;"
+  remote_cleanup+=" \"\$body\""
+  remote_cmd+=" trap $(shell_quote "rm -f$remote_cleanup") EXIT;"
+fi
+if [[ -n "$session_context" ]]; then
+  remote_cmd+=" printf '%s' $(shell_quote "$session_context_b64") | base64 -d >\"\$ctx\" || exit 70;"
+fi
+if [[ -n "$body_file" ]]; then
   remote_cmd+=" base64 -d >\"\$body\" <&0 || exit 70;"
-  remote_cmd+=" $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+fi
+# ssh carries no environment: a caller's KB_SESSION_ID crosses explicitly.
+remote_env=""
+if [[ -n "${KB_SESSION_ID+set}" ]]; then
+  remote_env="env KB_SESSION_ID=$(shell_quote "$KB_SESSION_ID") "
+fi
+if [[ -n "$remote_cleanup" ]]; then
+  remote_cmd+=" ${remote_env}$(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
 else
-  remote_cmd+=" exec $(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+  remote_cmd+=" exec ${remote_env}$(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
 fi
 for arg in "$@"; do
   remote_cmd+=" $(shell_quote "$arg")"
 done
+if [[ -n "$session_context" ]]; then
+  remote_cmd+=" --session-context \"\$ctx\""
+fi
 if [[ -n "$body_file" ]]; then
   # Not `exec`: the EXIT trap must still run to remove the decoded body.
   remote_cmd+=" --body-file \"\$body\""
