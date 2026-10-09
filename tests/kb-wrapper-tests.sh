@@ -847,6 +847,100 @@ JSON
     --items-file "$items" --body-file "$body"
 }
 
+# OV-16/A16 across the wrapper: `--repo PATH` with `--no-repo-capture` is
+# refused on the caller before any connection, for argv lease writes and for
+# transact items alike, because the identity rewrite would otherwise strip
+# `--repo` and hide the conflict from the binary. A mixed transact keeps every
+# non-lease item's bytes exactly as written (BA-07).
+test_board_identity_conflict_refused_and_items_bytes_kept() {
+  local fakebin="$tmp_dir/identity-conflict/fakebin"
+  local ssh_log="$tmp_dir/identity-conflict/ssh.argv"
+  local kb_log="$tmp_dir/identity-conflict/kb.argv"
+  local ssh_count="$tmp_dir/identity-conflict/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table output
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/identity-conflict/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  local -a form
+  local index=0
+  for spec in 'claim t-1a2b3c4d' 'heartbeat t-1a2b3c4d --lease tok' 'handoff accept h-1a2b3c4d'; do
+    for repo_form in split joined; do
+      index=$((index + 1))
+      read -r -a form <<<"$spec"
+      if [[ "$repo_form" == split ]]; then
+        form+=(--repo "$tmp_dir" --no-repo-capture --as lane)
+      else
+        form+=("--repo=$tmp_dir" --no-repo-capture --as lane)
+      fi
+      : >"$ssh_count"
+      output=$(FAKE_SSH_LOG="$ssh_log" \
+        FAKE_SSH_COUNT_FILE="$ssh_count" \
+        FAKE_KB_LOG="$kb_log" \
+        KB_HOSTS_TABLE="$table" \
+        PATH="$fakebin:$PATH" \
+        run_expect_failure "$package_dir/scripts/kb-board" "$board_id" "${form[@]}")
+      [[ "$output" == 'kb-board: --repo and --no-repo-capture are mutually exclusive' ]] ||
+        fail "conflict $index ($spec, $repo_form): unexpected refusal: $output"
+      assert_ssh_call_count "$ssh_count" 0 "conflict $index ($spec, $repo_form)"
+    done
+  done
+
+  local items="$tmp_dir/identity-conflict/conflict.json"
+  printf '[{"name":"claim","arguments":{"id":"t-1a2b3c4d","as":"lane","repo":"%s","no-repo-capture":true}}]' \
+    "$tmp_dir" >"$items"
+  : >"$ssh_count"
+  output=$(FAKE_SSH_LOG="$ssh_log" \
+    FAKE_SSH_COUNT_FILE="$ssh_count" \
+    FAKE_KB_LOG="$kb_log" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json)
+  [[ "$output" == 'kb-board: --repo and --no-repo-capture are mutually exclusive' ]] ||
+    fail "transact conflict: unexpected refusal: $output"
+  assert_ssh_call_count "$ssh_count" 0 'transact conflict'
+
+  items="$tmp_dir/identity-conflict/mixed.json"
+  cat >"$items" <<'JSON'
+[
+  { "name": "note",   "arguments": { "id": "t-1a2b3c4d", "kind": "progress",
+      "text": "a, [b] {c} \"q\" ] \u00e9", "as": "lane" } } ,
+  {"name":"claim","arguments":{"id":"t-5e6f7a8b","as":"lane"}},
+  { "name": "note", "arguments": { "id": "t-5e6f7a8b", "text": "tail" } }
+]
+JSON
+  local seen="$tmp_dir/identity-conflict/seen"
+  : >"$ssh_count"
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin:$PATH" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$ssh_count" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_ITEMS_OUT="$seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json
+  assert_ssh_call_count "$ssh_count" 1 'mixed transact'
+  python3 - "$items" "$seen" <<'PY' || fail 'mixed transact: non-lease items changed bytes'
+import json, sys
+original = open(sys.argv[1], "rb").read()
+seen = open(sys.argv[2], "rb").read()
+claim = original.index(b'{"name":"claim"')
+claim_end = original.index(b"}}", claim) + 2
+# Everything before and after the claim element is byte-identical.
+assert seen.startswith(original[:claim]), seen
+assert seen.endswith(original[claim_end:]), seen
+items = json.loads(seen)
+assert items[1]["arguments"]["no-repo-capture"] is True
+assert items[0] == json.loads(original)[0] and items[2] == json.loads(original)[2]
+PY
+}
+
 # Every occurrence is a duplicate regardless of whether the first value was
 # /dev/stdin (which has no caller-side path) or a local file. Refuse before
 # either the local binary or SSH sees ambiguous flags.
@@ -2383,6 +2477,7 @@ main() {
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
+    test_board_identity_conflict_refused_and_items_bytes_kept
     test_board_transact_rejects_all_duplicate_items_file_forms
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_generated_table_transfers_body_file

@@ -252,6 +252,11 @@ if claim_identity_write "$command" "$@"; then
     esac
   done
   set -- "${identity_args[@]+${identity_args[@]}}"
+  # The binary refuses this pair before any write (OV-16/A16); stripping
+  # --repo below would hide it, so the wrapper refuses first, before ssh.
+  if [[ "$repo_supplied" -eq 1 ]] && has_flag --no-repo-capture "$@"; then
+    die 'kb-board: --repo and --no-repo-capture are mutually exclusive'
+  fi
   if ! has_flag --repo-key "$@" && { [[ "$repo_supplied" -eq 1 ]] || ! has_flag --no-repo-capture "$@"; }; then
     if [[ "$repo_supplied" -eq 1 ]]; then
       repo_path=$explicit_repo
@@ -357,7 +362,8 @@ if [[ "$command" = transact && ( -n "$items_file" || "$items_arg_index" -ge 0 ) 
   else
     printf '%s' "$items_json" >"$staged/input"
   fi
-  python3 "$script_dir/kb-repo-identity.py" items "$staged/input" "$staged/output" || die 'kb-board: cannot prepare --items'
+  # The script already printed its own `kb-board:` reason; do not add a second.
+  python3 "$script_dir/kb-repo-identity.py" items "$staged/input" "$staged/output" || exit 2
   if [[ -n "$items_file" ]]; then
     if ! cmp -s "$staged/input" "$staged/output"; then
       items_file="$staged/output"
