@@ -1,0 +1,115 @@
+#!/bin/bash
+set -euo pipefail
+
+die() { printf '%s\n' "kb-group: $1" >&2; exit 64; }
+
+[[ $# -ge 2 ]] || die 'usage: kb-group group/NAME CMD [ARGS...]'
+tag=$1
+shift
+case "$tag" in
+  group/*)
+    case "${tag#group/}" in
+      ''|*[!A-Za-z0-9._-]*) die "invalid group tag: $tag" ;;
+    esac ;;
+  *) die "group tag must start with group/: $tag" ;;
+esac
+
+# Only the compiled group selectors are safe; a board-owned write or a
+# registry mutation must use its own explicit, board-local/registry route.
+case "$1 ${2-}" in
+  'task list'|'task ls'|'t list'|'t ls'|'attention list'|'attention ls'|'att list'|'att ls'|'attn list'|'attn ls'|'sitrep list'|'sitrep ls'|'sr list'|'sr ls'|'dashboard '*|'dash '*|'search '*|'watch '*) ;;
+  'claim --candidates'|'claim --next') ;;
+  *) die "unsupported group command: $1 ${2-}" ;;
+esac
+
+for arg in "$@"; do
+  case "$arg" in
+    --project|--project=*|--db|--db=*|--workspace|--workspace=*|--all|--all=*|--all-boards|--all-boards=*|--board-tag|--board-tag=*|--except-board-tag|--except-board-tag=*|--registry|--registry=*)
+      die "conflicting scope selector: $arg" ;;
+    --body-file|--body-file=*|--items-file|--items-file=*)
+      # No compiled group operation consumes either file; never forward a
+      # caller-side path that the registry host cannot read.
+      die "file selector is not applicable to a group operation: $arg" ;;
+  esac
+done
+[[ ${KANBAN_PROJECT+x} != x && ${KANBAN_DB+x} != x ]] || die 'ambient KANBAN_PROJECT or KANBAN_DB conflicts with group selection'
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+router_name=kb-group
+source "$script_dir/kb-routing.sh"
+declare -a BOARD_IDS BOARD_HOME_HOSTS BOARD_SSH_TARGETS BOARD_EXPECTED_REMOTE_HOSTS BOARD_KB_EXECS
+load_table "${KB_HOSTS_TABLE:-$script_dir/../hosts.tsv}"
+registry=${KB_GROUP_REGISTRY_PROJECT:-kanban}
+lookup_board "$registry" || die "registry board has no route: $registry"
+home_host=$BOARD_HOME_HOST
+ssh_target=$BOARD_SSH_TARGET
+expected_remote=$BOARD_EXPECTED_REMOTE_HOST
+kb_bin=$BOARD_KB_EXEC
+
+# This catalogue read is verification, not a group operation. It must happen
+# on the same verified registry home immediately before ONE compiled operation.
+# Passing routes as literal argv avoids reparsing shell strings or TSV remotely.
+remote_script=$(cat <<'REMOTE'
+set -euo pipefail
+die() { printf 'kb-group: %s\n' "$1" >&2; exit 64; }
+tag=$1; kb_bin=$2; count=$3; shift 3
+routes=()
+for ((i=0; i<count; i++)); do
+  routes+=("$1" "$2" "$3" "$4" "$5")
+  shift 5
+done
+[[ "${1-}" = -- ]] || die 'invalid routed arguments'
+shift
+[[ ${KANBAN_PROJECT+x} != x && ${KANBAN_DB+x} != x ]] || die 'ambient KANBAN_PROJECT or KANBAN_DB conflicts with group selection'
+command -v jq >/dev/null || die 'jq unavailable on registry home'
+show=$("$kb_bin" workspace tag show "$tag" --json) || die "group snapshot unavailable: $tag"
+if ! printf '%s' "$show" | jq -e --arg tag "$tag" \
+  '.groupName == $tag and (.revision | type == "number") and (.groupSnapshot | type == "string") and (.members | type == "array") and all(.members[]; (.boardName | type == "string") and (.boardName | test("^[A-Za-z0-9._-]+$")))' >/dev/null; then
+  die "invalid group snapshot: $tag"
+fi
+members=$(printf '%s' "$show" | jq -r '.members[].boardName') || die "invalid group snapshot: $tag"
+if [[ -n "$members" ]]; then
+  while IFS= read -r member; do
+    found=0
+    for ((i=0; i<count; i++)); do
+      index=$((i*5))
+      if [[ "${routes[$index]}" = "$member" ]]; then
+        found=1
+        for ((field=1; field<5; field++)); do
+          [[ "${routes[$((index+field))]}" = "${routes[$field]}" ]] || die "cross-home group member: $member"
+        done
+        break
+      fi
+    done
+    [[ "$found" = 1 ]] || die "unregistered group member: $member"
+  done <<<"$members"
+fi
+# The catalogue read above checks membership, but only this exec is the
+# requested compiled group operation; no member-by-member invocation exists.
+exec "$kb_bin" "$@" --board-tag "$tag"
+REMOTE
+)
+
+# Put the registry route first so remote verification compares every member
+# against it. The remainder of hosts.tsv is forwarded without interpretation.
+route_args=("$registry" "$home_host" "$ssh_target" "$expected_remote" "$kb_bin")
+for i in "${!BOARD_IDS[@]}"; do
+  [[ "${BOARD_IDS[$i]}" = "$registry" ]] && continue
+  route_args+=("${BOARD_IDS[$i]}" "${BOARD_HOME_HOSTS[$i]}" "${BOARD_SSH_TARGETS[$i]}" "${BOARD_EXPECTED_REMOTE_HOSTS[$i]}" "${BOARD_KB_EXECS[$i]}")
+done
+count=$((${#route_args[@]} / 5))
+if [[ "$(/bin/hostname)" = "$home_host" ]]; then
+  exec /bin/bash -c "$remote_script" kb-group "$tag" "$kb_bin" "$count" "${route_args[@]}" -- "$@"
+fi
+remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$expected_remote") ]; then exec /bin/bash -c $(shell_quote "$remote_script") kb-group"
+for arg in "$tag" "$kb_bin" "$count" "${route_args[@]}" -- "$@"; do
+  remote_cmd+=" $(shell_quote "$arg")"
+done
+remote_cmd+="; else printf '%s\\n' 'kb-group: remote hostname mismatch' >&2; exit 69; fi"
+status=0
+"${KB_SSH_BIN:-ssh}" -- "$ssh_target" "$remote_cmd" || status=$?
+[[ $status -eq 0 ]] || {
+  [[ $status -eq 255 ]] && die "registry home unavailable (ssh exit $status)"
+  [[ $status -eq 124 ]] && die "registry home timed out (ssh exit $status)"
+  exit "$status"
+}

@@ -18,6 +18,32 @@ Output is **always JSON**, with or without `--json`.
 
 Every command below is checked against `kb/references/verified-recipes.md` (kanban 0.3.0, board schema 37, 2026-10-01).
 
+## Explicit board-group routing (coordinator only)
+
+The default is still **one board**. Group mode is opt-in, and only a
+coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
+
+```bash
+"<skill-dir>/scripts/kb-host" HOME workspace tag show group/NAME --json   # read the group snapshot
+"<skill-dir>/scripts/kb-group" group/NAME attention list --group-snapshot TOKEN --json
+"<skill-dir>/scripts/kb-group" group/NAME claim --candidates --as ACTOR --limit N --group-snapshot TOKEN --json
+```
+
+- `kb-group` routes through the registry-home row of `KB_HOSTS_TABLE`. It
+  checks the home host's name and every member's one-ledger route, then runs
+  one compiled group operation with literal argv and `--board-tag`.
+- An unknown group, an unavailable home, a member on another home, or a
+  conflicting selector is refused. There is no per-member loop and no local
+  database fallback. `--body-file` and `--items-file` are refused, because
+  no group operation reads them. `kb-board` stays single-board.
+- Keep the `groupSnapshot` and `revision` from `workspace tag show`, and pass
+  `--group-snapshot TOKEN` on every group read. If membership changes, stop
+  and start again; never act on stale answers.
+- Before any write: show the group again, re-read the qualified `(board, id)`
+  target, then write board-locally through `kb-board BOARD`. Only the
+  coordinator holds a group token. Never hand it to a worker, and never widen
+  a worker's grants.
+
 ## Board home host is the execution boundary
 
 Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
