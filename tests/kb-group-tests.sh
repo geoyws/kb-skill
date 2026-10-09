@@ -122,13 +122,18 @@ args = Path(sys.argv[1]).read_bytes().split(b'\0')[:-1]
 assert args == [b'attention', b'list', b'--group-snapshot', os.environ['TEST_SNAPSHOT'].encode(), b'--json', b'--board-tag', b'group/test']
 PY
 ok
+# In a checkout, the injected key is computed from the caller rather than
+# the fake registry host. A reordered claim keeps its original argv order.
+expected_key=$(python3 "$here/scripts/kb-repo-identity.py" key "$here")
+[[ -n "$expected_key" ]] || fail 'checkout has no repository identity'
+export EXPECTED_KEY="$expected_key"
 : >"$CALLS"
-"$here/scripts/kb-group" group/test claim --next --as worker --expect-group-snapshot "$TEST_SNAPSHOT" >/dev/null
+(cd "$here" && "$here/scripts/kb-group" group/test claim --as worker --next --json --expect-group-snapshot "$TEST_SNAPSHOT" >/dev/null)
 check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
-import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--expect-group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode(), b'--board-tag', b'group/test']
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--as', b'worker', b'--next', b'--json', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode(), b'--repo-key', os.environ['EXPECTED_KEY'].encode(), b'--no-repo-capture', b'--board-tag', b'group/test']
 PY
 ok
 : >"$CALLS"
@@ -183,14 +188,39 @@ assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'watch', b'--cursor
 PY
 ok
 : >"$CALLS"
-"$here/scripts/kb-group" group/test claim --next --as worker >/dev/null
+(cd "$here" && "$here/scripts/kb-group" group/test claim --next --as worker >/dev/null)
 check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
-import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--board-tag', b'group/test', b'--expect-group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode()]
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--repo-key', os.environ['EXPECTED_KEY'].encode(), b'--no-repo-capture', b'--board-tag', b'group/test', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode()]
 PY
 ok
+# Explicit repo is caller-side, too; the conflicting pair must never ssh.
+: >"$CALLS"
+(cd "$t" && "$here/scripts/kb-group" group/test claim --as worker --next --json >/dev/null)
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--as', b'worker', b'--next', b'--json', b'--no-repo-capture', b'--board-tag', b'group/test', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode()]
+PY
+ok
+: >"$CALLS"
+(cd "$t" && "$here/scripts/kb-group" group/test claim --next --as worker --repo "$here" >/dev/null)
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import os, sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--repo-key', os.environ['EXPECTED_KEY'].encode(), b'--no-repo-capture', b'--board-tag', b'group/test', b'--expect-group-snapshot', os.environ['TEST_SNAPSHOT'].encode()]
+PY
+ok
+refuse '--repo and --no-repo-capture are mutually exclusive' group/test claim --next --as worker --repo "$here" --no-repo-capture
+check_calls ''
+refuse 'claim requires exactly one of --next or --candidates' group/test claim --as worker --json
+check_calls ''
+refuse 'claim requires exactly one of --next or --candidates' group/test claim --next --as worker --candidates
+check_calls ''
 python3 - "$here/SKILL.md" <<'PY'
 from pathlib import Path
 import sys
@@ -204,7 +234,7 @@ ok
 refuse 'group tag must start with group/' board/test attention list
 refuse 'invalid group tag' group/ attention list
 refuse 'unsupported group command' group/test task update x
-refuse 'unsupported group command' group/test claim --force
+refuse 'claim requires exactly one of --next or --candidates' group/test claim --force
 for selector in --project=px --db=/tmp/foo --workspace=. --all --all-boards --board-tag=group/else --except-board-tag=group/else --registry; do
   refuse 'conflicting scope selector' group/test attention list "$selector"
 done

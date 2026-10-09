@@ -15,6 +15,71 @@ shell_quote() {
   printf '%s' "$out"
 }
 
+has_flag() {
+  local name=$1
+  shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      "$name"|"$name="*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+repo_identity_error() {
+  printf '%s: %s\n' "$router_name" "$1" >&2
+  exit 64
+}
+
+# Preserve ordinary argv, replacing --repo with a caller-derived key. Both
+# wrappers source this file and pass the result as repo_identity_args. In
+# particular, no routed lease write may capture the registry host's cwd.
+capture_repo_identity() {
+  local command=$1 explicit_repo="" repo_supplied=0 repo_path key
+  shift
+  local -a identity_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        [[ "$repo_supplied" -eq 0 ]] || repo_identity_error 'duplicate --repo option'
+        [[ $# -ge 2 ]] || repo_identity_error '--repo requires a path'
+        case "$2" in
+          --repo|--repo=*) repo_identity_error 'duplicate --repo option' ;;
+        esac
+        explicit_repo=$2
+        repo_supplied=1
+        shift 2 ;;
+      --repo=*)
+        [[ "$repo_supplied" -eq 0 ]] || repo_identity_error 'duplicate --repo option'
+        explicit_repo=${1#*=}
+        repo_supplied=1
+        shift ;;
+      *) identity_args+=("$1"); shift ;;
+    esac
+  done
+  repo_identity_args=("${identity_args[@]}")
+  # The binary refuses this pair before any write; stripping --repo here
+  # would hide the conflict, so refuse on the caller before ssh.
+  if [[ "$repo_supplied" -eq 1 ]] && has_flag --no-repo-capture "${repo_identity_args[@]}"; then
+    repo_identity_error '--repo and --no-repo-capture are mutually exclusive'
+  fi
+  if ! has_flag --repo-key "${repo_identity_args[@]}" && { [[ "$repo_supplied" -eq 1 ]] || ! has_flag --no-repo-capture "${repo_identity_args[@]}"; }; then
+    if [[ "$repo_supplied" -eq 1 ]]; then
+      repo_path=$explicit_repo
+    elif [[ "$command" = heartbeat || "$command" = hb ]]; then
+      repo_path=""
+    else
+      repo_path=$PWD
+    fi
+    if [[ -n "$repo_path" ]]; then
+      key=$(python3 "$script_dir/kb-repo-identity.py" key "$repo_path") || repo_identity_error 'cannot derive repository identity'
+      [[ -z "$key" ]] || repo_identity_args+=(--repo-key "$key")
+    fi
+  fi
+  has_flag --no-repo-capture "${repo_identity_args[@]}" || repo_identity_args+=(--no-repo-capture)
+}
+
 board_exists() {
   local needle=$1 i
   for i in "${!BOARD_IDS[@]}"; do

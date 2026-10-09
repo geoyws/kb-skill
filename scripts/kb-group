@@ -18,7 +18,15 @@ esac
 # registry mutation must use its own explicit, board-local/registry route.
 case "$1 ${2-}" in
   'task list'|'task ls'|'t list'|'t ls'|'attention list'|'attention ls'|'att list'|'att ls'|'attn list'|'attn ls'|'sitrep list'|'sitrep ls'|'sr list'|'sr ls'|'dashboard '*|'dash '*|'search '*|'watch '*) ;;
-  'claim --candidates'|'claim --next') ;;
+  claim\ *)
+    next=0 candidates=0
+    for arg in "${@:2}"; do
+      case "$arg" in
+        --next) next=1 ;;
+        --candidates) candidates=1 ;;
+      esac
+    done
+    [[ $((next + candidates)) -eq 1 ]] || die 'claim requires exactly one of --next or --candidates' ;;
   *) die "unsupported group command: $1 ${2-}" ;;
 esac
 
@@ -39,6 +47,11 @@ done
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 router_name=kb-group
 source "$script_dir/kb-routing.sh"
+# Candidates are read-only. Only --next may create a lease on a group member.
+if [[ "$1" = claim && "$next" -eq 1 ]]; then
+  capture_repo_identity "$1" "${@:2}"
+  set -- claim "${repo_identity_args[@]}"
+fi
 declare -a BOARD_IDS BOARD_HOME_HOSTS BOARD_SSH_TARGETS BOARD_EXPECTED_REMOTE_HOSTS BOARD_KB_EXECS
 load_table "${KB_HOSTS_TABLE:-$script_dir/../hosts.tsv}"
 registry=${KB_GROUP_REGISTRY_PROJECT:-kanban}
