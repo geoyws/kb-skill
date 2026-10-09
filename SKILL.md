@@ -23,12 +23,10 @@ Every command below is checked against `kb/references/verified-recipes.md` (kanb
 Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
 (`hosts.tsv`; kb infra t-93c9468e). hal's `/root/.local/bin/kb` is the
 installed kanban release binary and the ledger is `/root/.local/share/kanban`
-there. hax holds only the fenced, immutable pre-cutover copy
-(`/root/.local/share/kanban.p7-fenced`) for rollback; every kb path on hax
-refuses writes and reads, by design.
-This includes the acies board: route every board read and write to @@hal through
-`kb-board` (or `kb-host hal` for registry commands). An unreachable @@hal is a
-blocked ledger operation, never a reason to use the old @@hax copy.
+there. Historical note (2026-10-03): hax held a fenced pre-cutover copy;
+it is retired, never a board target. Route every board read and write,
+including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
+commands). An unreachable @@hal blocks ledger operations; never fall back.
 
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. Before any `/kb` read or write, check the current host
@@ -335,9 +333,9 @@ claim/resume, which saves tokens. A stored claim deliberately does not pretend
 it re-read current rules.
 
 Rules live once in `registry.db` and are **audited and retire-only**. Updates
-retain the previous body; retirement removes a rule from active injection and
-the web view without deleting history. There is no `rm` alias. `--global` is
-retired and explicitly refused; `g-*` remains valid only as a historical ID.
+retain the previous body; retirement removes a rule from active injection
+without deleting history. There is no `rm` alias. `--global` is retired and
+explicitly refused; `g-*` remains valid only as a historical ID.
 
 This is not the secret or long-form memory store. Keep credentials, secrets,
 long explanations and cross-machine knowledge in the versioned/git-crypt'd
@@ -349,8 +347,8 @@ Every rule carries one `tags` array. `ALL` is explicit and default,
 Repeatable `--board`/`--except-board` flags validate exact board names.
 Namespaced `--tag` selectors must exist on an active board; several are an OR
 set intersected with the board selector. Task claim/context/handoff injection
-requires a matching task tag. Taskless session handoffs and web board pages
-omit subsystem-scoped rules. See ADR-027.
+requires a matching task tag. Taskless session handoffs omit
+subsystem-scoped rules. See ADR-027.
 
 ## Attention — anything that needs the owner
 
@@ -368,8 +366,8 @@ prose have to be parsed back out of English by whoever reads them, and the
 free-text answer they get back carries no verdict a lane can branch on. Author
 the choices as flags and the answer comes back machine-readable. The body is
 untouched by all of this and stays the long form — receipts, SHA256s, absolute
-paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
-(ADR-042).
+paths and the `RESOLVE-WHEN` line — read through `/kb-att`, which re-measures
+current state before asking George (ADR-042).
 
 ```bash
 kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
@@ -391,7 +389,7 @@ kb att raise "<verdict-first body — receipts, paths, the concrete next action>
 
 | flag | what goes in it |
 |---|---|
-| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "hax has no logged-in Claude account — assign a seat, or drop that receipt?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
+| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "Will you unlock the hal recovery key, defer the drill, or cancel it?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
 | `--context` | Two to five plain sentences, at most 800 characters, in this order: what is true now, what is blocked and how much waits on it, what waiting costs. If waiting costs nothing, say so — that is a legitimate answer and it changes the decision. |
 | `--choice KEY=LABEL\|OUTCOME` | Two to four, repeatable, one token so the three parts cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the item, and never shown to him. The label is the button text: a verb phrase starting with the verb, at most 60 characters, carrying no `|`. The outcome is one of `approve`, `reject`, `defer`, `other` — the machine-readable verdict a lane acts on, where the label is for the human. |
 | `--consequence KEY=TEXT` | One per choice, required on every one: a single sentence, at most 200 characters, saying what happens and what it costs, in that order. "Approved" is not a consequence; "the receipt is retried the same day, about ten minutes of your time plus the seat's monthly cost" is. |
@@ -406,7 +404,7 @@ about the ledger. Typed ids (`a-*`, `t-*`, `e-*`, `d-*`) belong in a trailing
 `References:` clause and never mid-sentence. Required instead: numbers with
 units (`ten minutes`, `43 items`, `HTTP 401`), absolute dates (`2026-09-05`,
 never "last week"), full nouns wherever a pronoun could drift, and second
-person for anything only he can do — "only you can finish the browser login".
+person for anything only he can do — "only you can unlock the recovery key".
 
 A `defer` consequence must name **what brings the question back**: a date, an
 event, or a task that will be filed. "Later" with no trigger is how an item is
@@ -432,7 +430,7 @@ walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
 quiz the row's own diagnosis, which "isn't helping my understanding of the
 codebase but asking me to diagnose issues"; a row with no `check` field gets
 its card with no check). Author it as flags, all or none — never as prose in
-the body, where the web view would show the answer beside the question:
+the body, where `/kb-att` would reveal the answer before asking the check:
 
 | flag | what goes in it |
 |---|---|
@@ -500,7 +498,7 @@ the check pending — still redacted, still answerable (kanban t-1aa9f553).
 kb att check <id> --as geoyws --key <key> --json   # geoyws or the raiser; open or resolved row
 ```
 
-It goes through the same answer law as the web card: a check is answered
+It goes through the same answer law as the `/kb-att` check: a check is answered
 exactly once, on an open or a resolved row, and a second answer is refused;
 the row's status does not change, and `att reopen` clears the result. The
 `--json` receipt is the row in its post-answer projection, whose `check` now
@@ -523,15 +521,12 @@ kb att check <id> --as geoyws --key sign-server --json                          
 
 `--choice` is required on `resolve`. `--note` is optional for an authored
 choice, because the label and its consequence are already the record, and
-required for `custom`; `--outcome` applies to `custom` alone. On the web the
-same holds: the card carries one reply field, and whatever is typed in it is
-sent with whichever choice is clicked - so a lane reading `decision.note`
-beside an authored `choice` is reading what geoyws added to his click, and
-should act on it before the consequence text. A `--choice`
-naming a key the row does not carry is refused naming the keys it has, and that
-is what makes a stale card safe: if his browser is still showing a card that a
-later `att update` replaced, the click names a key that no longer exists and is
-refused by name rather than mapped onto whatever now sits in that position.
+required for `custom`; `--outcome` applies to `custom` alone. `/kb-att`
+re-measures the current card before asking George; a lane reading `decision.note`
+beside an authored `choice` reads what he added to the verdict and should
+act on it before the consequence text. A `--choice` naming a key the row no
+longer carries is refused naming its current keys, not silently mapped onto
+the old card's position.
 
 **`decision` is what a lane reads back**, not the prose:
 `{"choice": "keep-parked", "outcome": "defer", "note": null, "by": "geoyws",
@@ -544,7 +539,7 @@ choice settles the item, `defer` included: a deferral is a verdict, and
 `kb att reopen` is the way back.
 
 **An item with no card reads as the default pair.** A row that authored no
-choices is served — CLI, MCP and web alike — as `approve` ("Approve - proceed")
+choices is served — CLI, MCP and `/kb-att` alike — as `approve` ("Approve - proceed")
 and `reject` ("Reject - do not proceed") with **no recommendation**, because
 nobody authored that pair and nothing may claim it was recommended, and its
 body serves as both question and context. That is the only shape in the model
@@ -553,36 +548,29 @@ same five card flags, so an item still open can be given a card later, and
 `--clear-card` returns it to the default pair. A resolved item's card is
 history and is refused.
 
-**A card, written out.** `a-347ff24c` was a P0 whose body ran 1,235 characters
-of receipts — two SHA256s, a deployment id, a commit sha, an absolute
-executable path — and which sat at the top of "Needs you" for three days after
-being parked once with no trigger to bring it back. The same item raised as a
-card:
+**A card, written out (illustrative, not a live incident).** Suppose the
+ledger backup restore drill on hal needs George to unlock the recovery key.
+The row records the receipt path and its resolve condition; the card gives
+three actual decisions with a trigger on deferral:
 
 ```bash
-kb att raise "BLOCKED — HAX Claude Code 2.1.236 is installed at /root/.local/share/claude/versions/2.1.236 and host dispatchers.json binds claude.print/start-readonly-turn to that exact release adapter, but the stored OAuth access token is revoked and a real serialized no-tools turn fails HTTP 401. Resolve only after the installed adapter returns its exact live AdapterResponse for a real Claude acknowledgement; do not work around authentication." \
-  --as "@:geoyws/hax/driver" --lane driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
-  --question "hax has no logged-in Claude account, so the pubsub adapter cannot record one real Claude reply - assign a seat, or drop that receipt?" \
-  --context "Claude Code 2.1.236 is installed on hax and its dispatcher config loads, but the saved login is revoked and a real turn answers HTTP 401. You parked this on 2026-09-05 until an account was assigned to hax; three days later no account has been assigned. Only you can finish it: it needs a paid seat and a browser login nobody else can complete. One task is waiting - install Claude Code on hax for the pubsub adapter's live receipt - and nothing is waiting on that task. Until it moves, the pubsub adapter ships with every provider proven except Claude. References: a-347ff24c, t-8c656910." \
-  --choice "assign-and-login=Assign a Claude seat to hax and log in|approve" \
-  --consequence "assign-and-login=You buy or free one Claude seat, ssh to hax and finish the browser login: about ten minutes of your time plus the seat's monthly cost, and the receipt is retried the same day." \
-  --choice "keep-parked=Keep it parked until a seat frees up|defer" \
-  --consequence "keep-parked=Nothing changes and nobody waits on you; the pubsub adapter keeps shipping with the Claude path unproven, and a task is filed to re-raise this the day a seat frees up." \
-  --choice "drop-receipt=Drop the live-Claude receipt from the adapter|reject" \
-  --consequence "drop-receipt=The adapter is proven against the other providers only, the Claude path stays untested in production, and the install task closes as cancelled." \
-  --recommend assign-and-login --json
+kb att raise "BLOCKED — The hal ledger backup at /root/.local/share/kanban cannot complete a restore drill until George unlocks the recovery key in the approved vault. Resolve only after a restore on hal is verified; do not copy the ledger to another host." \
+  --as "@:geoyws/infra/driver/executor" --lane driver --kind blocking --priority 0 --task t-12345678 --tag geoyws/infra \
+  --question "Will you unlock the recovery key for the hal ledger restore drill, defer it until the next maintenance window, or cancel the drill?" \
+  --context "The backup is present on hal, but the recovery key is locked and the restore drill cannot proceed. Only you can unlock it; one backup verification is waiting. Deferral delays proof of recovery, but no board reads or writes depend on the drill. References: t-12345678." \
+  --choice "unlock-key=Unlock the recovery key for the restore drill|approve" \
+  --consequence "unlock-key=You unlock the key in the approved vault; the restore drill runs on hal and takes about ten minutes of your time." \
+  --choice "defer-window=Defer the drill to the next maintenance window|defer" \
+  --consequence "defer-window=Recovery remains unverified until the next maintenance window, when a task re-raises this decision." \
+  --choice "cancel-drill=Cancel this restore drill|reject" \
+  --consequence "cancel-drill=The restore drill is cancelled and recovery remains unverified; the task closes without a restore receipt." \
+  --recommend unlock-key --json
 ```
 
-Question 133 characters, context 588, labels 38, 36 and 45, consequences 175,
-167 and 143, three choices, one recommendation. `assign-and-login` is the
-recommendation because the item's own resolve condition is a live receipt no
-workaround may produce, and one seat is the smallest price on the card.
-`keep-parked` is offered honestly rather than omitted — it is what he chose on
-2026-09-05 and it may still be right — but its consequence now names the
-trigger that brings the question back, which the parking did not, which is why
-the item was still open three days later. Pick it and the row afterwards reads
-`decision.outcome: "defer"` and `resolution: "Decision: Keep it parked until a
-seat frees up. Nothing changes and nobody waits on you; …"`.
+The question is in the operator's terms, the context names what waits, each
+choice has a consequence, and exactly one is recommended. `defer-window`
+settles this decision as `defer`; the next maintenance window explicitly
+triggers the new task instead of leaving a parked row with no return path.
 
 **An explicit `--limit` that cuts is named, not hidden.** `kb ev --limit N`
 keeps stdout at exactly N rows and writes one line to stderr - `events: showing
@@ -774,7 +762,7 @@ kb h new t-48c302f0 --lease "$TOKEN" --as "@:geoyws/px/driver-3" \
   --intent "Land the writer branch on pai-geoyws-driver-3, then re-measure." \
   --next-action "Merge writer branch wt-px-t48c302f0-w1 into pai-geoyws-driver-3 in an isolated integration tree and run the gates." \
   --reason token_pressure --json
-# Worktree: hax /srv/work/px-driver-3, branch pai-geoyws-driver-3, base 9f2c1ab.
+# Historical worktree example (pre-cutover): hax /srv/work/px-driver-3, branch pai-geoyws-driver-3, base 9f2c1ab; never a current board target.
 # Evidence: commit 4d5e6f7 on wt-px-t48c302f0-w1. NOT verified: e2e on the merged lane.
 ```
 
@@ -1850,7 +1838,7 @@ once a silent wrong answer.
 ADR-008 (fail closed), ADR-010 (adapters generated from the surface),
 ADR-011 (MCP server + in-place reload), ADR-012 (session handoffs and
 attention), ADR-013 (plans are epics), ADR-015 (tags are a master file),
-ADR-016 (the web view), ADR-017 (sitreps), ADR-018 (the original board-local
+ADR-016 (historical retired web view), ADR-017 (sitreps), ADR-018 (the original board-local
 rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
 tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
 namespaced `<estate>/<subsystem>` tags.
