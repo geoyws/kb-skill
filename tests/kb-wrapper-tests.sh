@@ -743,10 +743,16 @@ JSON
 
   assert_ssh_call_count "$ssh_count" 1 'transact on stdin'
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
-  # The flag travels exactly as written: the caller already named the remote's
-  # stdin, so the wrapper has nothing to rewrite.
-  assert_argv_file "$kb_log" --project "$board_id" transact --items-file /dev/stdin --json
-  assert_items_streamed "$seen" "$items" 'transact on stdin'
+  # Identity is injected into the claim only; the checkpoint and its $ref
+  # retain their meaning and their special characters.
+  assert_argv_file "$kb_log" --project "$board_id" transact --json --items-file /dev/stdin
+  python3 - "$seen" "$items" <<'PY' || fail 'transact claim identity rewrite'
+import json, sys
+seen, original = (json.load(open(path)) for path in sys.argv[1:])
+assert seen[0]["arguments"]["no-repo-capture"] is True
+assert {k: v for k, v in seen[0]["arguments"].items() if k not in ("repo-key", "no-repo-capture")} == original[0]["arguments"]
+assert seen[1] == original[1]
+PY
 }
 
 # A LOCAL `--items-file PATH` from the MBP. The path is the caller's and the
@@ -839,6 +845,154 @@ JSON
   PATH="$fakebin:$PATH" \
   run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
     --items-file "$items" --body-file "$body"
+}
+
+# OV-16/A16 across the wrapper: `--repo PATH` with `--no-repo-capture` is
+# refused on the caller before any connection, for argv lease writes and for
+# transact items alike, because the identity rewrite would otherwise strip
+# `--repo` and hide the conflict from the binary. A mixed transact keeps every
+# non-lease item's bytes exactly as written (BA-07).
+test_board_identity_conflict_refused_and_items_bytes_kept() {
+  local fakebin="$tmp_dir/identity-conflict/fakebin"
+  local ssh_log="$tmp_dir/identity-conflict/ssh.argv"
+  local kb_log="$tmp_dir/identity-conflict/kb.argv"
+  local ssh_count="$tmp_dir/identity-conflict/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table output
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/identity-conflict/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  local -a form
+  local index=0
+  for spec in 'claim t-1a2b3c4d' 'heartbeat t-1a2b3c4d --lease tok' 'handoff accept h-1a2b3c4d'; do
+    for repo_form in split joined; do
+      index=$((index + 1))
+      read -r -a form <<<"$spec"
+      if [[ "$repo_form" == split ]]; then
+        form+=(--repo "$tmp_dir" --no-repo-capture --as lane)
+      else
+        form+=("--repo=$tmp_dir" --no-repo-capture --as lane)
+      fi
+      : >"$ssh_count"
+      output=$(FAKE_SSH_LOG="$ssh_log" \
+        FAKE_SSH_COUNT_FILE="$ssh_count" \
+        FAKE_KB_LOG="$kb_log" \
+        KB_HOSTS_TABLE="$table" \
+        PATH="$fakebin:$PATH" \
+        run_expect_failure "$package_dir/scripts/kb-board" "$board_id" "${form[@]}")
+      [[ "$output" == 'kb-board: --repo and --no-repo-capture are mutually exclusive' ]] ||
+        fail "conflict $index ($spec, $repo_form): unexpected refusal: $output"
+      assert_ssh_call_count "$ssh_count" 0 "conflict $index ($spec, $repo_form)"
+    done
+  done
+
+  local items="$tmp_dir/identity-conflict/conflict.json"
+  printf '[{"name":"claim","arguments":{"id":"t-1a2b3c4d","as":"lane","repo":"%s","no-repo-capture":true}}]' \
+    "$tmp_dir" >"$items"
+  : >"$ssh_count"
+  output=$(FAKE_SSH_LOG="$ssh_log" \
+    FAKE_SSH_COUNT_FILE="$ssh_count" \
+    FAKE_KB_LOG="$kb_log" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json)
+  [[ "$output" == 'kb-board: --repo and --no-repo-capture are mutually exclusive' ]] ||
+    fail "transact conflict: unexpected refusal: $output"
+  assert_ssh_call_count "$ssh_count" 0 'transact conflict'
+
+  items="$tmp_dir/identity-conflict/mixed.json"
+  cat >"$items" <<'JSON'
+[
+  { "name": "note",   "arguments": { "id": "t-1a2b3c4d", "kind": "progress",
+      "text": "a, [b] {c} \"q\" ] \u00e9", "as": "lane" } } ,
+  {"name":"claim","arguments":{"id":"t-5e6f7a8b","as":"lane"}},
+  { "name": "note", "arguments": { "id": "t-5e6f7a8b", "text": "tail" } }
+]
+JSON
+  local seen="$tmp_dir/identity-conflict/seen"
+  : >"$ssh_count"
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin:$PATH" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$ssh_count" \
+  FAKE_KB_LOG="$kb_log" \
+  FAKE_KB_ITEMS_OUT="$seen" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-board" "$board_id" transact --items-file "$items" --json
+  assert_ssh_call_count "$ssh_count" 1 'mixed transact'
+  python3 - "$items" "$seen" <<'PY' || fail 'mixed transact: non-lease items changed bytes'
+import json, sys
+original = open(sys.argv[1], "rb").read()
+seen = open(sys.argv[2], "rb").read()
+claim = original.index(b'{"name":"claim"')
+claim_end = original.index(b"}}", claim) + 2
+# Everything before and after the claim element is byte-identical.
+assert seen.startswith(original[:claim]), seen
+assert seen.endswith(original[claim_end:]), seen
+items = json.loads(seen)
+assert items[1]["arguments"]["no-repo-capture"] is True
+assert items[0] == json.loads(original)[0] and items[2] == json.loads(original)[2]
+PY
+}
+
+# Every occurrence is a duplicate regardless of whether the first value was
+# /dev/stdin (which has no caller-side path) or a local file. Refuse before
+# either the local binary or SSH sees ambiguous flags.
+test_board_transact_rejects_all_duplicate_items_file_forms() {
+  local fakebin="$tmp_dir/transact-duplicates/fakebin"
+  local ssh_log="$tmp_dir/transact-duplicates/ssh.argv"
+  local kb_log="$tmp_dir/transact-duplicates/kb.argv"
+  local ssh_count="$tmp_dir/transact-duplicates/ssh.count"
+  setup_fakebin "$fakebin"
+
+  local board_id table items route first second output
+  board_id=$(make_id board)
+  table="$tmp_dir/transact-duplicates/hosts.tsv"
+  items="$tmp_dir/transact-duplicates/items.json"
+  printf '%s\n' '[]' >"$items"
+  local -a first_args second_args
+
+  for route in remote local; do
+    if [[ "$route" == local ]]; then
+      make_table "$table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    else
+      make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    fi
+    for first in 0 1 2 3; do
+      case "$first" in
+        0) first_args=(--items-file /dev/stdin) ;;
+        1) first_args=(--items-file=/dev/stdin) ;;
+        2) first_args=(--items-file "$items") ;;
+        3) first_args=("--items-file=$items") ;;
+      esac
+      for second in 0 1 2 3; do
+        case "$second" in
+          0) second_args=(--items-file /dev/stdin) ;;
+          1) second_args=(--items-file=/dev/stdin) ;;
+          2) second_args=(--items-file "$items") ;;
+          3) second_args=("--items-file=$items") ;;
+        esac
+        output=$(FAKE_SSH_MODE=fail \
+          FAKE_SSH_LOG="$ssh_log" \
+          FAKE_SSH_COUNT_FILE="$ssh_count" \
+          FAKE_KB_LOG="$kb_log" \
+          KB_HOSTS_TABLE="$table" \
+          PATH="$fakebin:$PATH" \
+          run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+            "${first_args[@]}" --json "${second_args[@]}")
+        assert_contains "$output" '--items-file given twice' "$route duplicate items-file $first/$second"
+        assert_ssh_call_count "$ssh_count" 0 "$route duplicate items-file $first/$second"
+        assert_log_clean "$ssh_log" "$route duplicate items-file $first/$second SSH"
+        assert_log_clean "$kb_log" "$route duplicate items-file $first/$second binary"
+      done
+    done
+  done
 }
 
 test_transact_items_file_at_the_boundary_needs_no_streaming() {
@@ -1070,6 +1224,12 @@ test_registry_commands_are_rejected_without_transport() {
     w
     ws
     workspace
+    access
+    plugin
+    worker
+    link
+    scope
+    contrib
   )
 
   local command
@@ -1115,6 +1275,12 @@ test_host_surface_matches_source_allowlist() {
     rule r
     schema
     mcp
+    access
+    plugin
+    worker
+    link
+    scope
+    contrib
   )
   local denied=(
     deploy
@@ -1140,6 +1306,9 @@ test_host_surface_matches_source_allowlist() {
     todo
     stale
     transact
+    sprint
+    batch
+    incident
   )
 
   local command
@@ -1316,6 +1485,51 @@ test_alias_surface_duplicate_functions_are_fail_closed() {
     fail 'duplicate canonical_command functions should fail closed'
   fi
   assert_contains "$output" 'duplicate canonical_command function' 'duplicate canonical functions'
+}
+
+# The real lib.rs has more functions after canonical_command, and several of
+# them `match value`. Only the match inside canonical_command's own body may
+# count; the scan used to run on to EOF and refuse the real source.
+test_alias_surface_later_function_match_is_ignored() {
+  local fixture_file="$script_dir/kb-canonical-aliases.txt"
+  local source_file="$tmp_dir/alias-later-match/rust/lib.rs"
+  make_synthetic_canonical_alias_source "$source_file" "$fixture_file"
+  {
+    printf '%s\n' 'fn later_lookup(value: &str) -> &str {'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "zz" => "sitrep",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  }'
+    printf '%s\n' '}'
+  } >>"$source_file"
+  assert_exact_alias_surface "$source_file" "$fixture_file"
+}
+
+test_alias_surface_duplicate_match_is_fail_closed() {
+  local source_file="$tmp_dir/alias-dup-match/rust/lib.rs"
+  mkdir -p "$(dirname -- "$source_file")"
+  {
+    printf '%s\n' 'fn canonical_command(value: &str) -> &str {'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "bk" => "backup",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  };'
+    printf '%s\n' '  match value {'
+    printf '%s\n' '    "zz" => "sitrep",'
+    printf '%s\n' '    other => other,'
+    printf '%s\n' '  }'
+    printf '%s\n' '}'
+  } >"$source_file"
+
+  local output status
+  set +e
+  output=$(assert_exact_alias_surface "$source_file" "$script_dir/kb-canonical-aliases.txt" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'a second match inside canonical_command should fail closed'
+  fi
+  assert_contains "$output" 'duplicate canonical_command match' 'duplicate match'
 }
 
 test_alias_surface_duplicate_alias_pairs_are_fail_closed() {
@@ -1531,7 +1745,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-host" "$home_host" "$alias" ls
         assert_log_clean "$ssh_log" "registry alias host ssh $alias"
-        assert_argv_file "$kb_log" "$alias" ls
         ;;
       *)
         FAKE_HOSTNAME_VALUE="$home_host" \
@@ -1544,7 +1757,6 @@ test_alias_ownership_matches_wrappers() {
         PATH="$fakebin:$PATH" \
         "$package_dir/scripts/kb-board" "$board_id" "$alias" ls
         assert_log_clean "$ssh_log" "board alias board ssh $alias"
-        assert_argv_file "$kb_log" --project "$board_id" "$alias" ls
 
         : >"$ssh_log"
         : >"$kb_log"
@@ -1598,6 +1810,11 @@ test_host_registry_commands_are_allowed_without_transport() {
     'restore --json'
     'schema --json'
     'mcp'
+    'plugin list --json'
+    'worker list --json'
+    'link show --board demo --id t-1'
+    'scope show --set demo'
+    'contrib status --board demo --id t-1'
   )
 
   local entry command_arg
@@ -1753,7 +1970,7 @@ test_host_refuses_board_owned_commands_without_transport() {
     deploy import tag archive search search-rebuild
     task t story s handoff h attention att attn claim checkpoint cp
     heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale transact
+    subscription todo stale transact sprint batch incident
   )
 
   local command
@@ -2249,6 +2466,7 @@ assert_no_bytecode_artifacts() {
   fi
 }
 
+
 main() {
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
@@ -2259,6 +2477,8 @@ main() {
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
     test_board_transact_local_items_file_is_streamed
+    test_board_identity_conflict_refused_and_items_bytes_kept
+    test_board_transact_rejects_all_duplicate_items_file_forms
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_generated_table_transfers_body_file
     test_host_surface_matches_source_allowlist
@@ -2273,6 +2493,8 @@ main() {
     test_alias_surface_new_alias_drift_is_fail_closed
     test_alias_surface_spoofed_strings_are_ignored
     test_alias_surface_duplicate_functions_are_fail_closed
+    test_alias_surface_later_function_match_is_ignored
+    test_alias_surface_duplicate_match_is_fail_closed
     test_alias_surface_duplicate_alias_pairs_are_fail_closed
     test_alias_surface_duplicate_alias_target_is_fail_closed
     test_alias_surface_block_rhs_is_fail_closed

@@ -18,6 +18,38 @@ Output is **always JSON**, with or without `--json`.
 
 Every command below is checked against `kb/references/verified-recipes.md` (kanban 0.3.0, board schema 37, 2026-10-01).
 
+## Explicit board-group routing (coordinator only)
+
+The default is still **one board**. Group mode is opt-in, and only a
+coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
+
+```bash
+"<skill-dir>/scripts/kb-host" HOME workspace tag show group/NAME --json   # inspect current scope
+"<skill-dir>/scripts/kb-group" group/NAME attention list --json
+"<skill-dir>/scripts/kb-group" group/NAME claim --candidates --as ACTOR --limit N --json
+"<skill-dir>/scripts/kb-group" group/NAME claim --next --as ACTOR --json  # returns the board and lease
+```
+
+- `kb-group` routes through the registry-home row of `KB_HOSTS_TABLE`. It
+  checks the home host's name and every member's one-ledger route, then runs
+  one compiled group operation with literal argv and `--board-tag`.
+- An unknown group, an unavailable home, a member on another home, or a
+  conflicting selector is refused. There is no per-member loop and no local
+  database fallback. `--body-file` and `--items-file` are refused, because
+  no group operation reads them. `kb-board` stays single-board.
+- Keep the `groupSnapshot` from `workspace tag show`. The wrapper checks
+  member routes, then forwards a caller's `--group-snapshot TOKEN` on
+  snapshot-capable reads or `--expect-group-snapshot TOKEN` on claim/watch
+  only if it matches the verified show. If omitted, it supplies the verified
+  assertion itself. A revision alone cannot distinguish a recreated group;
+  `--expect-group-revision` is not supported. Never pass a read snapshot to
+  `claim --candidates`; on scope change, restart from show.
+- Before a board-local write: show the group again, re-read the qualified
+  `(board, id)` target, then write through `kb-board BOARD`. After a
+  group claim, heartbeat/checkpoint/release/handoff use exactly the returned
+  board and lease, even if group membership changes. Only the coordinator
+  resolves groups; never pass a group token to a worker or widen its grants.
+
 ## Board home host is the execution boundary
 
 Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
@@ -29,13 +61,13 @@ including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
 commands). An unreachable @@hal blocks ledger operations; never fall back.
 
 The authoritative Kanban registry and boards live on the board home host chosen
-by the consumer table. Before any `/kb` read or write, check the current host
+by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
 **before attempting SSH**:
 
 ```bash
 hostname                   # if this prints exactly the selected board home host, stay here
-test "$(command -v kb)" = /root/.local/bin/kb
-/root/.local/bin/kb v
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
 ```
 
 If `hostname` prints anything other than the selected board home host, enter
@@ -44,8 +76,8 @@ the routed SSH target and verify the remote boundary there:
 ```bash
 ssh "$BOARD_SSH_TARGET"
 hostname                   # must now print exactly the selected remote hostname
-test "$(command -v kb)" = /root/.local/bin/kb
-/root/.local/bin/kb v
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
 ```
 
 An SSH one-shot does **not** load the interactive `PATH`, so it can report
@@ -60,7 +92,7 @@ bundled argv-preserving wrapper for one-shot commands:
 ```
 
 The wrapper verifies that the routed remote host matches the expected
-hostname, invokes the fixed installed path `/root/.local/bin/kb`, and
+hostname, invokes the fixed installed path `$KB_EXEC` from the routing table, and
 preserves spaces and shell metacharacters as literal arguments. In an
 interactive SSH shell, use the same exact fail-closed check and invocation as
 above; any other `kb` resolution is a stale or shadowed PATH. Use an
@@ -82,15 +114,19 @@ Outside the board home host, do not call `kb` directly.
 - Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
   board-owned one-shot command. It injects exactly one project selector, rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
-  `r` / `rule` so registry operations cannot be routed through a board helper.
+  `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
+  `contrib` and `plugin` verbs so registry operations cannot be routed through a
+  board helper. `sprint`, `batch` and `incident` are board-owned and route
+  here.
   On `checkpoint` and `handoff create` it also forwards your checkout as
   `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
   otherwise capture the board host's cwd (see Provenance).
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
-  and preserves argv literally. Registry rule verbs stay on the raw registry
-  routing path rather than `kb-board`.
+  and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
+  `scope`, `contrib` and `plugin` verbs stay on the raw registry routing path
+  rather than `kb-board`.
 
 ```bash
 <skill-dir>/scripts/kb-board BOARD_ID t ls --status todo --json
@@ -271,11 +307,20 @@ same failure the harness-qualified actor caused, wearing different clothes.
 then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
 PostToolUse heartbeat hook (`claude/hooks/kb-heartbeat.sh`) runs the same
 helper and reads exactly that file; it never guesses, and no file means no
-heartbeats and the lease quietly expires. The path is one file per tmux pane
-(`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes on
-one host never overwrite each other's token (kb infra t-c827bfb2). Run the
+heartbeats and the lease quietly expires. With a nonempty `KB_SESSION_ID` in
+the environment, the path is a deterministic per-session file
+(`~/.claude/kb-session.d/session-<full sha256 hex of the id>`), which takes precedence
+over tmux detection: two concurrent sessions with different ids get different
+files holding their own task id and lease token, and reopening the same id
+derives the same path. Without `KB_SESSION_ID` the path is one file per tmux
+pane (`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes
+on one host never overwrite each other's token (kb infra t-c827bfb2). Run the
 helper from the shell of the pane your harness runs in; never write the path
-by hand. Outside tmux it prints the legacy single file `~/.claude/kb-session`
+by hand. An explicitly empty, over-long (>256 bytes), newline-bearing, or
+control-character session id is refused with no path printed, so set no token file. The session id is only a
+filename namespace: it grants no board, lane, role, or lease authority, and
+both sides must already agree on the id out of band. Without `KB_SESSION_ID`,
+outside tmux it prints the legacy single file `~/.claude/kb-session`
 and exits 3, which is safe only while one session per host claims. One
 session holds one task, so a second claim overwrites. Rewrite both lines
 whenever the token changes. The board is resolved off the session cwd by
@@ -320,7 +365,7 @@ kb r new "All except project-a." --except-board project-a --as "$AGENT" --json
 kb r up r-12345678 --board kanban --as "$AGENT" --json
 
 # Namespaced subsystem tags intersect the board selector.
-kb r new "Queuer only." --tag geoyws/queuer --as "$AGENT" --json
+kb r new "Queuer only." --tag acme/queuer --as "$AGENT" --json
 kb r up r-12345678 --clear-tags --as "$AGENT" --json
 ```
 
@@ -511,7 +556,7 @@ then `answer: <key> — <label>`, then `why: <explanation>`. A pending check rea
 ```bash
 kb att list --status open --limit 200 --json              # what is waiting on the owner
 kb att list --status open --fields id,priority,question,choices --limit 200 --json   # the cards, without the bodies
-kb att list --status open --lane driver-2 --limit 200 --json   # raised from @driver-2, or about a driver-2 task
+kb att list --status open --lane driver-2 --limit 200 --json   # stored lane, raiser suffix, or task lane
 kb att list --status resolved --fields id,decision,resolution --limit 200 --json     # what he decided, and how
 
 kb att resolve <id> --as geoyws --choice keep-parked --json                        # an authored choice
@@ -585,10 +630,13 @@ reads as the whole; the refusal names `--limit N`. On a busy board
 bound above the count you expect and check the length came back under it
 (ADR-037).
 
-`--lane LANE` keeps items raised by a seatless `@:<group>/<team>/LANE` actor (the binary does not yet read a callsign with a seat or more segments; kb kanban `t-2b8ab9f7`, so always set `--lane` when raising), items whose `--lane` field is LANE, and items about a task whose
-lane is `LANE`. `--fields k,k,…` keeps only those keys on each row; a key the
-rows do not carry is refused naming the ones they do. `--no-body` drops the
-body alone, which is the cheap way to read cards in bulk.
+`--lane LANE` on raise stores its routing lane. On list, `--lane LANE` keeps rows
+whose stored lane is `LANE`, whose raiser is a legacy `…@LANE` actor or a typed
+callsign of any length whose third segment is `LANE` (seats and deeper segments
+included; kb kanban `t-2b8ab9f7`), or whose linked task has lane `LANE`.
+`--fields k,k,…` keeps only those keys on each row; a key the rows do not carry
+is refused naming the ones they do. `--no-body` drops the body alone, which is
+the cheap way to read cards in bulk.
 
 `--kind` is a closed set:
 
@@ -604,7 +652,8 @@ There is deliberately no `info`: something that needs nobody is a note, and
 `kb n` already holds those.
 
 **Raise, do not resolve.** Agents raise and read; only the owner resolves. The
-owner's actor is `geoyws`: the binary gates `resolve` and `reopen` on it and the
+owner's actor is `geoyws` in the current binary (written `$OWNER` in examples):
+the binary gates `resolve` and `reopen` on that identity; it is not configurable. The
 refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
 `resolvedBy: geo` as a record, and `--as geo` today is refused like any other
 non-raiser. The one exception is an item this same session raised and has since
@@ -642,7 +691,7 @@ plus the one registry rules document. Each result has a stable
 ```bash
 kb search "resume the release handoff" --project kanban --json
 kb search t-12345678 --source task --limit 5 --max-chars 4000 --json
-kb search "authentication recovery" --tag geoyws/auth --all-boards --json
+kb search "authentication recovery" --tag acme/auth --all-boards --json
 kb search "retired decision" --all --json       # include archived history
 ```
 
@@ -774,13 +823,15 @@ against the task's list the same way a claim is.
 
 **A unit of work is two write round trips**, one at each boundary, with a single
 read before them — on the measured link that is two round trips where there were
-six (ADR-041, Consequences). The reads collapse into the MCP `batch` tool: up to
-32 of them on one request, `readOnlyHint: true`, described under **As an MCP
-server**, so `t cat`, `ctx`, `r ls` and `att ls` for the task you are about to
-pick up all arrive together. `batch` is an MCP tool and the CLI has no
-counterpart, so interactively those are the same `kb` reads typed one at a time
-in the one open board-host shell. Each boundary is one `transact` (**Batched
-writes — `transact`**), which lands entirely or not at all.
+six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
+in one request, answered by one process with one board open — `kb batch
+--items-file items.json --json` from the CLI, or the MCP `batch` tool
+(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx`, `r ls`
+and `att ls` for the task you are about to pick up all arrive together. A batch
+is reads only: an item that writes refuses the whole batch before anything runs.
+Each boundary is one `transact` (**Batched writes — `transact`**), which lands
+entirely or not at all. The three together are **The loop in three batches**,
+below.
 
 **The START batch** — take the task, and say what you are about to do:
 
@@ -889,6 +940,23 @@ assigned to someone else. `--fields claim` needs `--with-claims` and
 caps notes and handoffs at 100 and checkpoints at 20 unless `--limit N` says
 otherwise, and refuses past a cap rather than trimming.
 
+**Read dependency gates before taking work.** `kb t cat ID --json`,
+`kb t ls --with-relations --json`, and `kb ctx ID --json` expose
+`blockingGates` for unmet prerequisites declared by the task or an ancestor.
+Each entry names `sourceTaskID` (the declaring row), `prerequisiteID`,
+`prerequisiteTitle`, and `prerequisiteStatus`. A foreign blocker additionally
+names `prerequisiteBoardID`, the source board's registered UUID; use that UUID
+and the exact opaque item ID together, not the ID alone, to identify it. If
+source state cannot be read, `prerequisiteStatus` and `unavailable` are both
+`"unavailable"` and `prerequisiteTitle` is `null`: the source's existence and
+state are not confirmed, and the gate remains unmet. Full/compact context
+also spells out the foreign board UUID beside the item ID; local blocker prose
+and fields stay unqualified. `dependencies` still describes only the row's
+own readable local edges, not inherited or foreign blockers. For list field
+selection, `--fields blockingGates` requires `--with-relations`, just like
+`--fields dependencies`. An empty `blockingGates` array says only that no
+dependency gate is unmet, not that the task is otherwise claimable.
+
 A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
 does; `kb-board` fills them from your checkout, and a flag you pass wins.
 
@@ -950,9 +1018,9 @@ When you claim or read a task whose previous holder died, the claim receipt and
 `kb ctx` carry an `orphanedFrom` block:
 
 ```json
-{ "agent": "@:geoyws/kanban/driver-2", "sessionID": "…", "expiredAt": 1788600000000,
-  "lastCheckpointAt": 1788599100000, "worktree": "/root/work/src/kanban",
-  "branch": "kanban-geoyws-driver", "headSha": "e87c5a6" }
+{ "agent": "@:example/example/driver-2", "sessionID": "…", "expiredAt": 1788600000000,
+  "lastCheckpointAt": 1788599100000, "worktree": "/home/operator/work/src/example",
+  "branch": "kanban-example-driver", "headSha": "e87c5a6" }
 ```
 
 It is **absent**, not null, when there is nothing to report, and it describes
@@ -1015,7 +1083,10 @@ is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
 carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
 streams a local `--items-file PATH` on the single ssh connection's stdin and
 rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
-bytes arrive verbatim.
+unmodified items arrive byte-for-byte; the three lease-write items receive
+caller-side identity before streaming (see Provenance). The wrapper refuses a
+second `--items-file` before transport, including mixed `--items-file PATH` and
+`--items-file /dev/stdin` spellings (with or without `=`).
 
 **An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
 shape. `TOOL` is an MCP tool name, which is the command with its subcommand
@@ -1125,8 +1196,82 @@ dirty_summary missing … Pass --repo PATH --branch NAME --head SHA --dirty TEXT
 So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
 `git rev-parse --show-toplevel`, `git symbolic-ref --short HEAD`,
 `git rev-parse HEAD` and a count of `git status --porcelain` lines (`clean`,
-`1 file changed`, `N files changed`). Every other write — `claim`, `heartbeat`,
-`note`, `release`, `task update` — needs nothing extra.
+`1 file changed`, `N files changed`). The separate overlap identity for
+`claim`, `heartbeat`, and `handoff_accept` **is** handled in
+batch items by `kb-board` on the caller (see Provenance). `note`,
+`release` and `task update` need nothing extra.
+
+### The loop in three batches
+
+One unit of work, start to finish: claim, read, checkpoint. Two `transact`s
+for the writes, one `batch` for the reads between them.
+
+**1. START** — `start.json`, one `transact`: the claim and the plan note.
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver/executor",
+                   "lane": "driver", "lease-minutes": 120 } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan",
+                   "as": "@:geoyws/kanban/driver/executor",
+                   "text": "read the context, then the wrapper change" } }
+]
+```
+
+Keep `TOKEN` from `results[0].result.leaseToken`; the END batch needs it.
+
+**2. READ** — `read.json`, one `batch`: everything about the task you now hold.
+
+```json
+[
+  { "name": "task_show",      "arguments": { "id": "t-1a2b3c4d", "limit": 200 } },
+  { "name": "context",        "arguments": { "id": "t-1a2b3c4d" } },
+  { "name": "rule_list",      "arguments": {} },
+  { "name": "attention_list", "arguments": { "status": "open", "task": "t-1a2b3c4d" } }
+]
+```
+
+Each item answers on its own, in order, as `{"index": N, "ok": true, "result":
+…}` or `{"index": N, "ok": false, "error": …}`; `result` is exactly what that
+read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). A
+failed item does not stop the others, and the batch exits zero. Item names are
+the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
+`ctx` is `context`); argument keys are the flag names without `--`
+(`"with-relations": true`).
+
+**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
+note. `state: done` releases the lease in the same transaction, so no
+`release` follows it.
+
+```json
+[
+  { "name": "checkpoint",
+    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
+                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
+                   "summary": "wrapper change merged and gated",
+                   "intent": "close the unit",
+                   "next-action": "none; the train carries it",
+                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
+                   "head": "da9a794", "dirty": "clean" } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
+                   "as": "@:geoyws/kanban/driver/executor",
+                   "text": "gate green at da9a794" } }
+]
+```
+
+```bash
+kb transact --items-file start.json --json
+kb batch    --items-file read.json  --json
+kb transact --items-file end.json   --json
+# through the wrapper, each file travels on the one ssh's stdin:
+<skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
+```
+
+Replace `TOKEN` with the real token before sending: `$ref` reaches earlier
+items of its own batch only, never back into the START batch.
 
 ## Plans
 
@@ -1382,33 +1527,33 @@ See ADR-045.
 
 ## Tags — which part of the system this is about
 
-**Tag your rows.** A board that cannot say whether a task is `geoyws/infra`,
-`geoyws/queuer` or `geoyws/askie` makes you read titles to find out, and you are
+**Tag your rows.** A board that cannot say whether a task is `acme/infra`,
+`acme/queuer` or `acme/askie` makes you read titles to find out, and you are
 the one who knows.
 
 Tags are namespaced `<estate>/<subsystem>` in storage and CLI
 (`--tag estate/subsystem`) — slash spelling only, per map rule r-98ff7ad2. The
-hyphen form (`geoyws-orchestration`) is superseded; never use it. Estate-neutral
-examples below use `geoyws/`: the package ships estate-neutral, so examples need
-a concrete estate, and the author's own estate is the illustration — not a
-default the consumer inherits. Prose renders a registered tag as
-`:estate/subsystem` (e.g. `:geoyws/infra`); the colon is only presentation
+hyphen form (`acme-orchestration`) is superseded; never use it. Estate-neutral
+examples below use `acme/`: the package ships estate-neutral, so examples need
+a concrete estate, and `acme` is a placeholder illustration — not a
+default the consumer inherits; substitute your own estate. Prose renders a registered tag as
+`:estate/subsystem` (e.g. `:acme/infra`); the colon is only presentation
 notation, do not create another sigil namespace inside KB tags. A tag already in
 use moves to its namespaced name with `kb tag rename`.
 
 ```bash
 kb tag ls --json                                   # the vocabulary, with use counts
-kb tag new geoyws/infra --description "hosts, containers, deploys" --as "$AGENT" --json
-kb t new "Retry backoff" --tag geoyws/queuer --tag geoyws/infra --json
-kb t up <id> --tag geoyws/queuer --as "$AGENT" --json     # replaces, does not append
+kb tag new acme/infra --description "hosts, containers, deploys" --as "$AGENT" --json
+kb t new "Retry backoff" --tag acme/queuer --tag acme/infra --json
+kb t up <id> --tag acme/queuer --as "$AGENT" --json     # replaces, does not append
 kb t up <id> --clear-tags --as "$AGENT" --json     # the only way to say "none"
-kb t ls --status todo --tag geoyws/queuer --json          # open work in one subsystem
+kb t ls --status todo --tag acme/queuer --json          # open work in one subsystem
 ```
 
 **Read `kb tag ls` before you tag.** The vocabulary is a per-board **master
 file**: only a registered tag can be attached, and attaching an unregistered one
 is refused naming the nearest match. That refusal is the feature — it is what
-stops `geoyws/infra`, `geoyws/Infra` and `geoyws/infrastructure` becoming three
+stops `acme/infra`, `acme/Infra` and `acme/infrastructure` becoming three
 answers to one question.
 
 **If nothing fits, register it** with a description, then use it. Do not leave
@@ -1416,7 +1561,7 @@ the row unfiled and do not smuggle the subject into the title. Registering is on
 command and it is paid once per concept, by whoever names it first.
 
 Names are `<estate>/<subsystem>`: each segment is lowercase letters, digits and
-inner hyphens, joined by one `/`. `geoyws/Infra` is refused rather than folded
+inner hyphens, joined by one `/`. `acme/Infra` is refused rather than folded
 — folding would decide for you which spelling you meant.
 
 Tags go on **every row type**, drafts and epics included: a plan belongs to a
@@ -1428,7 +1573,7 @@ on it; a tag is *what part of the system this touches*. Putting a subsystem in
 
 `@:team` is atmux routing identity, not a tag. Do not encode board, lane, team,
 host, tier, actor, priority, or typed row IDs as tags. In particular,
-`:geoyws/module` means the registered KB tag `geoyws/module`, while `@:team`
+`:acme/module` means the registered KB tag `acme/module`, while `@:team`
 names an atmux team; they are different types and must never be normalized into
 one another.
 
@@ -1454,6 +1599,19 @@ Recorded automatically. You do not pass it, and you should not have to:
   detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
   you pass is left alone. All three refuse a row whose provenance would be
   blank, so in an interactive board-host shell, pass the four yourself.
+- **Cross-board overlap uses a separate repository key.** Routed `kb-board`
+  claim and task handoff acceptance derive it on the caller from the canonical
+  Git common-dir and stable local machine ID. Linked worktrees of one repository
+  share the same key; another repository or machine does not. `--repo-key KEY`
+  explicitly asserts identity and wins over `--repo PATH`; the wrapper
+  consumes that path locally rather than forwarding it. `--no-repo-capture`
+  suppresses implicit capture, and the wrapper always forwards it to keep the
+  board host cwd out of routed writes. Heartbeat never derives from cwd: absent
+  an explicit key or repo move, it preserves the saved key. A caller outside a
+  repository forwards no inferred key. This is not the checkpoint/handoff/sitrep
+  provenance above. Routed `transact` applies these rules inside only
+  `claim`, `heartbeat` and `handoff_accept` items (both `--items`
+  and `--items-file`); `kb-host` refuses these board-owned writes.
 - **Timestamps** are on every row already — `createdAt`, `updatedAt`,
   `completedAt`, `claimedAt`, `heartbeatAt`, `expiresAt`, `acceptedAt`,
   `resolvedAt`.
@@ -1531,6 +1689,7 @@ ledger but never emitted.
 
 ```bash
 kb watch --project NAME --task t-12345678 --cursor 0 --follow --json
+kb watch --project NAME --relation-json '[{"relation":"depends-on","boardID":"00000000-0000-4000-8000-000000000001","id":"t-prerequisite"}]' --cursor 0 --json
 kb watch --registry --cursor CURSOR --limit 100 --json
 ```
 
@@ -1541,15 +1700,28 @@ Rules:
   There is no cross-board fan-in.
 - `--task` is the subject selector. `--kind`, `--relation`, `--prior-status`,
   `--current-status`, and `--tag` are repeatable predicates. `--relation`
-  accepts typed forms `parent:ID`, `ancestor:ID`, and `depends-on:ID`.
+  accepts typed forms `parent:ID`, `ancestor:ID`, and `depends-on:ID`; all
+  these scalar relations, including `depends-on:ID`, remain local to the
+  watched board even if the opaque ID contains `:` or `/`.
+- For an existing foreign dependency edge, pass `--relation-json` with a JSON
+  array of exact `{"relation":"depends-on","boardID":"UUID","id":"ID"}`
+  objects. `boardID` is the canonical lowercase hyphenated registered source
+  UUID, and `id` is a nonempty exact opaque item ID; no other relation kind or
+  extra object fields are accepted. A target-board UUID normalizes to the
+  local relation. A scratch `--db` target without a registered UUID refuses
+  `--relation-json`; keep scalar `--relation` for local filters there.
 - Values within one predicate family are ORed. Families are ANDed together.
+  Thus scalar local and JSON-qualified relations match either edge, not both.
+  The filter still reads events on the selected target board only: it never
+  subscribes to source-board events or enables cross-board fan-in.
 - The command normalizes the full predicate set before binding it to the
   cursor. Reusing a cursor with any different normalized predicate set fails
   closed.
 - Unknown tasks, relation targets, kinds, statuses, or tags fail closed.
 - Removed subjects and historical relation targets remain replayable because
   replay uses stored rows, not live lookups.
-- Registry scope supports `--kind` only and rejects board semantic predicates.
+- Registry scope supports `--kind` only and rejects board semantic predicates,
+  including `--relation-json`.
 - `--cursor` is opaque. Literal `0` bootstraps from the start, and a persisted
   cursor is bound to the exact source, selector, normalized predicate set,
   archive state, and last consumed ledger `seq`.
@@ -1580,7 +1752,7 @@ board path or root in the record.
 
 ```bash
 kb subscription add --project NAME --id sub-codex-queue \
-  --subject task:t-12345678 --kind checkpoint_added --tag geoyws/orchestration \
+  --subject task:t-12345678 --kind checkpoint_added --tag acme/orchestration \
   --consumer codex.queue --action enqueue-turn \
   --timeout-ms 30000 --max-retries 3 --rate-per-minute 60 \
   --max-concurrency 1 --secret-ref codex_queue_token --as "$OWNER" --json
@@ -1595,7 +1767,11 @@ Rules:
 - IDs are immutable `sub-*` identities. There is no update or delete command.
 - `--subject` accepts only `task:ID`. `--relation`, `--kind`,
   `--prior-status`, `--current-status`, and `--tag` are repeatable, normalized
-  predicates; unknown values fail closed.
+  predicates; unknown values fail closed. `--relation-json` accepts the same
+  board-qualified array as `watch` above; scalar `--relation` stays local,
+  delivers only events on its target board, never source-board events.
+  Generated MCP `subscription_add` accepts `relation-json` as a string with
+  the same array shape; `watch` is long-running and has no MCP tool.
 - `--consumer` and `--action` are strict names, not executable commands.
 - Timeout, retries, rate, and concurrency are required and bounded.
 - `--secret-ref` is an optional opaque identifier containing only ASCII
@@ -1655,7 +1831,7 @@ kanban-dispatcher --db /exact/board.db [--once] [--json]
 ```
 
 On the board home host use the fixed installed path `/root/.local/bin/kanban-dispatcher` after
-the same host-boundary verification used for `/root/.local/bin/kb`. The worker
+the same host-boundary verification used for `$KB_EXEC`. The worker
 is not a `kb-board` subcommand. `--consumer` restricts execution to one consumer
 identity; `--once` performs one scheduler step; without `--once` it polls until
 SIGINT/SIGTERM. Help and version do not open board or registry state.
@@ -1764,14 +1940,15 @@ through SSH. That gives an interactive harness a connection it holds for the
 whole session instead of one handshake per read:
 
 ```bash
-ssh BOARD_SSH_TARGET /root/.local/bin/kb mcp     # the whole server command
+ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp     # the whole server command
 ```
 
-Register that command as a stdio MCP server in the harness — Claude Code:
-`claude mcp add --scope user --transport stdio kb -- ssh BOARD_SSH_TARGET
-/root/.local/bin/kb mcp`; Codex: an `[mcp_servers.kb]` block with
-`command = "ssh"` and `args = ["BOARD_SSH_TARGET", "/root/.local/bin/kb",
-"mcp"]`. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
+Register that command as a stdio MCP server in the harness. For Claude Code,
+run `claude mcp add --scope user --transport stdio kb -- ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`.
+For Codex, use an `[mcp_servers.kb]` block with `command = "ssh"` and
+`args = ["BOARD_SSH_TARGET", "/absolute/path/to/kb", "mcp"]`. Replace both
+placeholders with the routing table values: TOML argument strings do not expand
+shell variables. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
 connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
 call — about one round trip plus the query — against 2.5 s per CLI one-shot
 without a ControlMaster. This is the agent API; there is no HTTP service.
@@ -1780,8 +1957,8 @@ What does not change: every tool still takes its own `project`, because the
 server resolves a board per call and refuses `--project` on `kb mcp` itself
 rather than let one session silently answer about a board it was not asked
 about. The same rules, the same refusals, the same `readOnlyHint` — a tool
-call is the real binary on the real ledger, as root, on a production-bearing
-host. If the host is unreachable the server fails to start and the harness
+call is the real binary on the real ledger, with the installed identity, on the
+board home host. If the host is unreachable the server fails to start and the harness
 says so; that is the correct outcome. Never point the registration at a local
 `kb` or a local board file to make the error go away.
 
@@ -1805,7 +1982,7 @@ once a silent wrong answer.
 - `restore` takes the data root exclusively and refuses while anything else
   holds it.
 - A tag that is not in the board's master file is refused on attach **and on
-  filter**. `kb t ls --tag geoyws/infr` does not answer "nothing" — an empty list
+  filter**. `kb t ls --tag acme/infr` does not answer "nothing" — an empty list
   reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.

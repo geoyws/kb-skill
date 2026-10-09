@@ -6,22 +6,6 @@ die() {
   exit 64
 }
 
-shell_quote() {
-  local value=${1-}
-  local out="'"
-  local prefix
-
-  while [[ "$value" == *"'"* ]]; do
-    prefix=${value%%"'"*}
-    out+=$prefix
-    out+="'\"'\"'"
-    value=${value#*\'}
-  done
-
-  out+=$value
-  out+="'"
-  printf '%s' "$out"
-}
 
 reject_selector_args() {
   local arg
@@ -48,7 +32,7 @@ reject_registry_commands() {
     r|rule)
       die 'kb-board is for board-owned commands only; use kb directly for registry rules.'
       ;;
-    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace)
+    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib)
       die "kb-board does not route registry-wide command '$1'."
       ;;
   esac
@@ -63,6 +47,19 @@ has_flag() {
       "$name"|"$name="*) return 0 ;;
     esac
   done
+  return 1
+}
+
+claim_identity_write() {
+  case "$1" in
+    claim)
+      shift
+      has_flag --candidates "$@" && return 1
+      return 0 ;;
+    heartbeat|hb) return 0 ;;
+    handoff|h)
+      case "${2-}" in accept|acc) return 0 ;; esac ;;
+  esac
   return 1
 }
 
@@ -93,67 +90,6 @@ dirty_summary() {
   esac
 }
 
-board_exists() {
-  local needle=$1
-  local i
-  for i in "${!BOARD_IDS[@]}"; do
-    if [[ "${BOARD_IDS[$i]}" = "$needle" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-lookup_board() {
-  local needle=$1
-  local i
-  for i in "${!BOARD_IDS[@]}"; do
-    if [[ "${BOARD_IDS[$i]}" = "$needle" ]]; then
-      BOARD_HOME_HOST=${BOARD_HOME_HOSTS[$i]}
-      BOARD_SSH_TARGET=${BOARD_SSH_TARGETS[$i]}
-      BOARD_EXPECTED_REMOTE_HOST=${BOARD_EXPECTED_REMOTE_HOSTS[$i]}
-      BOARD_KB_EXEC=${BOARD_KB_EXECS[$i]}
-      return 0
-    fi
-  done
-  return 1
-}
-
-load_table() {
-  local table_file=$1
-
-  [[ -r "$table_file" ]] || die "kb-board: routing table is not readable: $table_file"
-
-  local line board home_host ssh_target expected_remote kb_exec extra
-  local loaded=0
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-
-    IFS=$'\t' read -r board home_host ssh_target expected_remote kb_exec extra <<<"$line"
-    if [[ -n "${extra-}" || -z "${board-}" || -z "${home_host-}" || -z "${ssh_target-}" || -z "${expected_remote-}" || -z "${kb_exec-}" ]]; then
-      die "kb-board: malformed routing row: $line"
-    fi
-
-    case "$kb_exec" in
-      /*) ;;
-      *) die "kb-board: KB executable path must be absolute: $kb_exec" ;;
-    esac
-
-    if board_exists "$board"; then
-      die "kb-board: duplicate board mapping: $board"
-    fi
-
-    BOARD_IDS+=("$board")
-    BOARD_HOME_HOSTS+=("$home_host")
-    BOARD_SSH_TARGETS+=("$ssh_target")
-    BOARD_EXPECTED_REMOTE_HOSTS+=("$expected_remote")
-    BOARD_KB_EXECS+=("$kb_exec")
-    loaded=1
-  done <"$table_file"
-
-  [[ "$loaded" -eq 1 ]] || die "kb-board: routing table has no rows: $table_file"
-}
 
 board=${1-}
 command=${2-}
@@ -174,6 +110,8 @@ declare -a BOARD_EXPECTED_REMOTE_HOSTS
 declare -a BOARD_KB_EXECS
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+router_name=kb-board
+source "$script_dir/kb-routing.sh"
 table_file=${KB_HOSTS_TABLE:-"$script_dir/../hosts.tsv"}
 ssh_bin=${KB_SSH_BIN:-ssh}
 
@@ -213,6 +151,53 @@ if captures_git_provenance "$command" "${1-}" \
   fi
 fi
 
+
+# A routed lease write must identify the caller checkout, never the board host cwd.
+if claim_identity_write "$command" "$@"; then
+  explicit_repo=""
+  repo_supplied=0
+  identity_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
+        [[ $# -ge 2 ]] || die 'kb-board: --repo requires a path'
+        case "$2" in
+          --repo|--repo=*) die 'kb-board: duplicate --repo option' ;;
+        esac
+        explicit_repo=$2
+        repo_supplied=1
+        shift 2 ;;
+      --repo=*)
+        [[ "$repo_supplied" -eq 0 ]] || die 'kb-board: duplicate --repo option'
+        explicit_repo=${1#*=}
+        repo_supplied=1
+        shift ;;
+      *) identity_args+=("$1"); shift ;;
+    esac
+  done
+  set -- "${identity_args[@]+${identity_args[@]}}"
+  # The binary refuses this pair before any write (OV-16/A16); stripping
+  # --repo below would hide it, so the wrapper refuses first, before ssh.
+  if [[ "$repo_supplied" -eq 1 ]] && has_flag --no-repo-capture "$@"; then
+    die 'kb-board: --repo and --no-repo-capture are mutually exclusive'
+  fi
+  if ! has_flag --repo-key "$@" && { [[ "$repo_supplied" -eq 1 ]] || ! has_flag --no-repo-capture "$@"; }; then
+    if [[ "$repo_supplied" -eq 1 ]]; then
+      repo_path=$explicit_repo
+    elif [[ "$command" = heartbeat || "$command" = hb ]]; then
+      repo_path=""
+    else
+      repo_path=$PWD
+    fi
+    if [[ -n "$repo_path" ]]; then
+      key=$(python3 "$script_dir/kb-repo-identity.py" key "$repo_path") || die 'kb-board: cannot derive repository identity'
+      [[ -z "$key" ]] || set -- "$@" --repo-key "$key"
+    fi
+  fi
+  has_flag --no-repo-capture "$@" || set -- "$@" --no-repo-capture
+fi
+
 # `--body-file PATH` names a file on the CALLER, and the binary runs on the
 # board host, so forwarding the flag literally made the remote read a path
 # that does not exist there: `Error: read body from /tmp/x.md: No such file or
@@ -236,11 +221,13 @@ fi
 # ceiling, and it makes a local path and the documented
 # `--items-file /dev/stdin < items.json` form the same thing on the far side.
 #
-# `/dev/stdin` written out by the caller travels untouched: their own redirect
-# is already ssh's stdin, and reopening it here would buy nothing.
+# /dev/stdin is staged only for identity-bearing batches; unchanged items
+# retain their bytes even when the wrapper must replay the consumed stream.
 body_file=""
 items_file=""
 args=()
+items_json=""
+items_arg_index=-1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --body-file)
@@ -257,22 +244,23 @@ while [[ $# -gt 0 ]]; do
     --items-file)
       [[ $# -ge 2 ]] || die 'kb-board: --items-file requires a path'
       [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
-      if [[ "$2" = /dev/stdin ]]; then
-        args+=("$1" "$2")
-      else
-        items_file=$2
-      fi
-      shift 2
-      ;;
+      items_file=$2
+      shift 2 ;;
     --items-file=*)
       [[ -z "$items_file" ]] || die 'kb-board: --items-file given twice'
-      if [[ "${1#*=}" = /dev/stdin ]]; then
-        args+=("$1")
-      else
-        items_file=${1#*=}
-      fi
-      shift
-      ;;
+      items_file=${1#*=}
+      shift ;;
+    --items)
+      [[ $# -ge 2 ]] || die 'kb-board: --items requires JSON'
+      items_json=$2
+      items_arg_index=${#args[@]}
+      args+=("$1" "$2")
+      shift 2 ;;
+    --items=*)
+      items_json=${1#*=}
+      items_arg_index=${#args[@]}
+      args+=("$1")
+      shift ;;
     *)
       args+=("$1")
       shift
@@ -289,6 +277,32 @@ if [[ -n "$items_file" ]]; then
   [[ -z "$body_file" ]] ||
     die 'kb-board: --body-file and --items-file both need the ssh channel; pass one'
 fi
+
+staged=""
+if [[ "$command" = transact && ( -n "$items_file" || "$items_arg_index" -ge 0 ) ]]; then
+  staged=$(mktemp -d "${TMPDIR:-/tmp}/kb-items.XXXXXX") || die 'kb-board: cannot stage --items'
+  trap 'rm -rf "$staged"' EXIT
+  if [[ -n "$items_file" ]]; then
+    cat -- "$items_file" >"$staged/input" || die 'kb-board: cannot read --items-file'
+  else
+    printf '%s' "$items_json" >"$staged/input"
+  fi
+  # The script already printed its own `kb-board:` reason; do not add a second.
+  python3 "$script_dir/kb-repo-identity.py" items "$staged/input" "$staged/output" || exit 2
+  if [[ -n "$items_file" ]]; then
+    if ! cmp -s "$staged/input" "$staged/output"; then
+      items_file="$staged/output"
+    elif [[ "$items_file" = /dev/stdin ]]; then
+      items_file="$staged/input"
+    fi
+  elif ! cmp -s "$staged/input" "$staged/output"; then
+    if [[ "${args[$items_arg_index]}" = --items ]]; then
+      args[$((items_arg_index + 1))]=$(cat "$staged/output")
+    else
+      args[$items_arg_index]="--items=$(cat "$staged/output")"
+    fi
+  fi
+fi
 set -- "${args[@]+${args[@]}}"
 
 current_host=$(/bin/hostname)
@@ -299,7 +313,15 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
     exec "$kb_bin" --project "$board" "$command" "$@" --body-file "$body_file"
   fi
   if [[ -n "$items_file" ]]; then
+    if [[ -n "$staged" ]]; then
+      "$kb_bin" --project "$board" "$command" "$@" --items-file "$items_file"
+      exit $?
+    fi
     exec "$kb_bin" --project "$board" "$command" "$@" --items-file "$items_file"
+  fi
+  if [[ -n "$staged" ]]; then
+    "$kb_bin" --project "$board" "$command" "$@"
+    exit $?
   fi
   exec "$kb_bin" --project "$board" "$command" "$@"
 fi
@@ -343,9 +365,16 @@ if [[ -n "$body_file" ]]; then
 fi
 
 if [[ -n "$items_file" ]]; then
-  # One ssh, the caller's file on its stdin, and `exec` because there is
-  # nothing staged on either side to clean up.
+  # Staged batches keep their EXIT trap until ssh finishes.
+  if [[ -n "$staged" ]]; then
+    "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
+    exit $?
+  fi
   exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
 fi
 
+if [[ -n "$staged" ]]; then
+  "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"
+  exit $?
+fi
 exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"
