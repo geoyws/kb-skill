@@ -191,11 +191,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --session-context)
-      [[ $# -ge 2 ]] || die 'kb-board: --session-context requires a path'
+      [[ $# -ge 2 && -n "$2" ]] || die 'kb-board: --session-context requires a path'
       [[ -z "$session_context" ]] || die 'kb-board: --session-context given twice'
       session_context=$2
       shift 2 ;;
     --session-context=*)
+      # An empty value must refuse, never read as "no context": dropping the
+      # flag would run the call without the guard the caller asked for.
+      [[ -n "${1#*=}" ]] || die 'kb-board: --session-context requires a path'
       [[ -z "$session_context" ]] || die 'kb-board: --session-context given twice'
       session_context=${1#*=}
       shift ;;

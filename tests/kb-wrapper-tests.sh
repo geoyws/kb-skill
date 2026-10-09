@@ -752,6 +752,15 @@ test_board_session_context_and_session_id_are_transferred() {
       run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task show t-1 $bad
     assert_log_clean "$ssh_log.refused" "refused session context: $bad"
   done
+  # An empty path refuses in both spellings; it never runs as "no context".
+  FAKE_SSH_MODE=fail FAKE_SSH_LOG="$ssh_log.empty" FAKE_KB_LOG="$kb_log.empty" \
+    KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task show t-1 --session-context ''
+  FAKE_SSH_MODE=fail FAKE_SSH_LOG="$ssh_log.empty" FAKE_KB_LOG="$kb_log.empty" \
+    KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task show t-1 --session-context=
+  assert_log_clean "$ssh_log.empty" 'empty session context'
+  assert_log_clean "$kb_log.empty" 'empty session context'
 }
 
 test_session_context_at_the_boundary_needs_no_transfer() {
