@@ -909,6 +909,23 @@ assigned to someone else. `--fields claim` needs `--with-claims` and
 caps notes and handoffs at 100 and checkpoints at 20 unless `--limit N` says
 otherwise, and refuses past a cap rather than trimming.
 
+**Read dependency gates before taking work.** `kb t cat ID --json`,
+`kb t ls --with-relations --json`, and `kb ctx ID --json` expose
+`blockingGates` for unmet prerequisites declared by the task or an ancestor.
+Each entry names `sourceTaskID` (the declaring row), `prerequisiteID`,
+`prerequisiteTitle`, and `prerequisiteStatus`. A foreign blocker additionally
+names `prerequisiteBoardID`, the source board's registered UUID; use that UUID
+and the exact opaque item ID together, not the ID alone, to identify it. If
+source state cannot be read, `prerequisiteStatus` and `unavailable` are both
+`"unavailable"` and `prerequisiteTitle` is `null`: the source's existence and
+state are not confirmed, and the gate remains unmet. Full/compact context
+also spells out the foreign board UUID beside the item ID; local blocker prose
+and fields stay unqualified. `dependencies` still describes only the row's
+own readable local edges, not inherited or foreign blockers. For list field
+selection, `--fields blockingGates` requires `--with-relations`, just like
+`--fields dependencies`. An empty `blockingGates` array says only that no
+dependency gate is unmet, not that the task is otherwise claimable.
+
 A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
 does; `kb-board` fills them from your checkout, and a flag you pass wins.
 
@@ -1641,6 +1658,7 @@ ledger but never emitted.
 
 ```bash
 kb watch --project NAME --task t-12345678 --cursor 0 --follow --json
+kb watch --project NAME --relation-json '[{"relation":"depends-on","boardID":"00000000-0000-4000-8000-000000000001","id":"t-prerequisite"}]' --cursor 0 --json
 kb watch --registry --cursor CURSOR --limit 100 --json
 ```
 
@@ -1651,15 +1669,28 @@ Rules:
   There is no cross-board fan-in.
 - `--task` is the subject selector. `--kind`, `--relation`, `--prior-status`,
   `--current-status`, and `--tag` are repeatable predicates. `--relation`
-  accepts typed forms `parent:ID`, `ancestor:ID`, and `depends-on:ID`.
+  accepts typed forms `parent:ID`, `ancestor:ID`, and `depends-on:ID`; all
+  these scalar relations, including `depends-on:ID`, remain local to the
+  watched board even if the opaque ID contains `:` or `/`.
+- For an existing foreign dependency edge, pass `--relation-json` with a JSON
+  array of exact `{"relation":"depends-on","boardID":"UUID","id":"ID"}`
+  objects. `boardID` is the canonical lowercase hyphenated registered source
+  UUID, and `id` is a nonempty exact opaque item ID; no other relation kind or
+  extra object fields are accepted. A target-board UUID normalizes to the
+  local relation. A scratch `--db` target without a registered UUID refuses
+  `--relation-json`; keep scalar `--relation` for local filters there.
 - Values within one predicate family are ORed. Families are ANDed together.
+  Thus scalar local and JSON-qualified relations match either edge, not both.
+  The filter still reads events on the selected target board only: it never
+  subscribes to source-board events or enables cross-board fan-in.
 - The command normalizes the full predicate set before binding it to the
   cursor. Reusing a cursor with any different normalized predicate set fails
   closed.
 - Unknown tasks, relation targets, kinds, statuses, or tags fail closed.
 - Removed subjects and historical relation targets remain replayable because
   replay uses stored rows, not live lookups.
-- Registry scope supports `--kind` only and rejects board semantic predicates.
+- Registry scope supports `--kind` only and rejects board semantic predicates,
+  including `--relation-json`.
 - `--cursor` is opaque. Literal `0` bootstraps from the start, and a persisted
   cursor is bound to the exact source, selector, normalized predicate set,
   archive state, and last consumed ledger `seq`.
@@ -1705,7 +1736,11 @@ Rules:
 - IDs are immutable `sub-*` identities. There is no update or delete command.
 - `--subject` accepts only `task:ID`. `--relation`, `--kind`,
   `--prior-status`, `--current-status`, and `--tag` are repeatable, normalized
-  predicates; unknown values fail closed.
+  predicates; unknown values fail closed. `--relation-json` accepts the same
+  board-qualified array as `watch` above; scalar `--relation` stays local,
+  delivers only events on its target board, never source-board events.
+  Generated MCP `subscription_add` accepts `relation-json` as a string with
+  the same array shape; `watch` is long-running and has no MCP tool.
 - `--consumer` and `--action` are strict names, not executable commands.
 - Timeout, retries, rate, and concurrency are required and bounded.
 - `--secret-ref` is an optional opaque identifier containing only ASCII
