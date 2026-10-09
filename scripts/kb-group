@@ -26,8 +26,6 @@ for arg in "$@"; do
   case "$arg" in
     --project|--project=*|--db|--db=*|--workspace|--workspace=*|--all|--all=*|--all-boards|--all-boards=*|--board-tag|--board-tag=*|--except-board-tag|--except-board-tag=*|--registry|--registry=*)
       die "conflicting scope selector: $arg" ;;
-    --group-snapshot|--group-snapshot=*|--expect-group-revision|--expect-group-revision=*)
-      die "group preconditions are supplied from the verified registry show: $arg" ;;
     --body-file|--body-file=*|--items-file|--items-file=*)
       # No compiled group operation consumes either file; never forward a
       # caller-side path that the registry host cannot read.
@@ -51,7 +49,7 @@ kb_bin=$BOARD_KB_EXEC
 # This catalogue read is verification, not a group operation. It must happen
 # on the same verified registry home immediately before ONE compiled operation.
 # Passing routes as literal argv avoids reparsing shell strings or TSV remotely.
-remote_script=$(cat <<'REMOTE'
+IFS= read -r -d '' remote_script <<'REMOTE' || :
 set -euo pipefail
 die() { printf 'kb-group: %s\n' "$1" >&2; exit 64; }
 tag=$1; kb_bin=$2; count=$3; shift 3
@@ -89,17 +87,70 @@ if [[ -n "$members" ]]; then
     [[ "$found" = 1 ]] || die "unregistered group member: $member"
   done <<<"$members"
 fi
+# Preserve caller assertions rather than overwriting them with a fresh show:
+# the caller may deliberately demand the scope it saw before this invocation.
+argv=("$@")
+caller_snapshot=''; caller_revision=''
+snapshot_given=0; revision_given=0
+for ((i=0; i<${#argv[@]}; i++)); do
+  arg=${argv[$i]}
+  case "$arg" in
+    --group-snapshot|--expect-group-revision)
+      ((i+1 < ${#argv[@]})) || die "missing value for $arg"
+      value=${argv[$((i+1))]}
+      [[ "$value" != --* && -n "$value" ]] || die "missing value for $arg"
+      ((i+=1))
+      ;;
+    --group-snapshot=*|--expect-group-revision=*) value=${arg#*=} ;;
+    *) continue ;;
+  esac
+  case "$arg" in
+    --group-snapshot|--group-snapshot=*)
+      ((snapshot_given == 0)) || die 'group snapshot given twice'
+      snapshot_given=1; caller_snapshot=$value ;;
+    *)
+      ((revision_given == 0)) || die 'group revision given twice'
+      revision_given=1; caller_revision=$value ;;
+  esac
+done
+if ((snapshot_given)); then
+  [[ "$1" != claim && "$1" != watch ]] || die '--group-snapshot is not accepted by claim or watch'
+  # Rust issues bg1.URL_SAFE_NO_PAD(JSON), with an integer revision. jq's
+  # decoder needs the URL alphabet converted and '=' padding restored.
+  claimed_revision=$(jq -nr --arg token "$caller_snapshot" '
+    ($token | split(".")) as $parts |
+    if ($parts | length) != 2 or $parts[0] != "bg1" then error("bad token") else
+      ($parts[1] | gsub("-"; "+") | gsub("_"; "/") |
+       . + ("===="[:((4 - (length % 4)) % 4)]) | @base64d | fromjson) as $scope |
+      if $scope.v == 1 and ($scope.revision | type) == "number" then
+        $scope.revision
+      else error("bad assertion") end
+    end' 2>/dev/null) || die "invalid group snapshot; re-run \`kanban workspace tag show $tag\` and retry"
+  [[ "$claimed_revision" = "$revision" && "$caller_snapshot" = "$snapshot" ]] ||
+    die "board group $tag changed since --group-snapshot was issued; re-run \`kanban workspace tag show $tag\` for a fresh snapshot and retry"
+fi
+if ((revision_given)); then
+  [[ "$1" = claim ]] || die '--expect-group-revision is only accepted by claim'
+  [[ "$caller_revision" =~ ^[0-9]+$ ]] || die 'invalid --expect-group-revision; pass a revision from workspace tag show'
+  [[ "$caller_revision" = "$revision" ]] ||
+    die "board group $tag changed since revision $caller_revision; re-run \`kanban workspace tag show $tag\` and retry"
+fi
 # One compiled operation, bound to the checked scope. Claim needs the
 # compiled revision precondition; watch uses its separate cursor.
 if [[ "$1" = claim ]]; then
+  if ((revision_given)); then
+    exec "$kb_bin" "$@" --board-tag "$tag"
+  fi
   exec "$kb_bin" "$@" --board-tag "$tag" --expect-group-revision "$revision"
 elif [[ "$1" = watch ]]; then
   exec "$kb_bin" "$@" --board-tag "$tag"
 else
+  if ((snapshot_given)); then
+    exec "$kb_bin" "$@" --board-tag "$tag"
+  fi
   exec "$kb_bin" "$@" --board-tag "$tag" --group-snapshot "$snapshot"
 fi
 REMOTE
-)
 
 # Put the registry route first so remote verification compares every member
 # against it. The remainder of hosts.tsv is forwarded without interpretation.

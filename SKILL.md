@@ -38,10 +38,11 @@ coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
   database fallback. `--body-file` and `--items-file` are refused, because
   no group operation reads them. `kb-board` stays single-board.
 - Keep the `groupSnapshot` and `revision` from `workspace tag show`. The wrapper
-  verifies member routes, supplies its own snapshot on snapshot-capable reads,
-  and passes the checked revision as `--expect-group-revision` to both claim
-  forms. Do not pass a snapshot to `claim --candidates`: the compiled
-  claim parser refuses it. On scope change, stop and retry from show.
+  checks the member routes, then forwards a caller's `--group-snapshot TOKEN`
+  on snapshot-capable reads or `--expect-group-revision N` on claims only
+  if it matches the verified show. If omitted, the wrapper supplies the
+  verified assertion. Never pass a snapshot to `claim --candidates`: the
+  compiled claim parser refuses it. On scope change, restart from show.
 - Before a board-local write: show the group again, re-read the qualified
   `(board, id)` target, then write through `kb-board BOARD`. After a
   group claim, heartbeat/checkpoint/release/handoff use exactly the returned

@@ -36,7 +36,7 @@ if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
   if [[ ${SNAPSHOT+x} = x ]]; then
     printf '%s\n' "$SNAPSHOT"
   else
-    printf '%s\n' '{"groupName":"group/test","revision":3,"groupSnapshot":"bg1.test","members":[{"boardName":"kanban"},{"boardName":"px"}]}'
+    printf '{"groupName":"group/test","revision":3,"groupSnapshot":"%s","members":[{"boardName":"kanban"},{"boardName":"px"}]}\n' "$TEST_SNAPSHOT"
   fi
 else
   printf 'operation\n' >>"$CALLS"
@@ -47,7 +47,7 @@ else
     current=$("$0" workspace tag show group/test --json)
     [[ "$current" = *'"boardName":"alien"'* ]] || exit 98
     case " $* " in
-      *' --group-snapshot bg1.test '*|*' --expect-group-revision 3 '*)
+      *" --group-snapshot $TEST_SNAPSHOT "*|*' --expect-group-revision 3 '*)
         printf '%s\n' 'board group group/test changed since revision 3; re-run `kanban workspace tag show group/test` and retry' >&2
         exit 64 ;;
     esac
@@ -60,6 +60,13 @@ export KB_SSH_BIN="$t/bin/ssh" KB_HOSTS_TABLE="$t/hosts.tsv" CALLS="$t/calls" AR
 export REMOTE_HOSTNAME_BIN="$t/bin/hostname" REMOTE_HOST=home-remote
 export ACTED="$t/acted"
 export SEEN_SHOW="$t/seen-show"
+TEST_SNAPSHOT=$(python3 - <<'PY'
+import base64, json
+assertion = {"v": 1, "registryId": "registry-1", "groupId": "group-1", "groupName": "group/test", "revision": 3, "members": [["kanban-1", "inc-1"], ["px-1", "inc-1"]]}
+print('bg1.' + base64.urlsafe_b64encode(json.dumps(assertion, separators=(',', ':')).encode()).decode().rstrip('='))
+PY
+)
+export TEST_SNAPSHOT
 kb="$t/bin/kb"
 make_table() {
   printf 'kanban\thome-local\thome-target\thome-remote\t%s\npx\t%s\t%s\t%s\t%s\n' "$kb" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" >"$KB_HOSTS_TABLE"
@@ -88,9 +95,28 @@ check_calls $'ssh\nshow\noperation'
 python3 - "$ARGS" <<'PY'
 from pathlib import Path
 import sys
-assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'attention', b'list', b'--json', b'--label', b"two words ' $(touch nope); *", b'--board-tag', b'group/test', b'--group-snapshot', b'bg1.test']
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'attention', b'list', b'--json', b'--label', b"two words ' $(touch nope); *", b'--board-tag', b'group/test', b'--group-snapshot', __import__('os').environ['TEST_SNAPSHOT'].encode()]
 PY
 [[ ! -e nope ]] || fail 'shell expansion executed'
+ok
+: >"$CALLS"
+"$here/scripts/kb-group" group/test attention list --group-snapshot "$TEST_SNAPSHOT" --json >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import os, sys
+args = Path(sys.argv[1]).read_bytes().split(b'\0')[:-1]
+assert args == [b'attention', b'list', b'--group-snapshot', os.environ['TEST_SNAPSHOT'].encode(), b'--json', b'--board-tag', b'group/test']
+PY
+ok
+: >"$CALLS"
+"$here/scripts/kb-group" group/test claim --next --as worker --expect-group-revision 3 >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$ARGS" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'claim', b'--next', b'--as', b'worker', b'--expect-group-revision', b'3', b'--board-tag', b'group/test']
+PY
 ok
 : >"$CALLS"
 "$here/scripts/kb-group" group/test claim --candidates --as 'name; $HOME' --limit 2 >/dev/null
@@ -140,8 +166,18 @@ for selector in --project=px --db=/tmp/foo --workspace=. --all --all-boards --bo
 done
 refuse 'conflicting scope selector' group/test attention list --project px
 refuse 'conflicting scope selector' group/test attention list --board-tag group/else
-refuse 'group preconditions are supplied' group/test attention list --group-snapshot bg1.other
-refuse 'group preconditions are supplied' group/test claim --next --expect-group-revision 4
+stale=$(python3 - "$TEST_SNAPSHOT" <<'PY'
+import base64, json, sys
+assertion = json.loads(base64.urlsafe_b64decode(sys.argv[1].split('.', 1)[1] + '==='))
+assertion['revision'] = 2
+print('bg1.' + base64.urlsafe_b64encode(json.dumps(assertion, separators=(',', ':')).encode()).decode().rstrip('='))
+PY
+)
+refuse 'board group group/test changed since --group-snapshot was issued; re-run `kanban workspace tag show group/test`' group/test attention list --group-snapshot "$stale"
+check_calls $'ssh\nshow'
+refuse 'board group group/test changed since revision 4; re-run `kanban workspace tag show group/test` and retry' group/test claim --next --expect-group-revision 4
+check_calls $'ssh\nshow'
+refuse 'invalid group snapshot' group/test attention list --group-snapshot bg1.other
 refuse 'file selector is not applicable' group/test attention list --body-file 'body space.txt'
 refuse 'file selector is not applicable' group/test attention list --items-file=/dev/stdin
 KANBAN_PROJECT=px refuse 'ambient KANBAN_PROJECT or KANBAN_DB' group/test attention list
