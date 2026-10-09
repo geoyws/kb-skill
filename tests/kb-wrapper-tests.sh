@@ -345,6 +345,25 @@ if [[ -n "${FAKE_KB_ITEMS_OUT:-}" ]]; then
     prev=$arg
   done
 fi
+# The same hook for `--session-context`, plus what the binary saw as
+# KB_SESSION_ID: ssh carries no environment, so only the remote process's own
+# view shows whether the caller's session id crossed.
+if [[ -n "${FAKE_KB_CTX_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--session-context" ]]; then
+      cat -- "$arg" >"$FAKE_KB_CTX_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_CTX_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
+  if [[ -n "${KB_SESSION_ID+set}" ]]; then
+    printf 'set:%s' "$KB_SESSION_ID" >"$FAKE_KB_CTX_OUT.session"
+  else
+    printf 'unset' >"$FAKE_KB_CTX_OUT.session"
+  fi
+fi
 EOF
 
   cat >"$fakebin/git" <<'EOF'
@@ -665,6 +684,94 @@ test_host_body_file_is_transferred_for_registry_rules() {
 
   assert_argv_prefix "$kb_log" r new --as agent --body-file
   assert_body_transferred "$kb_log" "$tmp_dir/bodyhost/seen" "$body"
+}
+
+# The explicit session context (kanban KBAT-01) names a file on the CALLER and
+# the core checks KB_SESSION_ID against it, so over ssh both must cross: the
+# file's bytes into a board-host temp file the binary is pointed at, and the
+# session id into the binary's environment. The temp file is gone afterwards.
+test_board_session_context_and_session_id_are_transferred() {
+  local dir="$tmp_dir/sessionctx"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table context body seen
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+  context="$dir/context.json"
+  printf '%s\n' '{"version":1,"board":"b","lane":"driver","actor":"@:g/k/driver/executor","role":"planner","sessionId":"s 1'"'"'$(x)","operatorIntent":["attention"]}' >"$context"
+  body="$dir/plan.md"
+  printf '%s\n' 'plan body' >"$body"
+
+  run_ctx() {
+    seen=$1
+    shift
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_CTX_OUT="$seen" \
+    FAKE_KB_BODY_OUT="$seen.body" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$@"
+  }
+
+  KB_SESSION_ID="s 1'\$(x)" run_ctx "$dir/seen1" "$board_id" task show t-1 --session-context "$context" --json
+  assert_argv_prefix "$kb_log" --project "$board_id" task show t-1 --json --session-context
+  cmp -s "$dir/seen1" "$context" || fail 'the session context did not arrive byte for byte'
+  [[ "$(cat "$dir/seen1.path")" != "$context" ]] || fail 'the remote was handed the caller path'
+  [[ ! -e "$(cat "$dir/seen1.path")" ]] || fail 'the decoded session context was left behind'
+  [[ "$(cat "$dir/seen1.session")" == "set:s 1'\$(x)" ]] || fail "KB_SESSION_ID did not cross: $(cat "$dir/seen1.session")"
+
+  # With a body on ssh's stdin as well, both files cross and both are removed.
+  run_ctx "$dir/seen2" "$board_id" t up t-1 --as a "--session-context=$context" --body-file "$body"
+  cmp -s "$dir/seen2" "$context" || fail 'session context lost beside a body'
+  cmp -s "$dir/seen2.body" "$body" || fail 'body lost beside a session context'
+  [[ ! -e "$(cat "$dir/seen2.path")" && ! -e "$(cat "$dir/seen2.body.path")" ]] ||
+    fail 'a decoded temp file was left behind'
+
+  # An unset KB_SESSION_ID stays unset on the board host: the core decides.
+  ( unset KB_SESSION_ID; run_ctx "$dir/seen3" "$board_id" task show t-1 --session-context "$context" )
+  [[ "$(cat "$dir/seen3.session")" == unset ]] || fail 'an unset KB_SESSION_ID arrived set'
+
+  # Refusals happen before any transport.
+  local big="$dir/big.json"
+  head -c 65537 /dev/zero | tr '\0' 'x' >"$big"
+  local bad
+  for bad in "--session-context $dir/missing.json" "--session-context $context --session-context $context" "--session-context $big"; do
+    # shellcheck disable=SC2086
+    FAKE_SSH_MODE=fail FAKE_SSH_LOG="$ssh_log.refused" FAKE_KB_LOG="$kb_log.refused" \
+      KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+      run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task show t-1 $bad
+    assert_log_clean "$ssh_log.refused" "refused session context: $bad"
+  done
+}
+
+test_session_context_at_the_boundary_needs_no_transfer() {
+  local dir="$tmp_dir/sessionlocal"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id home_host table context
+  board_id=$(make_id board)
+  home_host=$(/bin/hostname)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$home_host" "$(make_id target)" "$home_host" "$fakebin/kb"
+  context="$dir/context.json"
+  printf '%s\n' '{"version":1}' >"$context"
+
+  FAKE_SSH_LOG="$dir/ssh.argv" FAKE_SSH_MODE=fail FAKE_KB_LOG="$dir/kb.argv" \
+    FAKE_KB_CTX_OUT="$dir/seen" KB_SESSION_ID=s-local KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" task show t-1 --session-context "$context"
+  assert_log_clean "$dir/ssh.argv" 'session context at the boundary'
+  assert_argv_file "$dir/kb.argv" --project "$board_id" task show t-1 --session-context "$context"
+  [[ "$(cat "$dir/seen.session")" == set:s-local ]] || fail 'local KB_SESSION_ID not inherited'
 }
 
 test_body_file_at_the_boundary_needs_no_transfer() {
@@ -2473,6 +2580,8 @@ main() {
     test_remote_exec_uses_ssh_and_preserves_argv
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
+    test_board_session_context_and_session_id_are_transferred
+    test_session_context_at_the_boundary_needs_no_transfer
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
