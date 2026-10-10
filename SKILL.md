@@ -118,8 +118,8 @@ Outside the board home host, do not call `kb` directly.
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
   `contrib` and `plugin` verbs so registry operations cannot be routed through a
-  board helper. `sprint`, `batch` and `incident` are board-owned and route
-  here.
+  board helper. `sprint`, `batch`, `incident` and `worktree` are board-owned
+  and route here.
   On `checkpoint` and `handoff create` it also forwards your checkout as
   `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
   otherwise capture the board host's cwd (see Provenance).
