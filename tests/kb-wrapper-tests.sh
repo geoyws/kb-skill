@@ -2140,7 +2140,7 @@ test_host_refuses_board_owned_commands_without_transport() {
     deploy import tag archive search search-rebuild
     task t story s handoff h attention att attn claim checkpoint cp
     heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale transact sprint batch incident
+    subscription todo stale transact sprint batch incident worktree
   )
 
   local command
