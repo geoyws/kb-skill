@@ -238,6 +238,13 @@ if [[ -n "$items_file" ]]; then
   [[ -z "$body_file" ]] ||
     die 'kb-board: --body-file and --items-file both need the ssh channel; pass one'
 fi
+# Inline `--items` is the same batch by another spelling: a staged
+# identity-bearing batch replays it on ssh's stdin and owns an EXIT trap that
+# the body-file transfer would replace, leaking the staging directory. No
+# command takes a body and items, so refuse before anything is staged or sent.
+if [[ -n "$body_file" && "$items_arg_index" -ge 0 ]]; then
+  die 'kb-board: --body-file and --items cannot be combined; no command takes both'
+fi
 # `--session-context PATH` is the caller's explicit context file (KBAT-01). Like
 # `--body-file` it names a file on the CALLER, so it is transferred: a small
 # JSON document, base64 inside the remote command (stdin may already carry a
