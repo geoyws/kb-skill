@@ -1478,6 +1478,7 @@ test_host_surface_matches_source_allowlist() {
     sprint
     batch
     incident
+    worktree
   )
 
   local command
