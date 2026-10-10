@@ -324,7 +324,11 @@ outside tmux it prints the legacy single file `~/.claude/kb-session`
 and exits 3, which is safe only while one session per host claims. One
 session holds one task, so a second claim overwrites. Rewrite both lines
 whenever the token changes. The board is resolved off the session cwd by
-lane-detect, never stored in the file.
+lane-detect, never stored in the file. A session started with an explicit
+session context (`--session-context PATH` or `KB_SESSION_CONTEXT`) takes its
+board and lane from that file instead, and no pane is consulted; export
+`KB_SESSION_ID` equal to the file's `sessionId`, so this helper and the
+heartbeat hook resolve the same session file.
 
 ```bash
 f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
