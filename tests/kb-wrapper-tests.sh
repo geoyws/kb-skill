@@ -995,6 +995,59 @@ test_board_transact_rejects_all_duplicate_items_file_forms() {
   done
 }
 
+# `--body-file` beside inline `--items` (either spelling) was let through: the
+# items-file exclusion did not see it, a transact staged its batch, and the
+# body transfer replaced the staging EXIT trap, leaving the directory behind.
+# It is refused before staging and before any connection, on both routes.
+test_board_body_file_with_inline_items_is_refused_without_staging() {
+  local dir="$tmp_dir/body-inline-items"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  local ssh_count="$dir/ssh.count"
+  local scratch="$dir/tmp"
+  setup_fakebin "$fakebin"
+  mkdir -p "$scratch"
+
+  local board_id table body route spelling output
+  board_id=$(make_id board)
+  table="$dir/hosts.tsv"
+  body="$dir/body.md"
+  printf '%s\n' 'a body' >"$body"
+  local -a items_args
+
+  for route in remote local; do
+    if [[ "$route" == local ]]; then
+      make_table "$table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    else
+      make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+    fi
+    for spelling in split joined; do
+      if [[ "$spelling" == split ]]; then
+        items_args=(--items '[{"op":"note","id":"t-1","text":"x"}]')
+      else
+        items_args=('--items=[{"op":"note","id":"t-1","text":"x"}]')
+      fi
+      output=$(TMPDIR="$scratch" \
+        FAKE_SSH_MODE=fail \
+        FAKE_SSH_LOG="$ssh_log" \
+        FAKE_SSH_COUNT_FILE="$ssh_count" \
+        FAKE_KB_LOG="$kb_log" \
+        KB_HOSTS_TABLE="$table" \
+        PATH="$fakebin:$PATH" \
+        run_expect_failure "$package_dir/scripts/kb-board" "$board_id" transact \
+          "${items_args[@]}" --body-file "$body" --json)
+      assert_contains "$output" '--body-file and --items cannot be combined' "$route $spelling"
+      assert_ssh_call_count "$ssh_count" 0 "$route $spelling"
+      assert_log_clean "$ssh_log" "$route $spelling SSH"
+      assert_log_clean "$kb_log" "$route $spelling binary"
+      if compgen -G "$scratch/kb-*" >/dev/null; then
+        fail "$route $spelling: staging left behind: $(ls "$scratch")"
+      fi
+    done
+  done
+}
+
 test_transact_items_file_at_the_boundary_needs_no_streaming() {
   local fakebin="$tmp_dir/transact-boundary/fakebin"
   local ssh_log="$tmp_dir/transact-boundary/ssh.argv"
@@ -2479,6 +2532,7 @@ main() {
     test_board_transact_local_items_file_is_streamed
     test_board_identity_conflict_refused_and_items_bytes_kept
     test_board_transact_rejects_all_duplicate_items_file_forms
+    test_board_body_file_with_inline_items_is_refused_without_staging
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_generated_table_transfers_body_file
     test_host_surface_matches_source_allowlist
