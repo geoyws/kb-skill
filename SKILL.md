@@ -302,6 +302,21 @@ every lane queue filter actually match on. A row whose actor names its lane
 but whose `--lane` is empty is invisible to its own lane's queue, which is the
 same failure the harness-qualified actor caused, wearing different clothes.
 
+**Inside OMP, do not print a claim response containing `leaseToken`.** Its
+secret filter correctly redacts bearer tokens, which makes a printed claim
+unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
+`kb-session-lease BOARD claim TASK --as ACTOR --lane LANE`,
+`kb-session-lease BOARD hb TASK`,
+`kb-session-lease BOARD handoff-create TASK --as ACTOR --summary ... --intent ... --next-action ...`,
+or `kb-session-lease BOARD release TASK`. For an incoming handoff use
+`kb-session-lease BOARD handoff-accept HANDOFF --as ACTOR`. Claim and
+accept capture the raw reply privately and persist its token in the existing
+session file; only a constructed token-free receipt reaches the agent. A second
+claim in the same session refuses until release/handoff settles the first.
+The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
+tmux without a session ID it refuses rather than sharing the legacy file.
+Ordinary `kb-board` commands and transaction/MCP surfaces retain their
+existing contract; never allowlist real lease tokens in the OMP filter.
 **Write the heartbeat session file right after every claim** (George,
 2026-09-29, kb dotfiles t-c991e76a option A): mode 0600, two lines — task id,
 then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
@@ -322,14 +337,16 @@ filename namespace: it grants no board, lane, role, or lease authority, and
 both sides must already agree on the id out of band. Without `KB_SESSION_ID`,
 outside tmux it prints the legacy single file `~/.claude/kb-session`
 and exits 3, which is safe only while one session per host claims. One
-session holds one task, so a second claim overwrites. Rewrite both lines
-whenever the token changes. The board is resolved off the session cwd by
+session holds one task, so a second secure claim refuses rather than
+overwriting the file. Direct claimers must still manage the file themselves.
+The board is resolved off the session cwd by
 lane-detect, never stored in the file. A session started with an explicit
 session context (`--session-context PATH` or `KB_SESSION_CONTEXT`) takes its
 board and lane from that file instead, and no pane is consulted; export
 `KB_SESSION_ID` equal to the file's `sessionId`, so this helper and the
 heartbeat hook resolve the same session file.
 
+For direct, non-redacting callers only (OMP uses `kb-session-lease`):
 ```bash
 f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
 (umask 077; printf '%s\n%s\n' "$TASK" "$TOKEN" > "$f")

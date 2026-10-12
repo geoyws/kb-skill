@@ -24,8 +24,14 @@ installation.
   path is keyed per tmux pane, falling back to the legacy single file outside tmux, so
   concurrent sessions on one host never share a lease token. The id is a
   filename namespace only and grants no authority.
+- `scripts/kb-session-lease` is the opt-in, caller-side lease flow for a
+  redacting agent. It captures claim/accept replies privately, stores the token
+  in the existing per-session 0600 file, and prints only a token-free receipt.
+  It reads that file for heartbeat, release and task handoff; a second claim
+  refuses while a session lease exists.
 - `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior;
-  `tests/kb-session-file-tests.sh` exercises the session-file path. Wrapper
+  `tests/kb-session-file-tests.sh` and `tests/kb-session-lease-tests.sh` cover
+  private session resolution and the token-free lifecycle. Wrapper
   checks retain executable routing, refusal, transfer and provenance contracts,
   not Markdown headings, prose snippets or the test script's own wiring.
 
