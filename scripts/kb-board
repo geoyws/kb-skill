@@ -318,21 +318,21 @@ if [[ -n "$body_file" ]]; then
   trap 'rm -f "$encoded"' EXIT
   base64 <"$body_file" >"$encoded" || die "kb-board: cannot encode --body-file $body_file"
   status=0
-  "$ssh_bin" "${own_login_args[@]}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
+  "$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
   exit "$status"
 fi
 
 if [[ -n "$items_file" ]]; then
   # Staged batches keep their EXIT trap until ssh finishes.
   if [[ -n "$staged" ]]; then
-    "$ssh_bin" "${own_login_args[@]}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
+    "$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
     exit $?
   fi
-  exec "$ssh_bin" "${own_login_args[@]}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
+  exec "$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
 fi
 
 if [[ -n "$staged" ]]; then
-  "$ssh_bin" "${own_login_args[@]}" -- "$BOARD_SSH_TARGET" "$remote_cmd"
+  "$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$BOARD_SSH_TARGET" "$remote_cmd"
   exit $?
 fi
-exec "$ssh_bin" "${own_login_args[@]}" -- "$BOARD_SSH_TARGET" "$remote_cmd"
+exec "$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$BOARD_SSH_TARGET" "$remote_cmd"

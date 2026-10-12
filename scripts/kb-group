@@ -177,7 +177,7 @@ for arg in "$tag" "$kb_bin" "$count" "${route_args[@]}" -- "$@"; do
 done
 remote_cmd+="; else printf '%s\\n' 'kb-group: remote hostname mismatch' >&2; exit 69; fi"
 status=0
-"$ssh_bin" "${own_login_args[@]}" -- "$ssh_target" "$remote_cmd" || status=$?
+"$ssh_bin" ${own_login_args[@]+"${own_login_args[@]}"} -- "$ssh_target" "$remote_cmd" || status=$?
 [[ $status -eq 0 ]] || {
   [[ $status -eq 255 ]] && die "registry home unavailable (ssh exit $status)"
   [[ $status -eq 124 ]] && die "registry home timed out (ssh exit $status)"
