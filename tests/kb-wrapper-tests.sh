@@ -277,8 +277,16 @@ printf '%s\0' "$@" >"${FAKE_SSH_LOG:?}"
 if [[ -n "${FAKE_SSH_COUNT_FILE:-}" ]]; then
   printf 'ssh\n' >>"$FAKE_SSH_COUNT_FILE"
 fi
+if [[ ${1-} = -G ]]; then
+  printf 'user %s\n' "${FAKE_SSH_USER-root}"
+  exit 0
+fi
 case "${FAKE_SSH_MODE:-execute}" in
   execute)
+    if [[ ${1-} = -l ]]; then
+      [[ $# -ge 3 ]] || exit 97
+      shift 2
+    fi
     if [[ "${1-}" = -- ]]; then
       shift
     fi
@@ -436,18 +444,12 @@ run_expect_failure() {
 }
 
 make_table() {
-  local path=$1
-  local board_id=$2
-  local home_host=$3
-  local ssh_target=$4
-  local expected_remote=$5
-  local kb_exec=$6
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$board_id" \
-    "$home_host" \
-    "$ssh_target" \
-    "$expected_remote" \
-    "$kb_exec" >"$path"
+  local path=$1 board_id=$2 home_host=$3 ssh_target=$4 expected_remote=$5 kb_exec=$6
+  if [[ $# -ge 7 ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$board_id" "$home_host" "$ssh_target" "$expected_remote" "$kb_exec" "$7" >"$path"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\n' "$board_id" "$home_host" "$ssh_target" "$expected_remote" "$kb_exec" >"$path"
+  fi
 }
 
 copy_public_package() {
@@ -531,6 +533,61 @@ test_remote_exec_uses_ssh_and_preserves_argv() {
 
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
   assert_argv_file "$kb_log" --project "$board_id" task ls "$empty" "$single_quote" "$embedded_newline" "$trailing_newline" "$dollar_paren" "$glob"
+}
+
+test_own_login_route_preserves_identity_and_refuses_root() {
+  local fakebin="$tmp_dir/own/fakebin" ssh_log="$tmp_dir/own/ssh.argv"
+  local count="$tmp_dir/own/count" kb_log="$tmp_dir/own/kb.argv"
+  local table="$tmp_dir/own/hosts.tsv" output
+  setup_fakebin "$fakebin"
+  make_table "$table" B other-host localhost other-remote "$fakebin/kb" own
+  output=$(run_expect_failure env FAKE_HOSTNAME_VALUE=here FAKE_SSH_USER=root \
+    FAKE_SSH_LOG="$ssh_log" FAKE_SSH_COUNT_FILE="$count" FAKE_KB_LOG="$kb_log" \
+    KB_HOSTS_TABLE="$table" KB_SSH_BIN="$fakebin/ssh" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" B note T x --as alice)
+  assert_contains "$output" "kb-board: board B routes as your own login, but ssh would log in to localhost as root; set User for localhost in your ssh config or export KB_SSH_LOGIN" 'root ssh refusal'
+  assert_ssh_call_count "$count" 1 'only ssh -G before refusal'
+  assert_argv_file "$ssh_log" -G localhost
+  assert_log_clean "$kb_log" 'root ssh refusal'
+
+  : >"$count"
+  FAKE_HOSTNAME_VALUE=here FAKE_SSH_USER=root FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$count" FAKE_KB_LOG="$kb_log" \
+  FAKE_REMOTE_HOSTNAME_VALUE=other-remote FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin" KB_SSH_LOGIN=alice KB_HOSTS_TABLE="$table" \
+  KB_SSH_BIN="$fakebin/ssh" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" B note T x --as alice
+  assert_ssh_call_count "$count" 1 'explicit login skips config probe'
+  assert_argv_prefix "$ssh_log" -l alice -- localhost
+  assert_argv_file "$kb_log" --project B note T x --as alice
+
+  : >"$count"
+  FAKE_HOSTNAME_VALUE=here FAKE_SSH_USER=alice FAKE_SSH_LOG="$ssh_log" \
+  FAKE_SSH_COUNT_FILE="$count" FAKE_KB_LOG="$kb_log" \
+  FAKE_REMOTE_HOSTNAME_VALUE=other-remote FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin" KB_HOSTS_TABLE="$table" \
+  KB_SSH_BIN="$fakebin/ssh" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" B task ls
+  assert_ssh_call_count "$count" 2 'configured own login probes once'
+  assert_argv_prefix "$ssh_log" -- localhost
+
+  make_table "$table" B other-host localhost other-remote "$fakebin/kb" self
+  : >"$count"
+  output=$(run_expect_failure env FAKE_HOSTNAME_VALUE=here FAKE_SSH_LOG="$ssh_log" \
+    FAKE_SSH_COUNT_FILE="$count" FAKE_KB_LOG="$kb_log" \
+    KB_HOSTS_TABLE="$table" KB_SSH_BIN="$fakebin/ssh" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" B task ls)
+  assert_contains "$output" 'kb-board: login must be ssh or own: self' 'invalid login'
+  assert_ssh_call_count "$count" 0 'invalid login pretransport'
+  make_table "$table" B other-host localhost other-remote /root/.local/bin/kb own
+  output=$(run_expect_failure env FAKE_HOSTNAME_VALUE=here FAKE_SSH_LOG="$ssh_log" \
+    FAKE_SSH_COUNT_FILE="$count" FAKE_KB_LOG="$kb_log" \
+    KB_HOSTS_TABLE="$table" KB_SSH_BIN="$fakebin/ssh" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" B task ls)
+  assert_contains "$output" 'kb-board: board B routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb' 'private executable'
+  assert_ssh_call_count "$count" 0 'private executable pretransport'
+  output=$(run_expect_failure "$package_dir/scripts/kb-board" B broker serve)
+  assert_contains "$output" "kb-board does not route registry-wide command 'broker'." 'broker route refusal'
 }
 
 test_adjacent_hosts_table_is_used() {
@@ -1279,6 +1336,7 @@ test_registry_commands_are_rejected_without_transport() {
     workspace
     access
     plugin
+    broker
     worker
     link
     scope
@@ -2525,6 +2583,7 @@ main() {
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
     test_remote_exec_uses_ssh_and_preserves_argv
+    test_own_login_route_preserves_identity_and_refuses_root
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
     test_host_body_file_is_transferred_for_registry_rules

@@ -96,6 +96,7 @@ lookup_board() {
       BOARD_SSH_TARGET=${BOARD_SSH_TARGETS[$i]}
       BOARD_EXPECTED_REMOTE_HOST=${BOARD_EXPECTED_REMOTE_HOSTS[$i]}
       BOARD_KB_EXEC=${BOARD_KB_EXECS[$i]}
+      BOARD_LOGIN="${BOARD_LOGINS[$i]}"
       return 0
     fi
   done
@@ -105,18 +106,39 @@ lookup_board() {
 load_table() {
   local table_file=$1
   [[ -r "$table_file" ]] || die "$router_name: routing table is not readable: $table_file"
-  local line board home_host ssh_target expected_remote kb_exec extra
+  local line board home_host ssh_target expected_remote kb_exec extra login fields rest
   local loaded=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue
-    IFS=$'\t' read -r board home_host ssh_target expected_remote kb_exec extra <<<"$line"
+    fields=0 rest=$line
+    while [[ "$rest" == *$'\t'* ]]; do
+      fields=$((fields + 1))
+      rest=${rest#*$'\t'}
+    done
+    [[ $fields -eq 4 || $fields -eq 5 ]] || die "$router_name: malformed routing row: $line"
+    if [[ $fields -eq 5 ]]; then
+      login=$rest
+      rest=${line%$'\t'*}
+    else
+      login=ssh
+      rest=$line
+    fi
+    [[ "$rest" != *$'\t\t'* ]] || die "$router_name: malformed routing row: $line"
+    IFS=$'\t' read -r board home_host ssh_target expected_remote kb_exec extra <<<"$rest"
     if [[ -n "${extra-}" || -z "${board-}" || -z "${home_host-}" || -z "${ssh_target-}" || -z "${expected_remote-}" || -z "${kb_exec-}" ]]; then
       die "$router_name: malformed routing row: $line"
     fi
+    case "$login" in
+      ssh|own) ;;
+      *) repo_identity_error "login must be ssh or own: $login" ;;
+    esac
     case "$kb_exec" in
       /*) ;;
       *) die "$router_name: KB executable path must be absolute: $kb_exec" ;;
     esac
+    if [[ $login = own && $kb_exec = /root/* ]]; then
+      repo_identity_error "board $board routes as your own login, so its KB executable must be one every login can run, not under /root: $kb_exec"
+    fi
     if board_exists "$board"; then
       die "$router_name: duplicate board mapping: $board"
     fi
@@ -125,7 +147,33 @@ load_table() {
     BOARD_SSH_TARGETS+=("$ssh_target")
     BOARD_EXPECTED_REMOTE_HOSTS+=("$expected_remote")
     BOARD_KB_EXECS+=("$kb_exec")
+    BOARD_LOGINS+=("$login")
     loaded=1
   done <"$table_file"
   [[ "$loaded" -eq 1 ]] || die "$router_name: routing table has no rows: $table_file"
+}
+
+# The effective remote user is a security boundary, not an actor assertion.
+# A five-field route must never make this probe: its existing ssh argv is stable.
+own_login_ssh_args() {
+  local board=$1 target=$2 user='' key value
+  own_login_args=()
+  [[ $BOARD_LOGIN = own ]] || return 0
+  if [[ -n ${KB_SSH_LOGIN-} ]]; then
+    user=$KB_SSH_LOGIN
+    own_login_args=(-l "$user")
+  else
+    local config
+    config=$( "$ssh_bin" -G "$target" ) || repo_identity_error "cannot resolve ssh user for $target"
+    while read -r key value _; do
+      if [[ $key = user ]]; then user=$value; break; fi
+    done <<<"$config"
+    [[ -n $user ]] || repo_identity_error "board $board routes as your own login, but ssh -G $target named no user; set User for $target in your ssh config or export KB_SSH_LOGIN"
+  fi
+  [[ $user != root ]] || repo_identity_error "board $board routes as your own login, but ssh would log in to $target as root; set User for $target in your ssh config or export KB_SSH_LOGIN"
+}
+
+own_login_local_guard() {
+  local board=$1
+  [[ $BOARD_LOGIN != own || $EUID -ne 0 ]] || repo_identity_error "board $board routes as your own login, but this shell is root; run $router_name from your own account"
 }

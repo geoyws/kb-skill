@@ -33,6 +33,13 @@ coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
 - `kb-group` routes through the registry-home row of `KB_HOSTS_TABLE`. It
   checks the home host's name and every member's one-ledger route, then runs
   one compiled group operation with literal argv and `--board-tag`.
+- The optional sixth host-table field is `login` (`ssh` or `own`); five-field rows
+  still use the original SSH argv. An `own` row uses the caller's non-root
+  `KB_SSH_LOGIN` with `ssh -l`, or its effective `ssh -G` user; root is
+  refused before a remote command, as is a local root shell. The binary path
+  must be executable outside `/root/`. A group member whose login differs
+  from the registry route is refused. Keep the consumer table on `ssh`
+  until that board's multi-login broker cutover is separately approved.
 - An unknown group, an unavailable home, a member on another home, or a
   conflicting selector is refused. There is no per-member loop and no local
   database fallback. `--body-file` and `--items-file` are refused, because

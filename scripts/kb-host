@@ -79,6 +79,7 @@ declare -a BOARD_HOME_HOSTS
 declare -a BOARD_SSH_TARGETS
 declare -a BOARD_EXPECTED_REMOTE_HOSTS
 declare -a BOARD_KB_EXECS
+declare -a BOARD_LOGINS
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 router_name=kb-host

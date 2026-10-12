@@ -39,6 +39,15 @@ The installed package expects either `KB_HOSTS_TABLE` or an adjacent
 3. SSH target
 4. expected remote hostname
 5. absolute KB executable path
+6. optional login mode: `ssh` (default) or `own`
+
+Five-field rows keep their existing SSH argv. An `own` row refuses an executable
+under `/root/`; off-host `kb-board` and `kb-group` refuse an SSH login
+of root before sending a command. Set `KB_SSH_LOGIN` to a non-root login to send
+`-l LOGIN`, or leave it unset so `ssh -G TARGET` selects the configured user.
+On the board host they refuse an effective root shell. `kb-group` uses its
+registry-board row and refuses a member whose login differs. The table controls
+transport identity; `--as` never substitutes for the remote kernel UID.
 
 The parser rejects missing, duplicate, unknown, or malformed board mappings.
 The KB executable path must be absolute. `kb-board` injects the project
@@ -87,7 +96,7 @@ kb rule import PATH --as ACTOR
 Example row copied into a TSV table:
 
 ```tsv
-board_identifier	board_home_host	ssh_target	expected_remote_hostname	<absolute_kb_binary_path>
+board_identifier	board_home_host	ssh_target	expected_remote_hostname	<absolute_kb_binary_path>[	ssh|own]
 ```
 
 Example `kb-board` body-file invocation copied from the package docs:

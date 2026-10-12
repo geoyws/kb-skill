@@ -7,8 +7,14 @@ mkdir -p "$t/bin"
 cat >"$t/bin/ssh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+printf '%s\0' "$@" >"$SSH_ARGS"
 printf 'ssh\n' >>"$CALLS"
+if [[ ${1-} = -G ]]; then
+  printf 'user %s\n' "${FAKE_SSH_USER-root}"
+  exit 0
+fi
 [[ ${OUTAGE:-0} = 0 ]] || { echo 'ssh: connection refused' >&2; exit 255; }
+[[ ${1-} = -l ]] && shift 2
 [[ ${TIMEOUT:-0} = 0 ]] || { echo 'ssh: timed out' >&2; exit 124; }
 [[ $1 = -- ]] && shift
 [[ $1 = home-target ]] || exit 98
@@ -80,9 +86,15 @@ print('bg1.' + base64.urlsafe_b64encode(json.dumps(assertion, separators=(',', '
 PY
 )
 export RECREATED_SNAPSHOT
+export SSH_ARGS="$t/ssh-argv"
+unset KB_SSH_LOGIN
 kb="$t/bin/kb"
 make_table() {
-  printf 'kanban\thome-local\thome-target\thome-remote\t%s\npx\t%s\t%s\t%s\t%s\n' "$kb" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" >"$KB_HOSTS_TABLE"
+  if [[ $# -ge 5 ]]; then
+    printf 'kanban\thome-local\thome-target\thome-remote\t%s\t%s\npx\t%s\t%s\t%s\t%s\t%s\n' "$kb" "$5" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" "$5" >"$KB_HOSTS_TABLE"
+  else
+    printf 'kanban\thome-local\thome-target\thome-remote\t%s\npx\t%s\t%s\t%s\t%s\n' "$kb" "${1:-home-local}" "${2:-home-target}" "${3:-home-remote}" "${4:-$kb}" >"$KB_HOSTS_TABLE"
+  fi
 }
 make_table
 pass=0
@@ -277,6 +289,37 @@ make_table
 REMOTE_HOST=wrong refuse 'remote hostname mismatch' group/test attention list
 OUTAGE=1 refuse 'registry home unavailable (ssh exit 255)' group/test attention list
 TIMEOUT=1 refuse 'registry home timed out (ssh exit 124)' group/test attention list
+# A42: the registry row is the one group transport. No member may quietly
+# change only its login, and a refused route cannot reach the compiled command.
+make_table home-local home-target home-remote "$kb" own
+FAKE_SSH_USER=root refuse 'board kanban routes as your own login, but ssh would log in to home-target as root; set User for home-target in your ssh config or export KB_SSH_LOGIN' group/test task list
+check_calls 'ssh'
+python3 - "$SSH_ARGS" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'-G', b'home-target']
+PY
+ok
+: >"$CALLS"
+KB_SSH_LOGIN=alice "$here/scripts/kb-group" group/test task list >/dev/null
+check_calls $'ssh\nshow\noperation'
+python3 - "$SSH_ARGS" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:4] == [b'-l', b'alice', b'--', b'home-target']
+PY
+ok
+printf 'kanban\thome-local\thome-target\thome-remote\t%s\town\npx\thome-local\thome-target\thome-remote\t%s\n' "$kb" "$kb" >"$KB_HOSTS_TABLE"
+KB_SSH_LOGIN=alice refuse 'cross-home group member: px' group/test task list
+check_calls $'ssh\nshow'
+make_table home-local home-target home-remote "$kb" self
+refuse 'login must be ssh or own: self' group/test task list
+check_calls ''
+make_table home-local home-target home-remote /root/.local/bin/kb own
+refuse 'board px routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb' group/test task list
+check_calls ''
+make_table
+
 # At the local boundary no ssh is needed; the same catalogue read and one
 # compiled operation use the configured absolute binary.
 local_host=$(/bin/hostname)
