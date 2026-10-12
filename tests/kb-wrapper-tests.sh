@@ -588,6 +588,8 @@ test_own_login_route_preserves_identity_and_refuses_root() {
   assert_ssh_call_count "$count" 0 'private executable pretransport'
   output=$(run_expect_failure "$package_dir/scripts/kb-board" B broker serve)
   assert_contains "$output" "kb-board does not route registry-wide command 'broker'." 'broker route refusal'
+  output=$(run_expect_failure "$package_dir/scripts/kb-board" B whoami)
+  assert_contains "$output" "kb-board does not route registry-wide command 'whoami'." 'whoami route refusal'
 }
 
 test_adjacent_hosts_table_is_used() {
@@ -1388,6 +1390,8 @@ test_host_surface_matches_source_allowlist() {
     mcp
     access
     plugin
+    broker
+    whoami
     worker
     link
     scope

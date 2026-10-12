@@ -4,6 +4,7 @@ attention
 audit
 backup
 batch
+broker
 checkpoint
 claim
 context
@@ -38,6 +39,7 @@ task
 todo
 transact
 watch
+whoami
 worker
 workspace
 worktree
