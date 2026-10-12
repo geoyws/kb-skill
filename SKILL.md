@@ -135,6 +135,37 @@ Outside the board home host, do not call `kb` directly.
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST r ls --json
 ```
 
+**Runs of reads do not go one-shot.** Every wrapper call is its own SSH exec on
+the board home host, so three or more related reads — a resume (`ctx`, `r ls`,
+`dash`), a queue measurement, a row and its ancestors — take one of two shapes
+instead:
+
+1. **The persistent MCP channel, when the harness has it registered** (`ssh
+   "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`, **As an MCP server**). One connection
+   for the session; each read is then about one round trip plus the query, and
+   registry reads (`rule_list`, `dashboard`) ride the same channel as board
+   reads.
+2. **Otherwise one `batch`**: `kb-board BOARD_ID batch --items-file /dev/stdin
+   --json < read.json`, up to 32 board reads in one exec (**Working a task**).
+   `rule_list` may sit in it. `dashboard` may not — it reads boards outside the
+   batch and is refused with `names dashboard, which reads boards outside the
+   batch: run it alone; nothing in it ran` — so it stays its own `kb-host` call.
+
+Writes keep their shape: a single write is one wrapper call, and a unit's two
+boundaries are one `transact` each. Measured 2026-10-13 ~07:30 MYT from @@mbp
+to @@hal (kanban 0.3.1, SSH `ControlMaster auto`, `ControlPersist 600`, median of
+five runs; kanban `t-bbe8d7cc`):
+
+| path | one read | resume: `ctx` + `r ls` + `dash` |
+|---|---|---|
+| one-shot wrappers (`kb-board ctx`, `kb-host r ls`, `kb-host dash`) | `ctx` 0.52 s, `r ls` 0.50 s, `dash` 1.3–1.9 s | 2.31 s |
+| one `kb-board batch` (`context` + `rule_list`), then `kb-host dash` | 0.70 s for both reads | 2.23 s |
+| persistent MCP channel, three `tools/call` | `context` 0.20 s, `rule_list` 0.19–0.23 s, `dashboard` 1.17–1.25 s | 1.63 s, after a 0.65 s connect once |
+
+The dashboard's own server time dominates a resume, so the gain there is
+modest; the gain grows with the run: N small reads cost about 0.5 N s as
+one-shots, about 0.2 N s on the channel, and about 0.7 s flat in one batch.
+
 Inside the verified board home host shell, every board-owned command must use
 an explicit project selector. Registry rule commands must not receive board
 selectors. Use `--workspace PATH` only with a path verified to exist and be
@@ -828,7 +859,9 @@ six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
 in one request, answered by one process with one board open — `kb batch
 --items-file items.json --json` from the CLI, or the MCP `batch` tool
 (`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx`, `r ls`
-and `att ls` for the task you are about to pick up all arrive together. A batch
+and `att ls` for the task you are about to pick up all arrive together. This is
+the default for any run of three or more related reads, never a string of
+one-shots (**Runs of reads do not go one-shot**, above). A batch
 is reads only: an item that writes refuses the whole batch before anything runs.
 Each boundary is one `transact` (**Batched writes — `transact`**), which lands
 entirely or not at all. The three together are **The loop in three batches**,
@@ -1952,7 +1985,10 @@ placeholders with the routing table values: TOML argument strings do not expand
 shell variables. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
 connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
 call — about one round trip plus the query — against 2.5 s per CLI one-shot
-without a ControlMaster. This is the agent API; there is no HTTP service.
+without a ControlMaster. Re-measured 2026-10-13 from @@mbp to @@hal with a
+ControlMaster: connect 0.65 s once, then about 0.20 s per small read on the
+channel against about 0.5 s per wrapper one-shot (table under **Runs of reads
+do not go one-shot**). This is the agent API; there is no HTTP service.
 
 What does not change: every tool still takes its own `project`, because the
 server resolves a board per call and refuses `--project` on `kb mcp` itself
