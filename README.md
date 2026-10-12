@@ -27,8 +27,9 @@ installation.
 - `scripts/kb-session-lease` is the opt-in, caller-side lease flow for a
   redacting agent. It captures claim/accept replies privately, stores the token
   in the existing per-session 0600 file, and prints only a token-free receipt.
-  It reads that file for heartbeat, release and task handoff; a second claim
-  refuses while a session lease exists.
+  It reads that file for heartbeat, checkpoint, release and task handoff;
+  terminal checkpoints clear the file and a second claim refuses while a
+  session lease exists.
 - `tests/kb-wrapper-tests.sh` exercises the wrapper and gate behavior;
   `tests/kb-session-file-tests.sh` and `tests/kb-session-lease-tests.sh` cover
   private session resolution and the token-free lifecycle. Wrapper

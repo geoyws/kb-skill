@@ -307,12 +307,15 @@ secret filter correctly redacts bearer tokens, which makes a printed claim
 unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
 `kb-session-lease BOARD claim TASK --as ACTOR --lane LANE`,
 `kb-session-lease BOARD hb TASK`,
+`kb-session-lease BOARD checkpoint TASK --as ACTOR --state continue|blocked|done --summary ... --intent ... --next-action ...`,
 `kb-session-lease BOARD handoff-create TASK --as ACTOR --summary ... --intent ... --next-action ...`,
 or `kb-session-lease BOARD release TASK`. For an incoming handoff use
 `kb-session-lease BOARD handoff-accept HANDOFF --as ACTOR`. Claim and
 accept capture the raw reply privately and persist its token in the existing
-session file; only a constructed token-free receipt reaches the agent. A second
-claim in the same session refuses until release/handoff settles the first.
+session file; only a constructed token-free receipt reaches the agent. A
+successful `checkpoint --state blocked|done` clears the lease file;
+a continuing checkpoint keeps it. A second claim in the same session refuses
+until release, handoff or terminal checkpoint settles the first.
 The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
 tmux without a session ID it refuses rather than sharing the legacy file.
 Ordinary `kb-board` commands and transaction/MCP surfaces retain their

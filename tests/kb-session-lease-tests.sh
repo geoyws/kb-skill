@@ -17,6 +17,13 @@ case "$2 $3" in
     else
       printf '{"claim":{"taskID":"t-fake","leaseToken":"87654321-4321-4321-4321-210987654321"},"handoff":{"id":"h-test"}}\n'
     fi ;;
+  'cp t-fake')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    case " $* " in
+      *' --state done '*) printf '{"state":"done"}\n' ;;
+      *' --state blocked '*) printf '{"state":"blocked"}\n' ;;
+      *) printf '{"state":"continue"}\n' ;;
+    esac ;;
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -38,8 +45,16 @@ if "$lease" dotfiles claim t-other --as test >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = 1 ] || exit 1
 out=$("$lease" dotfiles hb t-fake)
 [ "$out" = '{"taskID":"t-fake","operation":"hb","ok":true}' ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state continue --summary progress --intent work --next-action next)
+[ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
+[ -f "$session" ] || exit 1
 out=$("$lease" dotfiles release t-fake)
 [ "$out" = '{"taskID":"t-fake","operation":"release","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+[ -f "$session" ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done --intent done --next-action next)
+[ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
 [ ! -e "$session" ] || exit 1
 out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1

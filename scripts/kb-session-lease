@@ -3,12 +3,12 @@
 # The session file is the existing kb-session-file contract (task id, token).
 set -euo pipefail
 here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-usage() { echo 'usage: kb-session-lease BOARD claim|hb|release|handoff-accept|handoff-create ID [KB OPTIONS...]' >&2; exit 64; }
+usage() { echo 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create ID [KB OPTIONS...]' >&2; exit 64; }
 [[ $# -ge 3 ]] || usage
 board=$1 op=$2 id=$3
 shift 3
-case "$op" in claim|hb|release|handoff-accept|handoff-create) ;; *) usage ;; esac
-case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|release:t-*|handoff-create:t-*) ;; *) echo 'kb-session-lease: invalid task or handoff id' >&2; exit 64 ;; esac
+case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create) ;; *) usage ;; esac
+case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*) ;; *) echo 'kb-session-lease: invalid task or handoff id' >&2; exit 64 ;; esac
 for arg in "$@"; do
   case "$arg" in --lease|--lease=*) echo 'kb-session-lease: lease comes from the private session file' >&2; exit 64 ;; esac
 done
@@ -73,6 +73,7 @@ token=$(sed -n '2p' "$session")
 [[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || exit 64
 case "$op" in
   hb) cmd=(hb "$id" --lease "$token" "$@") ;;
+  checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
   release) cmd=(release "$id" --lease "$token" "$@") ;;
   handoff-create) cmd=(h new "$id" --lease "$token" "$@") ;;
 esac
@@ -80,5 +81,7 @@ if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
   echo 'kb-session-lease: lease operation failed (details withheld to protect token)' >&2
   exit 1
 fi
-if [[ "$op" = release || "$op" = handoff-create ]]; then rm -f -- "$session"; fi
+if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
+  rm -f -- "$session"
+fi
 printf '{"taskID":"%s","operation":"%s","ok":true}\n' "$task" "$op"
