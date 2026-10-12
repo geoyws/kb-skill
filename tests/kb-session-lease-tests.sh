@@ -11,7 +11,12 @@ set -eu
 printf '%s\n' "$*" >>"$TEST_ROOT/calls"
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
-  'h acc') printf '{"claim":{"taskID":"t-fake","leaseToken":"87654321-4321-4321-4321-210987654321"},"handoff":{"id":"h-test"}}\n' ;;
+  'h acc')
+    if [ "$4" = h-session ]; then
+      printf '{"claim":null,"handoff":{"id":"h-session","taskID":null}}\n'
+    else
+      printf '{"claim":{"taskID":"t-fake","leaseToken":"87654321-4321-4321-4321-210987654321"},"handoff":{"id":"h-test"}}\n'
+    fi ;;
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -40,6 +45,9 @@ out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
 out=$("$lease" dotfiles handoff-create t-fake --as test --summary done --intent done --next-action done)
 [ "$out" = '{"taskID":"t-fake","operation":"handoff-create","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+out=$("$lease" dotfiles handoff-accept h-session --as test)
+[ "$out" = '{"handoffID":"h-session","leaseStored":false}' ] || exit 1
 [ ! -e "$session" ] || exit 1
 # Wrong task, manually supplied token, and symlinked session file fail before a board call.
 n=$(wc -l < "$t/calls" | tr -d ' ')

@@ -46,6 +46,10 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
     task=$(jq -r .taskID "$private")
     token=$(jq -r .leaseToken "$private")
   else
+    if jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
+      printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
+      exit 0
+    fi
     jq -e '.claim.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
     jq -e '.claim.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
     task=$(jq -r .claim.taskID "$private")
