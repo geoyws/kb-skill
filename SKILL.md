@@ -18,6 +18,34 @@ Output is **always JSON**, with or without `--json`.
 
 Every command below is checked against `kb/references/verified-recipes.md` (kanban 0.3.0, board schema 37, 2026-10-01).
 
+## Quick lookups: "did we already do X?" / "what state is row Y?"
+
+Use these exact forms first; each was run against kanban 0.3.1 on 2026-10-13.
+
+- **The wrappers are not on `PATH`.** Call them by path:
+  `K=~/.agents/skills/kb/scripts/kb-board` (the installed skill is a flat
+  symlink; the source is `agents/skills/kb/kb/scripts/`, never `bin/`).
+  `KB_HOSTS_TABLE` defaults to the skill's own `hosts.tsv`; do not set it.
+- **Every subcommand needs its noun.** `kb-board BOARD show ID` is refused
+  (`unknown command`); write `t cat ID` (`cat` = `show`).
+- **Epics are task rows.** There is no `e` noun: `e show e-…` is refused.
+  Read an epic with `t cat e-… --json`; `.type` says `epic`.
+- **No `--epic` filter.** List an epic's children by `parentID`:
+
+```bash
+K=~/.agents/skills/kb/scripts/kb-board
+$K BOARD search "skills audit" --all --limit 5 --json | jq -c '.results[] | {sourceId, title}'   # find it
+$K BOARD t cat e-1a2b3c4d --json | jq -c '{id, type, status, title, completedAt}'               # its state
+$K BOARD t ls --all --with-relations --fields id,status,title,parentID --json \
+  | jq -r '.[] | select(.parentID == "e-1a2b3c4d") | [.id, .status, .title] | @tsv'              # its children
+```
+
+- `--all` includes done and archived rows; without it, finished work is missing
+  and "not found" is not a finding. `search` returns `{results: [...]}`, not an
+  array. `completedAt` is epoch milliseconds.
+- For "did we do X", also grep the journal (`~/work/journals/.sb/YYYY/MM/*.md`):
+  it carries the decision and the why; the row carries the status.
+
 ## Explicit board-group routing (coordinator only)
 
 The default is still **one board**. Group mode is opt-in, and only a
