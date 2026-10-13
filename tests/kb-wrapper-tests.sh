@@ -1012,9 +1012,14 @@ test_host_surface_matches_source_allowlist() {
     backup
     restore
     rule r
-    serve
     schema
     mcp
+    access
+    plugin
+    worker
+    link
+    scope
+    contrib
   )
   local denied=(
     deploy
@@ -1039,6 +1044,11 @@ test_host_surface_matches_source_allowlist() {
     subscription
     todo
     stale
+    transact
+    sprint
+    batch
+    incident
+    worktree
     message
   )
 

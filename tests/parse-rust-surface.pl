@@ -321,11 +321,13 @@ sub extract_command_rows {
 }
 
 sub top_level_punct_sequence {
-  my ($tokens, $start, $wanted) = @_;
+  my ($tokens, $start, $end, $wanted) = @_;
   my @hits;
   my $brace_depth = 0;
 
-  for (my $i = $start; $i < @$tokens; $i++) {
+  # Stop at the enclosing body's closing brace: scanning on to EOF drove the
+  # depth negative and counted `match value` in later functions as top level.
+  for (my $i = $start; $i < $end; $i++) {
     if ($brace_depth == 0 && match_sequence_at($tokens, $i, $wanted)) {
       push @hits, $i;
     }
@@ -373,7 +375,7 @@ sub extract_function_body {
 sub extract_alias_pairs {
   my ($tokens, $body_start, $body_end) = @_;
 
-  my @match_starts = top_level_punct_sequence($tokens, $body_start, [qw(match value)]);
+  my @match_starts = top_level_punct_sequence($tokens, $body_start, $body_end, [qw(match value)]);
   fail "canonical_command function is malformed" unless @match_starts;
   fail "duplicate canonical_command match" if @match_starts > 1;
 
