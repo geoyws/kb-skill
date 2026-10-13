@@ -1313,11 +1313,12 @@ once a silent wrong answer.
   anything is opened, naming both: `--as @:geoyws/kanban/driver-3 --lane
   driver-2` answers `--as @:geoyws/kanban/driver-3 names lane driver-3 but
   --lane is driver-2: pass --lane driver-3, or name lane driver-2's own
-  callsign`. The lane of a three-segment callsign is its third segment. The
+  callsign`. The lane of a callsign of three or more segments is its third
+  segment; seat and deeper segments are ignored. The
   one- and two-segment cockpit-side form (`@:superdriver/executor`, `@:medic`)
   names its first segment instead; that half is specified (kanban
   `t-0fb1e43d`, SPEC-READY) and implemented (kanban `t-af6a3630`), so until
-  the binary you call carries it, only the three-segment check fires.
+  the binary you call carries it, only the three-or-more-segment check fires.
   Routing verbs (`task add`, `sitrep post`, `attention raise`, ...) are never
   checked: there `--lane` names where the row goes, not who writes it.
 - A capped listing with more rows than the default the caller never set is
