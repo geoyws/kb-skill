@@ -1039,6 +1039,7 @@ test_host_surface_matches_source_allowlist() {
     subscription
     todo
     stale
+    message
   )
 
   local command
