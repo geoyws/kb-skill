@@ -1363,6 +1363,7 @@ test_host_surface_matches_source_allowlist() {
     batch
     incident
     worktree
+    message
   )
 
   local command
