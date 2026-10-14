@@ -1104,7 +1104,7 @@ holds the receipt.
 kb task cleanup add t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --run run-7 --as "$AGENT" --json
 kb task cleanup list t-1a2b3c4d --json
 kb task cleanup remove t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --proof-kind tree-merged-published --proof "rev-list empty, status clean, ls-remote merged" --bytes 412000 --as "$AGENT" --json
-kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --owner "@:geoyws/acies/driver" --expiry 1790000000000 --reason "kept for the next lane's repro" --as "$AGENT" --json
+kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --owner "@:geoyws/acies/driver" --expiry "$(( ($(date +%s) + 7*86400) * 1000 ))" --reason "kept for the next lane's repro" --as "$AGENT" --json   # expiry: epoch ms, a week out
 kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --release --as "$AGENT" --json
 kb cleanup report --json
 ```
@@ -1171,7 +1171,7 @@ task-type row — `task move ID done` (including done-to-done), `checkpoint
 --state done` (refused inside the one transaction, so the checkpoint row
 rolls back too), an import upsert that flips an existing entry-carrying row
 to `done` (the whole import rolls back), and the same dispatch through
-`transact`/`batch` items — is refused while any entry is `allocated` or
+`transact` items — is refused while any entry is `allocated` or
 held-expired, landing nothing. (`task add --status done` carries no manifest
 and always passes this gate; story and epic rows check none.) It applies to
 every actor including `geoyws`, and there is no `--force` past it — the way
