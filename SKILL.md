@@ -148,7 +148,8 @@ and `attention` should normally use `--project NAME` remotely. Registry-owned
 `rule` commands must not receive `--project`, `--workspace`, or `--db`; rules
 live once in the registry and select boards through `ALL`, `ONLY:<board>`, and
 `EXCEPT:<board>` tags. Registry watch helpers also reject board selectors and
-`--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --json`, never `kb-host BOARD_HOME_HOST r ls --project kanban`.
+`--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --board kanban --json`
+(the rule verb's own board scope), never `kb-host BOARD_HOME_HOST r ls --project kanban`.
 
 ## Workspace adoption and rule transfer
 
@@ -846,8 +847,10 @@ read before them — on the measured link that is two round trips where there we
 six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
 in one request, answered by one process with one board open — `kb batch
 --items-file items.json --json` from the CLI, or the MCP `batch` tool
-(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx`, `r ls`
-and `att ls` for the task you are about to pick up all arrive together. A batch
+(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx` and
+`att ls` for the task you are about to pick up all arrive together; `ctx`
+already carries the task's rules index and always-tier bodies, so the batch
+takes no `r ls`. A batch
 is reads only: an item that writes refuses the whole batch before anything runs.
 Each boundary is one `transact` (**Batched writes — `transact`**), which lands
 entirely or not at all. The three together are **The loop in three batches**,
