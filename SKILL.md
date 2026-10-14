@@ -724,8 +724,10 @@ handoff-accept, or scheduler verb takes an `i-` id. The forms below follow the
 One line per verb:
 
 - `open` — open a typed incident at status `open` with a severity.
-- `mitigate` — move `open` → `mitigated`, stamping `mitigated_at` once.
-- `resolve` — move `mitigated` → `resolved`, stamping `resolved_at` once.
+- `mitigate` — move `open` → `mitigated`, stamping `mitigatedAt` once (the
+  `incident show --json` field; the column is `mitigated_at`).
+- `resolve` — move `mitigated` → `resolved`, stamping `resolvedAt` once (the
+  `incident show --json` field; the column is `resolved_at`).
 - `review` — the close: move `resolved` → `reviewed` with the four-part review
   and the follow-up, geoyws only (below). There is no separate `close` verb.
 - `note` (timeline add) — append one `time`/`actor`/`text` entry; history is
