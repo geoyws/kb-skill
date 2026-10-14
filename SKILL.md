@@ -1248,14 +1248,16 @@ Keep `TOKEN` from `results[0].result.leaseToken`; the END batch needs it.
 [
   { "name": "task_show",      "arguments": { "id": "t-1a2b3c4d", "limit": 200 } },
   { "name": "context",        "arguments": { "id": "t-1a2b3c4d" } },
-  { "name": "rule_list",      "arguments": {} },
   { "name": "attention_list", "arguments": { "status": "open", "task": "t-1a2b3c4d" } }
 ]
 ```
 
 Each item answers on its own, in order, as `{"index": N, "ok": true, "result":
 …}` or `{"index": N, "ok": false, "error": …}`; `result` is exactly what that
-read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). A
+read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). The
+rules ride item 1: `context` already carries the task's applicable `rulesIndex`
+and inline `alwaysRules`, so the READ batch adds no `rule_list`; fetch a lazy
+page with `kb r cat ID` only when the index says you need it. A
 failed item does not stop the others, and the batch exits zero. Item names are
 the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
@@ -1415,8 +1417,8 @@ Add a rule for one board and one of its sprints through the registry-owned
 `kb-host` path, never `kb-board`:
 
 ```bash
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." \
-  --board BOARD --sprint sp-ID [--tag slug] --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." --title "..." \
+  --board BOARD --sprint sp-ID [--tag slug] [--load always|lazy] --as ACTOR
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
   --sprint sp-ID --as ACTOR
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
