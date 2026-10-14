@@ -19,6 +19,7 @@ incident
 init
 link
 mcp
+message
 note
 plugin
 release
