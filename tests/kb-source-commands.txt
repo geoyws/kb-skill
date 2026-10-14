@@ -19,7 +19,7 @@ incident
 init
 link
 mcp
-message
+model
 note
 plugin
 release
