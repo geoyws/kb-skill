@@ -34,6 +34,12 @@ selector for board-owned commands; `kb-host` preserves registry commands
 without a board selector. Remote execution uses the board home host identity,
 the SSH target, and the remote hostname check is fail-closed.
 
+`kb-board transact --items-file PATH` streams the caller's file byte for byte
+over one SSH connection as the remote binary's `/dev/stdin`; passing
+`--items-file /dev/stdin` with input redirected uses that same connection.
+The wrapper refuses repeated `--items-file` flags (including mixed path,
+stdin, and `=` spellings) before invoking SSH or the local binary.
+
 ## Workspace adoption and rule transfer
 
 `workspace adopt` copies an existing board into registry-owned storage. It is a copy into the registry, not a rename, and it leaves the source board file unchanged.
