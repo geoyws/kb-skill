@@ -1364,6 +1364,7 @@ test_host_surface_matches_source_allowlist() {
     incident
     worktree
     message
+    cleanup
   )
 
   local command

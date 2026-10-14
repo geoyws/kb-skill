@@ -6,6 +6,7 @@ backup
 batch
 checkpoint
 claim
+cleanup
 context
 contrib
 dashboard
