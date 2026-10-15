@@ -1127,6 +1127,23 @@ selection, `--fields blockingGates` requires `--with-relations`, just like
 `--fields dependencies`. An empty `blockingGates` array says only that no
 dependency gate is unmet, not that the task is otherwise claimable.
 
+**Parked rows and parked gates refuse with their own sentences.** Named claim
+refuses — and `claim --next` / `claim --candidates` exclude — a row whose own
+status **or any ancestor's** is `kiv` or `abandoned`, however urgent it is.
+Only `done` satisfies a prerequisite: a `kiv` or `abandoned` prerequisite
+stays unmet and its edge is never silently cleared. Pass these on verbatim:
+
+| gate | refusal |
+|---|---|
+| own status parked | `task {id} is {kiv\|abandoned}, not claimable: resume/reopen it with \`task move {id} todo\` before claiming` |
+| parked ancestor | `task {id} sits under {ancestor} ({kiv\|abandoned}), not claimable: resume/reopen with \`task move {ancestor} todo\` or reparent the task` |
+| draft ancestor | `task {id} sits under {ancestor}, which is still a draft: open it with \`task move {ancestor} todo\` before this can be worked` |
+| unmet prerequisite | `{kind} {id} is gated on work that is not done: {details}. A prerequisite satisfies a gate only at status done: finish it, or drop the edge with \`task update <owner> --depends-on ...\` or \`--clear-dependencies\`.` — plus ` Re-plan the dependency before claiming.` when the blocking prerequisite itself is `kiv` or `abandoned` |
+
+Explicit resumption of a `kiv` ancestor (or an authorized reopen of an
+`abandoned` one) restores its descendants under the normal gates; otherwise
+reparent or replan — never an automatic release.
+
 A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
 does; `kb-board` fills them from your checkout, and a flag you pass wins.
 
@@ -1564,8 +1581,10 @@ progress count is a projection of the board.
 
 The child epic is the roadmap item's checkbox. The current CLI does not
 generically derive epic completion from all descendants, so move a child epic
-to `done` only after every non-cancelled descendant is settled and its evidence
-is durable. A single standalone action stays a task; do not wrap it in
+to `done` only after every non-cancelled, non-abandoned descendant is settled
+and its evidence is durable (`abandoned` is terminal dropped work, settled like
+`cancelled`; a `kiv` descendant is still parked work and keeps the epic open).
+A single standalone action stays a task; do not wrap it in
 ornamental epics.
 
 `--body-file` reads the body from disk, because a plan is markdown measured in
@@ -1618,6 +1637,25 @@ records intended work. Keep ADRs in the repo.
 before `backlog`: a row still being written, whose title, body or scope may still
 be wrong. `claim --next` skips it however urgent its priority, and naming it
 explicitly is refused.
+
+**Below `draft` sit two parked states, neither ever claimable** (kanban 0.3.1):
+`kiv` (kept in view) is a parked idea awaiting explicit
+resumption — never claimable, `completed_at` stays NULL, and age-archive never
+takes it; `abandoned` is terminal dropped work — never claimable,
+`completed_at` is set, and it archives like `done`/`cancelled`. Neither is
+`cancelled` (stopped committed work) nor `done` (completed work). Default
+`t ls` and the working `ctx` omit both; address them explicitly with
+`t ls --status kiv` / `--status abandoned --json` or `t cat <id>`. Park with
+`kb t mv <id> kiv --as "$ACTOR"`, drop with `kb t mv <id> abandoned --as
+"$ACTOR"`; resume a parked idea only with an explicit move to `draft`,
+`backlog` or `todo`, and reopen dropped work like a cancelled row. The
+adjacency refusals, verbatim:
+
+| move | refusal |
+|---|---|
+| terminal row to `kiv` | `task {id} is {done|cancelled|abandoned}, not parkable: reopen it to draft, backlog or todo before moving to kiv` |
+| `kiv` anywhere but home | `task {id} is kiv: resume it explicitly to draft, backlog or todo before moving to {to}` |
+| `done` to `abandoned` | `task {id} is done: completed work cannot be abandoned; use cancelled for stopped committed work` |
 
 Because a plan is an epic, a drafted plan holds back its whole tree: no task
 beneath it is offered or granted until the plan is opened, however deep it sits.
@@ -2143,9 +2181,12 @@ kb t ls --all --json             # active plus cold tasks
 kb ev --task <id> --all --json   # cold audit history for one task
 ```
 
-The sweep archives only settled rows older than the cutoff: `done`/`cancelled`
-tasks without a lease, their notes/checkpoints/tags/events, settled handoffs,
+The sweep archives only settled rows older than the cutoff:
+`done`/`cancelled`/`abandoned` tasks without a lease, their
+notes/checkpoints/tags/events, settled handoffs,
 resolved attention and linked sitreps. Old taskless settled records are included.
+`kiv` rows are never archived for age: parking is not settling, and only an
+explicit resume or abandon moves them.
 It also archives terminal deployment attempts that are no longer the current
 verified success for their `(repo, tier, environment)`. Started attempts and
 each target's latest verified success always remain hot.
