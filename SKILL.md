@@ -143,7 +143,7 @@ Outside the board home host, do not call `kb` directly.
   board-owned one-shot command. It injects exactly one project selector, rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
-  `contrib` and `plugin` verbs so registry operations cannot be routed through a
+  `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
   board helper. `sprint`, `batch`, `incident` and `worktree` are board-owned
   and route here.
   On `checkpoint` and `handoff create` it also forwards your checkout as
@@ -153,7 +153,7 @@ Outside the board home host, do not call `kb` directly.
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
   and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
-  `scope`, `contrib` and `plugin` verbs stay on the raw registry routing path
+  `scope`, `contrib`, `model` and `plugin` verbs stay on the raw registry routing path
   rather than `kb-board`.
 
 ```bash
