@@ -88,6 +88,19 @@ it is retired, never a board target. Route every board read and write,
 including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
 commands). An unreachable @@hal blocks ledger operations; never fall back.
 
+The consumer table is `board<TAB>home_host<TAB>ssh_target<TAB>expected_remote<TAB>kb_exec[<TAB>login]`.
+Login is `ssh` (the five-field default, unchanged even with `KB_SSH_LOGIN`)
+or `own`. For `own`, `kb-board` and `kb-group` select a nonempty
+`KB_SSH_LOGIN` with `ssh -l LOGIN -- TARGET`, otherwise query `ssh -G TARGET`.
+Root or an absent SSH user is refused before command transport; local effective
+UID 0 is refused before the binary. Invalid policies and `own` executables
+under `/root/` refuse at table load (exit 64). Group members must share the
+registry route's normalized login policy as well as its other route fields.
+No wrapper principal claim is forwarded: the remote kernel UID is the identity.
+`kb-host` only consumes the extended table; its registry-only authority and
+transport are unchanged. `kb-board` refuses `broker` pretransport. This format
+support does not authorize account provisioning, installation or enforcement activation.
+
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
 **before attempting SSH**:

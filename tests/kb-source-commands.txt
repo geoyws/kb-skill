@@ -4,6 +4,7 @@ attention
 audit
 backup
 batch
+broker
 checkpoint
 claim
 cleanup
@@ -42,6 +43,7 @@ task
 todo
 transact
 watch
+whoami
 worker
 workspace
 worktree

@@ -277,6 +277,13 @@ printf '%s\0' "$@" >"${FAKE_SSH_LOG:?}"
 if [[ -n "${FAKE_SSH_COUNT_FILE:-}" ]]; then
   printf 'ssh\n' >>"$FAKE_SSH_COUNT_FILE"
 fi
+if [[ "${1-}" = -G ]]; then
+  [[ -z "${FAKE_SSH_QUERY_LOG:-}" ]] || printf '%s\0' "$@" >>"$FAKE_SSH_QUERY_LOG"
+  [[ -z "${FAKE_SSH_USER:-}" ]] || printf 'user %s\n' "$FAKE_SSH_USER"
+  exit 0
+fi
+[[ -z "${FAKE_SSH_COMMAND_LOG:-}" ]] || printf '%s\0' "$@" >"$FAKE_SSH_COMMAND_LOG"
+[[ "${1-}" != -l ]] || shift 2
 case "${FAKE_SSH_MODE:-execute}" in
   execute)
     if [[ "${1-}" = -- ]]; then
@@ -479,6 +486,139 @@ copy_public_package() {
   # git command in the fixture dies with "not a git repository".
   rm -rf "$target_root/.git"
 }
+
+
+# Fake SSH establishes argv/preflight behavior only, never principal acceptance.
+test_own_login_policy_and_legacy_transport() (
+  fakebin="$tmp_dir/own/fakebin"
+  setup_fakebin "$fakebin"
+  export PATH="$fakebin:$PATH" KB_SSH_BIN="$fakebin/ssh"
+  export KB_HOSTS_TABLE="$tmp_dir/own/hosts.tsv"
+  export FAKE_SSH_LOG="$tmp_dir/own/ssh.argv" FAKE_KB_LOG="$tmp_dir/own/kb.argv"
+  export FAKE_SSH_QUERY_LOG="$tmp_dir/own/query" FAKE_SSH_COMMAND_LOG="$tmp_dir/own/command"
+  export FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" FAKE_REMOTE_HOSTNAME_VALUE=remote
+  export FAKE_REMOTE_PATH="$PATH" FAKE_SSH_USER=root
+  own_table() { printf 'B\thome-not-here\ttarget\tremote\t%s%s\n' "$fakebin/kb" "$1" >"$KB_HOSTS_TABLE"; }
+  own_refusal() {
+    local expected=$1 output status=0; shift
+    rm -f "$FAKE_SSH_QUERY_LOG" "$FAKE_SSH_COMMAND_LOG" "$FAKE_KB_LOG"
+    output=$("$package_dir/scripts/kb-board" B "$@" 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "$expected" ]] || fail "own refusal: exit $status: $output"
+    assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'own refused command transport'
+    assert_log_clean "$FAKE_KB_LOG" 'own refused binary'
+  }
+  own_table $'\town'
+  unset KB_SSH_LOGIN
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export KB_SSH_LOGIN=''
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export FAKE_SSH_USER=''
+  own_refusal 'kb-board: board B routes as your own login, but ssh -G target named no user; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export KB_SSH_LOGIN=root
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'explicit login skips config query'
+  export KB_SSH_LOGIN=alice FAKE_SSH_USER=root
+  "$package_dir/scripts/kb-board" B task list "two words ' *" --as alice
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B task list "two words ' *" --as alice
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'override skips root config'
+  export KB_SSH_LOGIN='' FAKE_SSH_USER=bob
+  "$package_dir/scripts/kb-board" B task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+  # Both old row spellings ignore an override, without even a config query.
+  own_table ''
+  unset KB_SSH_LOGIN
+  "$package_dir/scripts/kb-board" B task list
+  cp "$FAKE_SSH_COMMAND_LOG" "$tmp_dir/own/legacy-argv"
+
+  export KB_SSH_LOGIN=alice
+  for policy in '' $'\tssh'; do
+    own_table "$policy"
+    rm -f "$FAKE_SSH_QUERY_LOG"
+    "$package_dir/scripts/kb-board" B task list
+    assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+    assert_log_clean "$FAKE_SSH_QUERY_LOG" 'legacy query'
+    cmp -s "$FAKE_SSH_COMMAND_LOG" "$tmp_dir/own/legacy-argv" || fail 'legacy complete SSH argv changed'
+    assert_argv_file "$FAKE_KB_LOG" --project B task list
+  done
+  own_table $'\tself'
+  own_refusal 'kb-board: login must be ssh or own: self' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'invalid policy query'
+  printf 'B\thome-not-here\ttarget\tremote\t/root/.local/bin/kb\town\n' >"$KB_HOSTS_TABLE"
+  own_refusal 'kb-board: board B routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'root executable query'
+  own_table $'\town'
+  own_refusal "kb-board does not route registry-wide command 'broker'." broker serve
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'broker query'
+  printf 'B\t%s\ttarget\tremote\t%s\town\n' "$(/bin/hostname)" "$fakebin/kb" >"$KB_HOSTS_TABLE"
+  if [[ "$EUID" = 0 ]]; then
+    own_refusal 'kb-board: board B routes as your own login, but this shell is root; run kb-board from your own account' task list
+  else
+    "$package_dir/scripts/kb-board" B task list
+    assert_argv_file "$FAKE_KB_LOG" --project B task list
+  fi
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'local own query'
+  assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'local own command transport'
+  # kb-host consumes own rows without adopting board login policy or authority.
+  own_table $'\town'
+  rm -f "$FAKE_SSH_QUERY_LOG"
+  "$package_dir/scripts/kb-host" home-not-here version
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'host parser-only compatibility'
+  for host_command in broker whoami; do
+    rm -f "$FAKE_SSH_COMMAND_LOG"
+    status=0
+    output=$("$package_dir/scripts/kb-host" home-not-here "$host_command" 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "kb-host does not route unknown command '$host_command'." ]] || fail 'host command authority broadened'
+    assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'host global command refusal'
+  done
+)
+
+test_own_login_all_board_transfer_branches() (
+  fakebin="$tmp_dir/own-transfer/fakebin"
+  setup_fakebin "$fakebin"
+  export PATH="$fakebin:$PATH" KB_SSH_BIN="$fakebin/ssh" KB_SSH_LOGIN=alice
+  export KB_HOSTS_TABLE="$tmp_dir/own-transfer/hosts.tsv"
+  export FAKE_SSH_LOG="$tmp_dir/own-transfer/ssh" FAKE_KB_LOG="$tmp_dir/own-transfer/kb"
+  export FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" FAKE_REMOTE_HOSTNAME_VALUE=remote
+  export FAKE_REMOTE_PATH="$PATH"
+  export TMPDIR="$tmp_dir/own-transfer/staging"
+  mkdir -p "$TMPDIR"
+  printf 'B\telsewhere\ttarget\tremote\t%s\town\n' "$fakebin/kb" >"$KB_HOSTS_TABLE"
+  printf 'body with quotes '\'' and newline\n' >"$tmp_dir/own-transfer/body"
+  export FAKE_KB_BODY_OUT="$tmp_dir/own-transfer/body-seen"
+  "$package_dir/scripts/kb-board" B task add title --body-file "$tmp_dir/own-transfer/body"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_body_transferred "$FAKE_KB_LOG" "$FAKE_KB_BODY_OUT" "$tmp_dir/own-transfer/body"
+  [[ ! -e "$(cat "$FAKE_KB_BODY_OUT.path")" ]] || fail 'own remote body leaked'
+  unset FAKE_KB_BODY_OUT
+  printf '[]' >"$tmp_dir/own-transfer/items"
+  export FAKE_KB_ITEMS_OUT="$tmp_dir/own-transfer/items-seen"
+  # Non-transact items-file branch forwards stdin without staging.
+  "$package_dir/scripts/kb-board" B task list --items-file "$tmp_dir/own-transfer/items"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B task list --items-file /dev/stdin
+  cmp -s "$FAKE_KB_ITEMS_OUT" "$tmp_dir/own-transfer/items" || fail 'own unstaged stdin changed'
+  "$package_dir/scripts/kb-board" B transact --items-file "$tmp_dir/own-transfer/items"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B transact --items-file /dev/stdin
+  cmp -s "$FAKE_KB_ITEMS_OUT" "$tmp_dir/own-transfer/items" || fail 'own staged stdin changed'
+  "$package_dir/scripts/kb-board" B transact --items '[]'
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B transact --items '[]'
+  printf '{}' >"$tmp_dir/own-transfer/context"
+  export FAKE_KB_CTX_OUT="$tmp_dir/own-transfer/context-seen" KB_SESSION_ID='own session'
+  "$package_dir/scripts/kb-board" B task list --session-context "$tmp_dir/own-transfer/context"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  cmp -s "$FAKE_KB_CTX_OUT" "$tmp_dir/own-transfer/context" || fail 'own context bytes changed'
+  [[ "$(cat "$FAKE_KB_CTX_OUT.session")" = 'set:own session' ]] || fail 'own session id changed'
+  [[ ! -e "$(cat "$FAKE_KB_CTX_OUT.path")" ]] || fail 'own remote context leaked'
+  [[ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]] || fail 'own transfer staging leaked'
+)
 
 test_local_exec_injects_project_and_preserves_argv() {
   local fakebin="$tmp_dir/local/fakebin"
@@ -1399,6 +1539,7 @@ test_registry_commands_are_rejected_without_transport() {
     link
     scope
     contrib
+    broker
   )
 
   local command
@@ -1483,6 +1624,8 @@ test_host_surface_matches_source_allowlist() {
     milestone
     cleanup
     overlap
+    broker
+    whoami
   )
 
   local command
@@ -2673,6 +2816,8 @@ assert_no_bytecode_artifacts() {
 main() {
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
+    test_own_login_policy_and_legacy_transport
+    test_own_login_all_board_transfer_branches
     test_remote_exec_uses_ssh_and_preserves_argv
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
