@@ -34,6 +34,8 @@ case "$2 $3" in
       t-active) printf '{"id":"t-active","claim":{"expiresAt":9999999999999}}\n' ;;
       t-ambiguous) printf '{"id":"t-ambiguous","claim":{}}\n' ;;
       t-wrongboard) printf '{"id":"t-someone-else","claim":null}\n' ;;
+      # A long trail refuses an uncapped show, as the ledger does past its default caps (ADR-037).
+      t-longtrail) case " $* " in *' --limit '*) printf '{"id":"t-longtrail","claim":null}\n' ;; *) exit 4 ;; esac ;;
       t-boardfail) exit 3 ;;
       *) exit 62 ;;
     esac ;;
@@ -100,6 +102,8 @@ TOK_WRONGBOARD='recTok-wrongboard-0006-ffff'
 TOK_BOARDFAIL='recTok-boardfail-0007-gggg'
 TOK_MALFORMED='recTok-malformed-0008-hhhh'
 TOK_RACE='recTok-race-0009-iiii'
+TOK_LOCK='recTok-lock-0010-jjjj'
+TOK_LONG='recTok-long-0011-kkkk'
 # (a) settled record recovers, preserves bytes, and frees the path for a new claim.
 s=$(mkrec rec-settled t-settled "$TOK_SETTLED")
 cp "$s" "$t/settled.orig"
@@ -221,7 +225,25 @@ case "$r1 $r2" in '0 64'|'64 0') ;; *) exit 1 ;; esac
 set -- "$s".stale-*
 [ "$#" = 1 ] || exit 1
 [ -f "$1" ] || exit 1
+# (m) a recover that loses the lock refuses and leaves the holder's lock and the record intact.
+s=$(mkrec rec-lock t-settled "$TOK_LOCK")
+cp "$s" "$t/lock.orig"
+mkdir "$s.lock"
+n=$(wc -l < "$t/calls" | tr -d ' ')
+rc=0; KB_SESSION_ID=rec-lock "$lease" dotfiles recover t-settled >"$t/rec-out-m" 2>"$t/rec-err-m" || rc=$?
+[ "$rc" = 64 ] || exit 1
+[ -d "$s.lock" ] || exit 1
+cmp "$s" "$t/lock.orig" || exit 1
+[ "$(wc -l < "$t/calls" | tr -d ' ')" = "$n" ] || exit 1
+grep -q 'lock held' "$t/rec-err-m" || exit 1
+rmdir "$s.lock"
+# (n) a settled row with a long trail still proves settled.
+s=$(mkrec rec-long t-longtrail "$TOK_LONG")
+rc=0; KB_SESSION_ID=rec-long "$lease" dotfiles recover t-longtrail >"$t/rec-out-n" 2>"$t/rec-err-n" || rc=$?
+[ "$rc" = 0 ] || exit 1
+[ "$(jq -r .reason "$t/rec-out-n")" = settled ] || exit 1
+[ ! -e "$s" ] || exit 1
 # (l) no fake token leaks into any captured recover stdout/stderr.
 cat "$t"/rec-out-* "$t"/rec-err-* >"$t/recover-io"
-if grep -qF -e "$TOK_SETTLED" -e "$TOK_EXPIRED" -e "$TOK_ACTIVE" -e "$TOK_AMBIG" -e "$TOK_WRONGTASK" -e "$TOK_WRONGBOARD" -e "$TOK_BOARDFAIL" -e "$TOK_MALFORMED" -e "$TOK_RACE" "$t/recover-io"; then exit 1; fi
-printf '%s\n' 'kb-session-lease: recover (settled, expired, active, ambiguous, wrong-task, wrong-board, malformed, symlink, boardfail, no-file, race, no-leak) PASS'
+if grep -qF -e "$TOK_SETTLED" -e "$TOK_EXPIRED" -e "$TOK_ACTIVE" -e "$TOK_AMBIG" -e "$TOK_WRONGTASK" -e "$TOK_WRONGBOARD" -e "$TOK_BOARDFAIL" -e "$TOK_MALFORMED" -e "$TOK_RACE" -e "$TOK_LOCK" -e "$TOK_LONG" "$t/recover-io"; then exit 1; fi
+printf '%s\n' 'kb-session-lease: recover (settled, expired, active, ambiguous, wrong-task, wrong-board, malformed, symlink, boardfail, no-file, race, held-lock, long-trail, no-leak) PASS'

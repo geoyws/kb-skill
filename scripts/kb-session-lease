@@ -72,11 +72,12 @@ if [[ "$op" = recover ]]; then
     echo 'kb-session-lease: no session record to recover; claim a new lease with kb-session-lease BOARD claim TASK first' >&2
     exit 64
   fi
-  lockdir="$session.lock"
-  if ! mkdir "$lockdir" 2>/dev/null; then
+  if ! mkdir "$session.lock" 2>/dev/null; then
     echo 'kb-session-lease: session lock held; retry shortly' >&2
     exit 64
   fi
+  # Own the lock only after mkdir succeeds, so a loser's EXIT trap never removes the winner's lock.
+  lockdir="$session.lock"
   [[ -f "$session" && ! -L "$session" ]] || { echo 'kb-session-lease: unsafe session file' >&2; exit 64; }
   mode=$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")
   [[ "$mode" = 600 ]] || { echo 'kb-session-lease: session file must be mode 0600' >&2; exit 64; }
@@ -91,7 +92,8 @@ if [[ "$op" = recover ]]; then
     echo 'kb-session-lease: malformed session record; refusing recover' >&2
     exit 64
   fi
-  if ! "$here/kb-board" "$board" t cat "$id" --json >"$private" 2>"$error"; then
+  # --limit 1 caps notes/checkpoints/handoffs: a long settled row would otherwise refuse (ADR-037).
+  if ! "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error"; then
     echo 'kb-session-lease: board read failed; session record retained, retry recover shortly' >&2
     exit 1
   fi
