@@ -1,0 +1,151 @@
+#!/bin/bash
+# Routed KB lease operations without exposing the bearer token to an agent.
+# The session file is the existing kb-session-file contract (task id, token).
+set -euo pipefail
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+usage() { echo 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|recover ID [KB OPTIONS...]' >&2; exit 64; }
+[[ $# -ge 3 ]] || usage
+board=$1 op=$2 id=$3
+shift 3
+case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|recover) ;; *) usage ;; esac
+case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;; *) echo 'kb-session-lease: invalid task or handoff id' >&2; exit 64 ;; esac
+for arg in "$@"; do
+  case "$arg" in --lease|--lease=*) echo 'kb-session-lease: lease comes from the private session file' >&2; exit 64 ;; esac
+done
+session=$("$here/kb-session-file") || status=$?
+[[ "${status:-0}" = 0 ]] || { echo 'kb-session-lease: a tmux pane or KB_SESSION_ID is required' >&2; exit 64; }
+[[ -n "$session" ]] || exit 64
+parent=${session%/*}
+[[ -d "$parent" && ! -L "$parent" ]] || { echo 'kb-session-lease: unsafe session directory' >&2; exit 64; }
+mode=$(stat -c %a "$parent" 2>/dev/null || stat -f %Lp "$parent")
+[[ "$mode" = 700 ]] || { echo 'kb-session-lease: session directory must be mode 0700' >&2; exit 64; }
+if [[ -e "$session" || -L "$session" ]]; then
+  [[ -f "$session" && ! -L "$session" ]] || { echo 'kb-session-lease: unsafe session file' >&2; exit 64; }
+  mode=$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")
+  [[ "$mode" = 600 ]] || { echo 'kb-session-lease: session file must be mode 0600' >&2; exit 64; }
+fi
+private=$(mktemp "$parent/.lease-reply.XXXXXXXX")
+error=$(mktemp "$parent/.lease-error.XXXXXXXX")
+next=''
+lockdir=''
+trap 'rm -f -- "$private" "$error" "$next"; if [[ -n "${lockdir:-}" ]]; then rmdir "$lockdir" 2>/dev/null || true; fi' EXIT
+umask 077
+if [[ "$op" = claim || "$op" = handoff-accept ]]; then
+  [[ ! -e "$session" ]] || { echo 'kb-session-lease: session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)' >&2; exit 64; }
+  if [[ "$op" = claim ]]; then
+    cmd=(claim "$id" "$@" --json)
+  else
+    cmd=(h acc "$id" "$@" --json)
+  fi
+  if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
+    echo 'kb-session-lease: claim or handoff acceptance failed (details withheld to protect token)' >&2
+    exit 1
+  fi
+  if [[ "$op" = claim ]]; then
+    jq -e '.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
+    jq -e '.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
+    task=$(jq -r .taskID "$private")
+    token=$(jq -r .leaseToken "$private")
+  else
+    if jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
+      printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
+      exit 0
+    fi
+    jq -e '.claim.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
+    jq -e '.claim.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
+    task=$(jq -r .claim.taskID "$private")
+    token=$(jq -r .claim.leaseToken "$private")
+  fi
+  [[ "$token" != *$'\n'* && "$task" != *$'\n'* ]] || exit 70
+  next=$(mktemp "$parent/.lease-next.XXXXXXXX")
+  printf '%s\n%s\n' "$task" "$token" >"$next"
+  chmod 600 "$next"
+  ln "$next" "$session" || { echo 'kb-session-lease: cannot persist lease (existing or unsafe session file)' >&2; exit 70; }
+  rm -f -- "$next"
+  next=''
+  # Construct a minimal receipt, never forward raw JSON or print the token.
+  printf '{"taskID":"%s","leaseStored":true}\n' "$task"
+  exit 0
+fi
+if [[ "$op" = recover ]]; then
+  if [[ ! -e "$session" && ! -L "$session" ]]; then
+    echo 'kb-session-lease: no session record to recover; claim a new lease with kb-session-lease BOARD claim TASK first' >&2
+    exit 64
+  fi
+  if ! mkdir "$session.lock" 2>/dev/null; then
+    echo 'kb-session-lease: session lock held; retry shortly' >&2
+    exit 64
+  fi
+  # Own the lock only after mkdir succeeds, so a loser's EXIT trap never removes the winner's lock.
+  lockdir="$session.lock"
+  [[ -f "$session" && ! -L "$session" ]] || { echo 'kb-session-lease: unsafe session file' >&2; exit 64; }
+  mode=$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")
+  [[ "$mode" = 600 ]] || { echo 'kb-session-lease: session file must be mode 0600' >&2; exit 64; }
+  ino=$(stat -c %i "$session" 2>/dev/null || stat -f %i "$session")
+  IFS= read -r task <"$session"
+  if [[ "$task" != "$id" ]]; then
+    echo 'kb-session-lease: session record is for a different task; recover the task named in the session file' >&2
+    exit 64
+  fi
+  token=$(sed -n '2p' "$session")
+  if [[ -z "$token" || "$token" == *$'\n'* || -n "$(sed -n '3p' "$session")" ]]; then
+    echo 'kb-session-lease: malformed session record; refusing recover' >&2
+    exit 64
+  fi
+  # --limit 1 caps notes/checkpoints/handoffs: a long settled row would otherwise refuse (ADR-037).
+  if ! "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error"; then
+    echo 'kb-session-lease: board read failed; session record retained, retry recover shortly' >&2
+    exit 1
+  fi
+  bid=$(jq -r .id "$private" 2>/dev/null) || { echo 'kb-session-lease: board read failed; session record retained, retry recover shortly' >&2; exit 1; }
+  if [[ "$bid" != "$id" ]]; then
+    echo 'kb-session-lease: board row is for a different task (wrong board or task); session record retained' >&2
+    exit 64
+  fi
+  if jq -e '.claim == null' "$private" >/dev/null 2>&1; then
+    reason=settled
+  elif jq -e '.claim.expiresAt | type == "number"' "$private" >/dev/null 2>&1; then
+    now=$(($(date +%s) * 1000))
+    if jq -e --argjson now "$now" '.claim.expiresAt <= $now' "$private" >/dev/null 2>&1; then
+      reason=expired
+    else
+      echo 'kb-session-lease: active claim held; it must be settled by its holder (hb/checkpoint/release) or allowed to expire before recover' >&2
+      exit 64
+    fi
+  else
+    echo 'kb-session-lease: ambiguous claim state (expiresAt missing or non-numeric); session record retained' >&2
+    exit 64
+  fi
+  ino2=$(stat -c %i "$session" 2>/dev/null || stat -f %i "$session")
+  if [[ "$ino2" != "$ino" ]]; then
+    echo 'kb-session-lease: session record changed during recover (race lost); retry recover' >&2
+    exit 64
+  fi
+  stale="$session.stale-$(date +%Y%m%d%H%M%S)-$$"
+  if [[ -e "$stale" || -L "$stale" ]]; then
+    echo 'kb-session-lease: preserved path already exists; refusing recover' >&2
+    exit 64
+  fi
+  mv -- "$session" "$stale"
+  printf '{"taskID":"%s","recovered":true,"reason":"%s","preserved":"%s"}\n' "$id" "$reason" "$stale"
+  exit 0
+fi
+[[ -f "$session" ]] || { echo 'kb-session-lease: no session lease' >&2; exit 64; }
+IFS= read -r task <"$session"
+[[ "$task" = "$id" ]] || { echo 'kb-session-lease: task does not match session lease' >&2; exit 64; }
+token=$(sed -n '2p' "$session")
+[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || exit 64
+case "$op" in
+  hb) cmd=(hb "$id" --lease "$token" "$@") ;;
+  checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
+  release) cmd=(release "$id" --lease "$token" "$@") ;;
+  handoff-create) cmd=(h new "$id" --lease "$token" "$@") ;;
+esac
+if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
+  echo 'kb-session-lease: lease operation failed (details withheld to protect token)' >&2
+  exit 1
+fi
+if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
+  rm -f -- "$session"
+fi
+printf '{"taskID":"%s","operation":"%s","ok":true}\n' "$task" "$op"

@@ -18,6 +18,34 @@ Output is **always JSON**, with or without `--json`.
 
 Every command below is checked against `kb/references/verified-recipes.md` (kanban 0.3.0, board schema 37, 2026-10-01).
 
+## Quick lookups: "did we already do X?" / "what state is row Y?"
+
+Use these exact forms first; each was run against kanban 0.3.1 on 2026-10-13.
+
+- **The wrappers are not on `PATH`.** Call them by path:
+  `K=~/.agents/skills/kb/scripts/kb-board` (the installed skill is a flat
+  symlink; the source is `agents/skills/kb/kb/scripts/`, never `bin/`).
+  `KB_HOSTS_TABLE` defaults to the skill's own `hosts.tsv`; do not set it.
+- **Every subcommand needs its noun.** `kb-board BOARD show ID` is refused
+  (`unknown command`); write `t cat ID` (`cat` = `show`).
+- **Epics are task rows.** There is no `e` noun: `e show e-…` is refused.
+  Read an epic with `t cat e-… --json`; `.type` says `epic`.
+- **No `--epic` filter.** List an epic's children by `parentID`:
+
+```bash
+K=~/.agents/skills/kb/scripts/kb-board
+$K BOARD search "skills audit" --all --limit 5 --json | jq -c '.results[] | {sourceId, title}'   # find it
+$K BOARD t cat e-1a2b3c4d --json | jq -c '{id, type, status, title, completedAt}'               # its state
+$K BOARD t ls --all --with-relations --fields id,status,title,parentID --json \
+  | jq -r '.[] | select(.parentID == "e-1a2b3c4d") | [.id, .status, .title] | @tsv'              # its children
+```
+
+- `--all` includes done and archived rows; without it, finished work is missing
+  and "not found" is not a finding. `search` returns `{results: [...]}`, not an
+  array. `completedAt` is epoch milliseconds.
+- For "did we do X", also grep the journal (`~/work/journals/.sb/YYYY/MM/*.md`):
+  it carries the decision and the why; the row carries the status.
+
 ## Explicit board-group routing (coordinator only)
 
 The default is still **one board**. Group mode is opt-in, and only a
@@ -55,12 +83,10 @@ coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
 Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
 (`hosts.tsv`; kb infra t-93c9468e). hal's `/root/.local/bin/kb` is the
 installed kanban release binary and the ledger is `/root/.local/share/kanban`
-there. hax holds only the fenced, immutable pre-cutover copy
-(`/root/.local/share/kanban.p7-fenced`) for rollback; every kb path on hax
-refuses writes and reads, by design.
-This includes the acies board: route every board read and write to @@hal through
-`kb-board` (or `kb-host hal` for registry commands). An unreachable @@hal is a
-blocked ledger operation, never a reason to use the old @@hax copy.
+there. Historical note (2026-10-03): hax held a fenced pre-cutover copy;
+it is retired, never a board target. Route every board read and write,
+including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
+commands). An unreachable @@hal blocks ledger operations; never fall back.
 
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
@@ -134,6 +160,37 @@ Outside the board home host, do not call `kb` directly.
 <skill-dir>/scripts/kb-board BOARD_ID t ls --status todo --json
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST r ls --json
 ```
+
+**Runs of reads do not go one-shot.** Every wrapper call is its own SSH exec on
+the board home host, so three or more related reads — a resume (`ctx`, `r ls`,
+`dash`), a queue measurement, a row and its ancestors — take one of two shapes
+instead:
+
+1. **The persistent MCP channel, when the harness has it registered** (`ssh
+   "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`, **As an MCP server**). One connection
+   for the session; each read is then about one round trip plus the query, and
+   registry reads (`rule_list`, `dashboard`) ride the same channel as board
+   reads.
+2. **Otherwise one `batch`**: `kb-board BOARD_ID batch --items-file /dev/stdin
+   --json < read.json`, up to 32 board reads in one exec (**Working a task**).
+   `rule_list` may sit in it. `dashboard` may not — it reads boards outside the
+   batch and is refused with `names dashboard, which reads boards outside the
+   batch: run it alone; nothing in it ran` — so it stays its own `kb-host` call.
+
+Writes keep their shape: a single write is one wrapper call, and a unit's two
+boundaries are one `transact` each. Measured 2026-10-13 ~07:30 MYT from @@mbp
+to @@hal (kanban 0.3.1, SSH `ControlMaster auto`, `ControlPersist 600`, median of
+five runs; kanban `t-bbe8d7cc`):
+
+| path | one read | resume: `ctx` + `r ls` + `dash` |
+|---|---|---|
+| one-shot wrappers (`kb-board ctx`, `kb-host r ls`, `kb-host dash`) | `ctx` 0.52 s, `r ls` 0.50 s, `dash` 1.3–1.9 s | 2.31 s |
+| one `kb-board batch` (`context` + `rule_list`), then `kb-host dash` | 0.70 s for both reads | 2.23 s |
+| persistent MCP channel, three `tools/call` | `context` 0.20 s, `rule_list` 0.19–0.23 s, `dashboard` 1.17–1.25 s | 1.63 s, after a 0.65 s connect once |
+
+The dashboard's own server time dominates a resume, so the gain there is
+modest; the gain grows with the run: N small reads cost about 0.5 N s as
+one-shots, about 0.2 N s on the channel, and about 0.7 s flat in one batch.
 
 Inside the verified board home host shell, every board-owned command must use
 an explicit project selector. Registry rule commands must not receive board
@@ -253,8 +310,12 @@ if youre codex or claude"*, and *"write to the skill for all lane executors to
 just claim the lane work even if it has codex or claude or anything and rename
 it to canonical @:geoyws/acies/driver etc"*.
 
-**An agent's `--as` is its lane, spelled `@:<team>/<board>/<lane>`** —
-`@:geoyws/acies/driver`, `@:geoyws/px/driver-3`. The harness never appears in
+**An agent's `--as` is its actor's name, its callsign** (George, 2026-10-08:
+"the NAME of the ACTOR, is a CALLSIGN"): a path, `@:` then one segment per
+identifier from the cockpit root down, ending where the identifiers run out.
+A traced pane signs `@:<group>/<team>/<lane>/<seat>` —
+`@:geoyws/acies/driver/executor`, `@:ifca/px/driver-3/planner`; the lane is
+always the third segment. The harness never appears in
 it. `claude@driver` and `codex@driver` were one lane wearing two labels, and
 every check that compared whole actor strings turned that into a fake
 ownership boundary: a lane's own rows read as assigned to someone else, so its
@@ -266,8 +327,8 @@ Consequences, all of them load-bearing:
   of `claude@…`, `codex@…` or `kimi@…` on your lane is you. Only a different
   LANE is a different worker.
 - **Rename the rows you touch**, so the estate converges without a mass
-  rewrite: `kb t up <id> --assignee "@:<team>/<board>/<lane>" --as
-  "@:<team>/<board>/<lane>"` before you claim.
+  rewrite: `kb t up <id> --assignee "<your callsign>" --as
+  "<your callsign>"` before you claim.
 - **A live lease still stops you.** Identity is not a licence to `--force`
   over another session that is working right now.
 - **`geoyws` remains the owner identity**, and only it resolves or reopens an
@@ -278,17 +339,20 @@ Consequences, all of them load-bearing:
 
 Measured on the acies board 2026-09-17: the ledger accepts both
 `--as "@:geoyws/acies/driver"` and `--as "geoyws/acies/driver"` on notes,
-updates and claims. Write the sigil form.
+updates and claims. Write the full callsign. Seatless three-segment actors
+written before 2026-10-08 are history, not errors; the lane is the third
+segment of either form.
 
 **The longer name wins, and the lane field lives alongside it** (George,
-2026-09-17, reconciling this section with the sigil rule in the root
+2026-09-17, reconciling this section with the callsign rule in the root
 `AGENTS.md`). Where a short and a long spelling of one identity are both
-defensible, write the long one — so `@:geoyws/acies/driver`, never `@:geoyws`
-and never `driver`. And the actor never *replaces* the lane field:
+defensible, write the long one — so `@:geoyws/acies/driver/executor`, never
+`@:geoyws` and never `driver`. And the actor never *replaces* the lane field,
+which never carries the seat:
 
 ```bash
-kb att raise "…" --as "@:geoyws/px/driver-3" --lane driver-3 …
-kb sr new "…"   --as "@:geoyws/px/driver-3" --lane driver-3
+kb att raise "…" --as "@:geoyws/px/driver-3/planner" --lane driver-3 …
+kb sr new "…"   --as "@:geoyws/px/driver-3/executor" --lane driver-3
 ```
 
 Both, never either. They answer different questions and are read by different
@@ -298,6 +362,28 @@ every lane queue filter actually match on. A row whose actor names its lane
 but whose `--lane` is empty is invisible to its own lane's queue, which is the
 same failure the harness-qualified actor caused, wearing different clothes.
 
+**Inside OMP, do not print a claim response containing `leaseToken`.** Its
+secret filter correctly redacts bearer tokens, which makes a printed claim
+unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
+`kb-session-lease BOARD claim TASK --as ACTOR --lane LANE`,
+`kb-session-lease BOARD hb TASK`,
+`kb-session-lease BOARD checkpoint TASK --as ACTOR --state continue|blocked|done --summary ... --intent ... --next-action ...`,
+`kb-session-lease BOARD handoff-create TASK --as ACTOR --summary ... --intent ... --next-action ...`,
+or `kb-session-lease BOARD release TASK`. If the board claim has ended elsewhere
+but the private record survives, `kb-session-lease BOARD recover TASK` verifies
+the board shows a settled or expired claim and preserves the stale record aside.
+For an incoming handoff use
+`kb-session-lease BOARD handoff-accept HANDOFF --as ACTOR`. Claim and
+accept capture the raw reply privately and persist its token in the existing
+session file; only a constructed token-free receipt reaches the agent. A
+successful `checkpoint --state blocked|done` clears the lease file;
+a continuing checkpoint keeps it. A second claim in the same session refuses
+until release, handoff or terminal checkpoint settles the first (the refusal
+names the recover recovery for a record whose board claim has ended).
+The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
+tmux without a session ID it refuses rather than sharing the legacy file.
+Ordinary `kb-board` commands and transaction/MCP surfaces retain their
+existing contract; never allowlist real lease tokens in the OMP filter.
 **Write the heartbeat session file right after every claim** (George,
 2026-09-29, kb dotfiles t-c991e76a option A): mode 0600, two lines — task id,
 then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
@@ -318,23 +404,32 @@ filename namespace: it grants no board, lane, role, or lease authority, and
 both sides must already agree on the id out of band. Without `KB_SESSION_ID`,
 outside tmux it prints the legacy single file `~/.claude/kb-session`
 and exits 3, which is safe only while one session per host claims. One
-session holds one task, so a second claim overwrites. Rewrite both lines
-whenever the token changes. The board is resolved off the session cwd by
-lane-detect, never stored in the file.
+session holds one task, so a second secure claim refuses rather than
+overwriting the file. Direct claimers must still manage the file themselves.
+The board is resolved off the session cwd by
+lane-detect, never stored in the file. A session started with an explicit
+session context (`--session-context PATH` or `KB_SESSION_CONTEXT`) takes its
+board and lane from that file instead, and no pane is consulted; export
+`KB_SESSION_ID` equal to the file's `sessionId`, so this helper and the
+heartbeat hook resolve the same session file.
 
+For direct, non-redacting callers only (OMP uses `kb-session-lease`):
 ```bash
 f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
 (umask 077; printf '%s\n%s\n' "$TASK" "$TOKEN" > "$f")
 ```
 
-A pane that holds no driver lane repeats its own derived team token in the
-lane segment — `@:medic/px/medic` for the medic cockpit writing to the `px`
-board — so the shape never degrades to a bare team and a reader always knows
-all three answers were given. The board segment is the board being written to,
-not the agent's home board.
+Run `/whoami` for your callsign: it traces the pane from the cockpit root to
+`@:<group>/<team>/<lane>/<seat>` (George, 2026-10-05; seat 2026-10-08) —
+`@:ifca/prjx/superdriver/planner`, `@:geoyws/acies/driver/executor`. The team
+segment is your cage's name and stays the same when you write another board's
+row. A callsign's length is dynamic (George, 2026-10-08): it ends where the
+identifiers run out. A cockpit-side pane (`_medic`, `_superdriver`) has no
+group, team or lane, so its callsign is the window token, then its seat —
+`@:superdriver/executor`, `@:medic/planner` — with `--lane` set to that token.
 
 Nothing verifies the two agree today. If you write `--as
-"@:geoyws/px/driver-3" --lane driver-2`, the ledger stores both without
+"@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
 complaint — see the `kanban` board for the refusal that should exist.
 
 ## Tag-scoped rules — what frames work
@@ -390,9 +485,9 @@ the bytes already applicable:
 `rule cannot load always on board {board}: {used} of 6144 always-tier bytes already applicable`.
 
 Rules live once in `registry.db` and are **audited and retire-only**. Updates
-retain the previous body; retirement removes a rule from active injection and
-the web view without deleting history. There is no `rm` alias. `--global` is
-retired and explicitly refused; `g-*` remains valid only as a historical ID.
+retain the previous body; retirement removes a rule from active injection
+without deleting history. There is no `rm` alias. `--global` is retired and
+explicitly refused; `g-*` remains valid only as a historical ID.
 
 This is not the secret or long-form memory store. Keep credentials, secrets,
 long explanations and cross-machine knowledge in the versioned/git-crypt'd
@@ -404,8 +499,8 @@ Every rule carries one `tags` array. `ALL` is explicit and default,
 Repeatable `--board`/`--except-board` flags validate exact board names.
 Namespaced `--tag` selectors must exist on an active board; several are an OR
 set intersected with the board selector. Task claim/context/handoff injection
-requires a matching task tag. Taskless session handoffs and web board pages
-omit subsystem-scoped rules. See ADR-027.
+requires a matching task tag. Taskless session handoffs omit
+subsystem-scoped rules. See ADR-027.
 
 ## Attention — anything that needs the owner
 
@@ -423,12 +518,12 @@ prose have to be parsed back out of English by whoever reads them, and the
 free-text answer they get back carries no verdict a lane can branch on. Author
 the choices as flags and the answer comes back machine-readable. The body is
 untouched by all of this and stays the long form — receipts, SHA256s, absolute
-paths, the `RESOLVE-WHEN` line — folded beneath the card in the web view
-(ADR-042).
+paths and the `RESOLVE-WHEN` line — read through `/kb-att`, which re-measures
+current state before asking George (ADR-042).
 
 ```bash
 kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
-  --as "@:<team>/<board>/<lane>" --lane <lane> --kind blocking --task <ID if it is about one> \
+  --as "<your callsign>" --lane <lane> --kind blocking --task <ID if it is about one> \
   --question "<the decision, one sentence, ending in ?>" \
   --context "<what is true now, what is blocked, what waiting costs>" \
   --choice "<key>=<verb-phrase label>|approve" \
@@ -446,7 +541,7 @@ kb att raise "<verdict-first body — receipts, paths, the concrete next action>
 
 | flag | what goes in it |
 |---|---|
-| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "hax has no logged-in Claude account — assign a seat, or drop that receipt?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
+| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "Will you unlock the hal recovery key, defer the drill, or cancel it?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
 | `--context` | Two to five plain sentences, at most 800 characters, in this order: what is true now, what is blocked and how much waits on it, what waiting costs. If waiting costs nothing, say so — that is a legitimate answer and it changes the decision. |
 | `--choice KEY=LABEL\|OUTCOME` | Two to four, repeatable, one token so the three parts cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the item, and never shown to him. The label is the button text: a verb phrase starting with the verb, at most 60 characters, carrying no `|`. The outcome is one of `approve`, `reject`, `defer`, `other` — the machine-readable verdict a lane acts on, where the label is for the human. |
 | `--consequence KEY=TEXT` | One per choice, required on every one: a single sentence, at most 200 characters, saying what happens and what it costs, in that order. "Approved" is not a consequence; "the receipt is retried the same day, about ten minutes of your time plus the seat's monthly cost" is. |
@@ -461,7 +556,7 @@ about the ledger. Typed ids (`a-*`, `t-*`, `e-*`, `d-*`) belong in a trailing
 `References:` clause and never mid-sentence. Required instead: numbers with
 units (`ten minutes`, `43 items`, `HTTP 401`), absolute dates (`2026-09-05`,
 never "last week"), full nouns wherever a pronoun could drift, and second
-person for anything only he can do — "only you can finish the browser login".
+person for anything only he can do — "only you can unlock the recovery key".
 
 A `defer` consequence must name **what brings the question back**: a date, an
 event, or a task that will be filed. "Later" with no trigger is how an item is
@@ -487,7 +582,7 @@ walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
 quiz the row's own diagnosis, which "isn't helping my understanding of the
 codebase but asking me to diagnose issues"; a row with no `check` field gets
 its card with no check). Author it as flags, all or none — never as prose in
-the body, where the web view would show the answer beside the question:
+the body, where `/kb-att` would reveal the answer before asking the check:
 
 | flag | what goes in it |
 |---|---|
@@ -555,7 +650,7 @@ the check pending — still redacted, still answerable (kanban t-1aa9f553).
 kb att check <id> --as geoyws --key <key> --json   # geoyws or the raiser; open or resolved row
 ```
 
-It goes through the same answer law as the web card: a check is answered
+It goes through the same answer law as the `/kb-att` check: a check is answered
 exactly once, on an open or a resolved row, and a second answer is refused;
 the row's status does not change, and `att reopen` clears the result. The
 `--json` receipt is the row in its post-answer projection, whose `check` now
@@ -578,15 +673,12 @@ kb att check <id> --as geoyws --key sign-server --json                          
 
 `--choice` is required on `resolve`. `--note` is optional for an authored
 choice, because the label and its consequence are already the record, and
-required for `custom`; `--outcome` applies to `custom` alone. On the web the
-same holds: the card carries one reply field, and whatever is typed in it is
-sent with whichever choice is clicked - so a lane reading `decision.note`
-beside an authored `choice` is reading what geoyws added to his click, and
-should act on it before the consequence text. A `--choice`
-naming a key the row does not carry is refused naming the keys it has, and that
-is what makes a stale card safe: if his browser is still showing a card that a
-later `att update` replaced, the click names a key that no longer exists and is
-refused by name rather than mapped onto whatever now sits in that position.
+required for `custom`; `--outcome` applies to `custom` alone. `/kb-att`
+re-measures the current card before asking George; a lane reading `decision.note`
+beside an authored `choice` reads what he added to the verdict and should
+act on it before the consequence text. A `--choice` naming a key the row no
+longer carries is refused naming its current keys, not silently mapped onto
+the old card's position.
 
 **`decision` is what a lane reads back**, not the prose:
 `{"choice": "keep-parked", "outcome": "defer", "note": null, "by": "geoyws",
@@ -599,45 +691,38 @@ choice settles the item, `defer` included: a deferral is a verdict, and
 `kb att reopen` is the way back.
 
 **An item with no card reads as the default pair.** A row that authored no
-choices is served — CLI, MCP and web alike — as `approve` ("Approve - proceed")
+choices is served — CLI, MCP and `/kb-att` alike — as `approve` ("Approve - proceed")
 and `reject` ("Reject - do not proceed") with **no recommendation**, because
 nobody authored that pair and nothing may claim it was recommended, and its
 body serves as both question and context. That is the only shape in the model
-with zero recommendations. `kb att update <id> --as "@:<team>/<board>/<lane>"` takes the
+with zero recommendations. `kb att update <id> --as "<your callsign>"` takes the
 same five card flags, so an item still open can be given a card later, and
 `--clear-card` returns it to the default pair. A resolved item's card is
 history and is refused.
 
-**A card, written out.** `a-347ff24c` was a P0 whose body ran 1,235 characters
-of receipts — two SHA256s, a deployment id, a commit sha, an absolute
-executable path — and which sat at the top of "Needs you" for three days after
-being parked once with no trigger to bring it back. The same item raised as a
-card:
+**A card, written out (illustrative, not a live incident).** Suppose the
+ledger backup restore drill on hal needs George to unlock the recovery key.
+The row records the receipt path and its resolve condition; the card gives
+three actual decisions with a trigger on deferral:
 
 ```bash
-kb att raise "BLOCKED — HAX Claude Code 2.1.236 is installed at /root/.local/share/claude/versions/2.1.236 and host dispatchers.json binds claude.print/start-readonly-turn to that exact release adapter, but the stored OAuth access token is revoked and a real serialized no-tools turn fails HTTP 401. Resolve only after the installed adapter returns its exact live AdapterResponse for a real Claude acknowledgement; do not work around authentication." \
-  --as "@:geoyws/hax/driver" --lane driver --kind blocking --priority 0 --task t-8c656910 --tag pubsub \
-  --question "hax has no logged-in Claude account, so the pubsub adapter cannot record one real Claude reply - assign a seat, or drop that receipt?" \
-  --context "Claude Code 2.1.236 is installed on hax and its dispatcher config loads, but the saved login is revoked and a real turn answers HTTP 401. You parked this on 2026-09-05 until an account was assigned to hax; three days later no account has been assigned. Only you can finish it: it needs a paid seat and a browser login nobody else can complete. One task is waiting - install Claude Code on hax for the pubsub adapter's live receipt - and nothing is waiting on that task. Until it moves, the pubsub adapter ships with every provider proven except Claude. References: a-347ff24c, t-8c656910." \
-  --choice "assign-and-login=Assign a Claude seat to hax and log in|approve" \
-  --consequence "assign-and-login=You buy or free one Claude seat, ssh to hax and finish the browser login: about ten minutes of your time plus the seat's monthly cost, and the receipt is retried the same day." \
-  --choice "keep-parked=Keep it parked until a seat frees up|defer" \
-  --consequence "keep-parked=Nothing changes and nobody waits on you; the pubsub adapter keeps shipping with the Claude path unproven, and a task is filed to re-raise this the day a seat frees up." \
-  --choice "drop-receipt=Drop the live-Claude receipt from the adapter|reject" \
-  --consequence "drop-receipt=The adapter is proven against the other providers only, the Claude path stays untested in production, and the install task closes as cancelled." \
-  --recommend assign-and-login --json
+kb att raise "BLOCKED — The hal ledger backup at /root/.local/share/kanban cannot complete a restore drill until George unlocks the recovery key in the approved vault. Resolve only after a restore on hal is verified; do not copy the ledger to another host." \
+  --as "@:geoyws/infra/driver/executor" --lane driver --kind blocking --priority 0 --task t-12345678 --tag geoyws/infra \
+  --question "Will you unlock the recovery key for the hal ledger restore drill, defer it until the next maintenance window, or cancel the drill?" \
+  --context "The backup is present on hal, but the recovery key is locked and the restore drill cannot proceed. Only you can unlock it; one backup verification is waiting. Deferral delays proof of recovery, but no board reads or writes depend on the drill. References: t-12345678." \
+  --choice "unlock-key=Unlock the recovery key for the restore drill|approve" \
+  --consequence "unlock-key=You unlock the key in the approved vault; the restore drill runs on hal and takes about ten minutes of your time." \
+  --choice "defer-window=Defer the drill to the next maintenance window|defer" \
+  --consequence "defer-window=Recovery remains unverified until the next maintenance window, when a task re-raises this decision." \
+  --choice "cancel-drill=Cancel this restore drill|reject" \
+  --consequence "cancel-drill=The restore drill is cancelled and recovery remains unverified; the task closes without a restore receipt." \
+  --recommend unlock-key --json
 ```
 
-Question 133 characters, context 588, labels 38, 36 and 45, consequences 175,
-167 and 143, three choices, one recommendation. `assign-and-login` is the
-recommendation because the item's own resolve condition is a live receipt no
-workaround may produce, and one seat is the smallest price on the card.
-`keep-parked` is offered honestly rather than omitted — it is what he chose on
-2026-09-05 and it may still be right — but its consequence now names the
-trigger that brings the question back, which the parking did not, which is why
-the item was still open three days later. Pick it and the row afterwards reads
-`decision.outcome: "defer"` and `resolution: "Decision: Keep it parked until a
-seat frees up. Nothing changes and nobody waits on you; …"`.
+The question is in the operator's terms, the context names what waits, each
+choice has a consequence, and exactly one is recommended. `defer-window`
+settles this decision as `defer`; the next maintenance window explicitly
+triggers the new task instead of leaving a parked row with no return path.
 
 **An explicit `--limit` that cuts is named, not hidden.** `kb ev --limit N`
 keeps stdout at exactly N rows and writes one line to stderr - `events: showing
@@ -653,11 +738,12 @@ bound above the count you expect and check the length came back under it
 (ADR-037).
 
 `--lane LANE` on raise stores its routing lane. On list, `--lane LANE` keeps rows
-whose stored lane is `LANE`, whose raiser ends in legacy `@LANE` or canonical
-`/LANE`, or whose linked task has lane `LANE`. `--fields k,k,…` keeps only
-those keys on each row; a key the rows do not carry is refused naming the
-ones they do. `--no-body` drops the body alone, which is the cheap way to read
-cards in bulk.
+whose stored lane is `LANE`, whose raiser is a legacy `…@LANE` actor or a typed
+callsign of any length whose third segment is `LANE` (seats and deeper segments
+included; kb kanban `t-2b8ab9f7`), or whose linked task has lane `LANE`.
+`--fields k,k,…` keeps only those keys on each row; a key the rows do not carry
+is refused naming the ones they do. `--no-body` drops the body alone, which is
+the cheap way to read cards in bulk.
 
 `--kind` is a closed set:
 
@@ -843,7 +929,7 @@ It keeps your lease, so nobody else can take the row.
 REQUIRED ACTION, task handoff. A claimed task returns to the queue with its
 lease released in the same transaction:
 
-1. Run `kb h new <task-id> --lease "$TOKEN" --as "$ACTOR" --summary "…" --intent "…" --next-action "…" --reason token_pressure --json` in the board home host shell. `$ACTOR` is the canonical lane actor `@:<team>/<board>/<lane>`, never a bare lane and never harness-qualified.
+1. Run `kb h new <task-id> --lease "$TOKEN" --as "$ACTOR" --summary "…" --intent "…" --next-action "…" --reason token_pressure --json` in the board home host shell. `$ACTOR` is your callsign from `/whoami` (`@:<group>/<team>/<lane>/<seat>`), never a bare lane and never harness-qualified.
 2. The task id and `--lease` travel together. Each half alone is refused, because a lease exists only over a task and a task cannot be handed over without one.
 
 REQUIRED ACTION, session handoff. The lane's position as a whole: no task,
@@ -887,7 +973,7 @@ kb h new t-48c302f0 --lease "$TOKEN" --as "@:geoyws/px/driver-3" \
   --intent "Land the writer branch on pai-geoyws-driver-3, then re-measure." \
   --next-action "Merge writer branch wt-px-t48c302f0-w1 into pai-geoyws-driver-3 in an isolated integration tree and run the gates." \
   --reason token_pressure --json
-# Worktree: hax /srv/work/px-driver-3, branch pai-geoyws-driver-3, base 9f2c1ab.
+# Historical worktree example (pre-cutover): hax /srv/work/px-driver-3, branch pai-geoyws-driver-3, base 9f2c1ab; never a current board target.
 # Evidence: commit 4d5e6f7 on wt-px-t48c302f0-w1. NOT verified: e2e on the merged lane.
 ```
 
@@ -905,7 +991,9 @@ in one request, answered by one process with one board open — `kb batch
 (`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx` and
 `att ls` for the task you are about to pick up all arrive together; `ctx`
 already carries the task's rules index and always-tier bodies, so the batch
-takes no `r ls`. A batch
+takes no `r ls`. This is the default for any run of three or more related
+reads, never a string of one-shots (**Runs of reads do not go one-shot**,
+above). A batch
 is reads only: an item that writes refuses the whole batch before anything runs.
 Each boundary is one `transact` (**Batched writes — `transact`**), which lands
 entirely or not at all. The three together are **The loop in three batches**,
@@ -1500,6 +1588,15 @@ inside the command line, so an epic body is bounded by disk rather than by
 plan died with the remote shell's own `Argument list too long` -- Linux caps a
 single argument at 131072 bytes whatever `ARG_MAX` says -- which is a shell
 error, not a refusal this wrapper could explain.
+
+**An explicit session context travels the same way.** `kb-board
+--session-context ctx.json` reads the context file on your machine (at most
+64 KiB), recreates it in a private temp file on the board host for that one
+call, and removes it afterwards. Because ssh carries no environment, a set
+`KB_SESSION_ID` is passed to the board host explicitly, an empty one
+included, so the core's agreement check sees exactly what you exported.
+Unreadable, oversized or repeated `--session-context` refuses on your machine
+before any connection.
 
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
@@ -2131,7 +2228,10 @@ placeholders with the routing table values: TOML argument strings do not expand
 shell variables. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
 connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
 call — about one round trip plus the query — against 2.5 s per CLI one-shot
-without a ControlMaster. This is the agent API; there is no HTTP service.
+without a ControlMaster. Re-measured 2026-10-13 from @@mbp to @@hal with a
+ControlMaster: connect 0.65 s once, then about 0.20 s per small read on the
+channel against about 0.5 s per wrapper one-shot (table under **Runs of reads
+do not go one-shot**). This is the agent API; there is no HTTP service.
 
 What does not change: every tool still takes its own `project`, because the
 server resolves a board per call and refuses `--project` on `kb mcp` itself
@@ -2195,7 +2295,7 @@ once a silent wrong answer.
 ADR-008 (fail closed), ADR-010 (adapters generated from the surface),
 ADR-011 (MCP server + in-place reload), ADR-012 (session handoffs and
 attention), ADR-013 (plans are epics), ADR-015 (tags are a master file),
-ADR-016 (the web view), ADR-017 (sitreps), ADR-018 (the original board-local
+ADR-016 (historical retired web view), ADR-017 (sitreps), ADR-018 (the original board-local
 rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
 tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
 namespaced `<estate>/<subsystem>` tags.

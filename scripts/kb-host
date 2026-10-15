@@ -26,7 +26,7 @@ allow_registry_command() {
     version|v|init|workspace|w|ws|dashboard|dash|doctor|audit|backup|restore|rule|r|schema|mcp|access|plugin|worker|link|scope|contrib)
       return 0
       ;;
-    deploy|import|tag|archive|search|search-rebuild|subscription|stale|todo|task|t|story|s|handoff|h|attention|att|attn|claim|checkpoint|cp|heartbeat|hb|release|rel|context|ctx|events|ev|note|n|sitrep|sr|watch|transact|sprint|batch|incident)
+    deploy|import|tag|archive|search|search-rebuild|subscription|stale|todo|task|t|story|s|handoff|h|attention|att|attn|claim|checkpoint|cp|heartbeat|hb|release|rel|context|ctx|events|ev|note|n|sitrep|sr|watch|transact|sprint|batch|incident|worktree)
       die 'kb-host is for registry-owned commands only; use kb-board for board-owned commands.'
       ;;
     *)
