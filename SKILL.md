@@ -429,9 +429,9 @@ identifiers run out. A cockpit-side pane (`_medic`, `_superdriver`) has no
 group, team or lane, so its callsign is the window token, then its seat —
 `@:superdriver/executor`, `@:medic/planner` — with `--lane` set to that token.
 
-Nothing verifies the two agree today. If you write `--as
-"@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
-complaint — see the `kanban` board for the refusal that should exist.
+The ledger checks that the two agree on the six self-lane writes: `--as
+"@:geoyws/px/driver-3/executor" --lane driver-2` on a `claim` is refused, naming
+both lanes (the `--as` and `--lane` rule under the refusal list below).
 
 ## Tag-scoped rules — what frames work
 
