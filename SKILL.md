@@ -2042,11 +2042,13 @@ omitted boards retain the existing omission/refusal rules.
 - `unreviewedReviewTasks` retains its existing membership: candidates without
   an attested pass covering the current head. A launch or free-text verdict
   note is not a pass and cannot open the done gate.
-- `originalReviewLaunchMissingTasks` is the subset of review candidates without
-  valid original-launch evidence matching the current head, **not** necessarily
-  a subset of `unreviewedReviewTasks`. A current-head pass without a launch is
-  only in the new list; missing both is in both; a matching launch without a
-  pass is only in the old list. Any matching launch suffices.
+- `originalReviewLaunchMissingTasks` is the subset of `unreviewedReviewTasks`
+  without valid original-launch evidence matching the current head: no current
+  attested pass **and** no matching launch. An existing current-head attested
+  pass excludes the task from both lists, even without a launch note; its
+  original verdict is sufficient. Missing both appears in both lists; a matching
+  launch without a pass appears only in `unreviewedReviewTasks`. Any matching
+  launch suffices; no launch proves a verdict.
 - Each readable board/project carries integer `reviewObservedAt`, captured once
   per command result and shared across all boards. Both arrays retain `taskID`,
   nullable/string `headSha`, integer `createdAt`, and ascending numeric
