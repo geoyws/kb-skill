@@ -4,6 +4,7 @@ attention
 audit
 backup
 batch
+board
 checkpoint
 claim
 cleanup
