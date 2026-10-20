@@ -2608,6 +2608,22 @@ test_board_adds_git_captured_only_when_it_filled_all_provenance_flags() {
   assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent \
     --repo /r --branch b --head "$head" --dirty clean
 
+  # A `git status` that fails is no read of the dirty state: the four are
+  # still filled, but the set is not attested.
+  local broken="$tmp_dir/prov-captured/broken"
+  make_scratch_repo "$broken" dirty.txt
+  printf 'not an index' >"$broken/.git/index"
+  if git -C "$broken" status --porcelain >/dev/null 2>&1; then
+    fail "a corrupt index did not make git status fail"
+  fi
+  run_board_remote_from "$broken" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --summary s
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--git-captured'; then
+    fail "--git-captured appended although git status failed"
+  fi
+  tr '\0' '\n' <"$kb_log" | grep -qx -- '--dirty' \
+    || fail "the wrapper stopped filling --dirty when git status failed"
+
   # Outside a repository there is no git read, so no provenance and no flag.
   local plain="$tmp_dir/prov-captured/plain"
   mkdir -p "$plain"

@@ -148,11 +148,17 @@ if captures_git_provenance "$command" "${1-}" \
     git_filled_all=0
   else
     git_dirty=0
-    while IFS= read -r line; do
-      if [[ -n "${line//[[:space:]]/}" ]]; then
-        git_dirty=$((git_dirty + 1))
-      fi
-    done < <(git -C "$git_top" status --porcelain 2>/dev/null)
+    # A failed `git status` is no read of the dirty state: the summary is
+    # still filled as before, but the wrapper does not attest the set.
+    if git_status=$(git -C "$git_top" status --porcelain 2>/dev/null); then
+      while IFS= read -r line; do
+        if [[ -n "${line//[[:space:]]/}" ]]; then
+          git_dirty=$((git_dirty + 1))
+        fi
+      done <<<"$git_status"
+    else
+      git_filled_all=0
+    fi
     set -- "$@" --dirty "$(dirty_summary "$git_dirty")"
   fi
   if [[ "$git_filled_all" -eq 1 ]] && ! has_flag --git-captured "$@"; then
