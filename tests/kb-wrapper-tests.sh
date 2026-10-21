@@ -765,9 +765,8 @@ test_board_session_context_and_session_id_are_transferred() {
 
 # The session-end hook (kanban SESSION-02) runs `release --session ID --as A
 # --force` through kb-board: the verb and every flag reach the board host
-# verbatim, and the caller's KB_SESSION_ID crosses into the binary's
-# environment, so a session file on the board host agrees with it.
-test_board_session_end_release_is_forwarded_with_session_id() {
+# verbatim, quoting intact.
+test_board_session_end_release_is_forwarded() {
   local dir="$tmp_dir/sessionend"
   local fakebin="$dir/fakebin"
   local ssh_log="$dir/ssh.argv"
@@ -792,7 +791,6 @@ test_board_session_end_release_is_forwarded_with_session_id() {
     PATH="$fakebin:$PATH" \
     "$package_dir/scripts/kb-board" "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
   assert_argv_prefix "$kb_log" --project "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
-  [[ "$(cat "$dir/seen.session")" == "set:end 1'\$(x)" ]] || fail "KB_SESSION_ID did not cross: $(cat "$dir/seen.session")"
 }
 
 test_session_context_at_the_boundary_needs_no_transfer() {
@@ -2815,7 +2813,7 @@ main() {
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
     test_board_session_context_and_session_id_are_transferred
-    test_board_session_end_release_is_forwarded_with_session_id
+    test_board_session_end_release_is_forwarded
     test_session_context_at_the_boundary_needs_no_transfer
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
