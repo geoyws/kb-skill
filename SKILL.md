@@ -205,7 +205,8 @@ and `attention` should normally use `--project NAME` remotely. Registry-owned
 `rule` commands must not receive `--project`, `--workspace`, or `--db`; rules
 live once in the registry and select boards through `ALL`, `ONLY:<board>`, and
 `EXCEPT:<board>` tags. Registry watch helpers also reject board selectors and
-`--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --json`, never `kb-host BOARD_HOME_HOST r ls --project kanban`.
+`--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --board kanban --json`
+(the rule verb's own board scope), never `kb-host BOARD_HOME_HOST r ls --project kanban`.
 
 ## Workspace adoption and rule transfer
 
@@ -258,6 +259,7 @@ Scoped to their group:
 | `task` | `ls`=list `mv`=move `rm`=remove `new`=add `up`=update `meta`=metadata `cat`=show |
 | `story` | `adv`=advance |
 | `handoff` | `ls`=list `new`=create `acc`=accept |
+| `message` | `cat`=show |
 | `workspace` | `ls`=list `att`=attach `det`=detach |
 | `attention` | `ls`=list `up`=update `new`=raise |
 | `tag` | `ls`=list `rm`=remove `new`=add |
@@ -427,42 +429,61 @@ identifiers run out. A cockpit-side pane (`_medic`, `_superdriver`) has no
 group, team or lane, so its callsign is the window token, then its seat —
 `@:superdriver/executor`, `@:medic/planner` — with `--lane` set to that token.
 
-Nothing verifies the two agree today. If you write `--as
-"@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
-complaint — see the `kanban` board for the refusal that should exist.
+The ledger checks that the two agree on the six self-lane writes: `--as
+"@:geoyws/px/driver-3/executor" --lane driver-2` on a `claim` is refused, naming
+both lanes (the `--as` and `--lane` rule under the refusal list below).
 
 ## Tag-scoped rules — what frames work
 
 Put short, non-secret operating constraints in the one registry-owned rules
-document. A board owns work; it is a selector tag on a rule, not a rule scope:
+document. A board owns work; it is a selector tag on a rule, not a rule scope.
+Before project work, read that board's chaptered index. Bare `kb r ls` stays
+registry-wide and is for registry work only — never the project-work read.
 
 ```bash
-kb r new "Universal rule." --as "$AGENT" --json       # tags: ALL
-kb r new --body-file /tmp/non-secret-rule.md --as "$AGENT" --json
-kb r ls --json                         # active table of contents, oldest first
-kb r cat r-12345678 --json             # one full body, fetched lazily
-kb r up r-12345678 --body "Revised rule" --as "$AGENT" --json
+kb r ls --board kanban --json
+# wrappers: kb-host <home> r ls --board kanban
+
+kb r new "Universal rule." --title "Universal rule" --as "$AGENT" --json   # tags: ALL; --load defaults to lazy
+kb r new --title "From a file" --body-file /tmp/non-secret-rule.md --load always --as "$AGENT" --json
+kb r cat r-12345678 --json             # rule show: one lazy or long body
+kb r up r-12345678 --title "Revised title" --body "Revised rule" --as "$AGENT" --json
+kb r up r-12345678 --title "Named legacy" --load lazy --as "$AGENT" --json
 kb rule retire r-12345678 --as "$AGENT" --json
-kb r ls --all --full --json            # retired rows and full bodies
+kb r ls --all --full --json            # retired rows gain archived; --full adds bodies
 kb ev --rule r-12345678 --json          # audited history
 
 # ALL is the default; includes/exclusions are repeatable selector tags.
-kb r new "Kanban only." --board kanban --as "$AGENT" --json
-kb r new "All except project-a." --except-board project-a --as "$AGENT" --json
+kb r new "Kanban only." --title "Kanban only" --board kanban --as "$AGENT" --json
+kb r new "All except project-a." --title "Except project-a" --except-board project-a --as "$AGENT" --json
 kb r up r-12345678 --board kanban --as "$AGENT" --json
 
 # Namespaced subsystem tags intersect the board selector.
-kb r new "Queuer only." --tag acme/queuer --as "$AGENT" --json
+kb r new "Queuer only." --title "Queuer only" --tag acme/queuer --as "$AGENT" --json
 kb r up r-12345678 --clear-tags --as "$AGENT" --json
 ```
 
-The first line is the headline. `kb ctx <task>`, every successful new claim and
-every accepted handoff carry the applicable active table of contents. Each
-summary has one `tags` array plus id, headline, byte size and whether more body
-exists. Read a long body with `kb r cat ID`; do not load every detail
-speculatively. Other commands do not repeat rules—the injection boundary is
+`kb r ls --board NAME ... [--task ID] [--chapter NAME] [--all] [--full] --json`
+reads the board-scoped chaptered index. A chapter is the first namespaced
+subsystem tag on the rule, or `general` when there is none. Each entry is
+`id`, `title`, `titleMissing`, `bytes`, `hasMore`, `load`, and `tags`.
+`--all` adds retired rows with `archived` true. `--full` adds each body.
+
+Always-tier bodies already arrive inline on claim, `kb ctx`, and handoff
+packets (`rulesIndex` and `alwaysRules`). Do not re-fetch those. Fetch a page
+lazily only when needed: `kb r cat ID` for a lazy or long body. Flat claim
+entries keep `headline` and also carry `title`, `titleMissing`, `load`, and
+`chapter`. Other commands do not repeat rules—the injection boundary is
 claim/resume, which saves tokens. A stored claim deliberately does not pretend
 it re-read current rules.
+
+An untitled legacy rule projects a first-sentence fallback as `title` with
+`titleMissing` true. Name that honestly. A coordinator titles it with
+`kb r up ID --title T [--load always|lazy]`. `kb r new` requires `--title`;
+add refuses without it. `--load` is `always` or `lazy` and defaults to lazy.
+One board's always tier is at most 6144 bytes. The refusal names the board and
+the bytes already applicable:
+`rule cannot load always on board {board}: {used} of 6144 always-tier bytes already applicable`.
 
 Rules live once in `registry.db` and are **audited and retire-only**. Updates
 retain the previous body; retirement removes a rule from active injection
@@ -768,6 +789,61 @@ no annotation verb on resolved attention, on purpose (decided by George,
 Still surface the item in your reply as well. The board makes it survive; the
 reply makes the owner see it now. In one and not the other is a bug.
 
+## Incidents — what broke, how bad, what happened next
+
+An incident is a typed `i-` row with a severity (`SEV1`–`SEV4`) and a
+four-state lifecycle, `open` → `mitigated` → `resolved` → `reviewed`, one step
+at a time. The timeline is append-only (`time`/`actor`/`text`); there is no edit
+and no delete. Incidents are never claimed and never hold a lease — no claim,
+handoff-accept, or scheduler verb takes an `i-` id. The forms below follow the
+`kanban incident` usage text in `rust/lib.rs`, which is the grammar authority:
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID incident open "DB failover stalled" --severity SEV1 --as "$AGENT" --json
+<skill-dir>/scripts/kb-board BOARD_ID incident note i-XXXXXXXX "Replica picked up the failover" --as "$AGENT" --json
+<skill-dir>/scripts/kb-board BOARD_ID incident link i-XXXXXXXX --task t-XXXXXXXX --as "$AGENT" --json
+<skill-dir>/scripts/kb-board BOARD_ID incident mitigate i-XXXXXXXX --as "$AGENT" --json
+<skill-dir>/scripts/kb-board BOARD_ID incident resolve i-XXXXXXXX --as "$AGENT" --json
+<skill-dir>/scripts/kb-board BOARD_ID incident list --status open --json
+<skill-dir>/scripts/kb-board BOARD_ID incident show i-XXXXXXXX --json
+```
+
+One line per verb:
+
+- `open` — open a typed incident at status `open` with a severity.
+- `mitigate` — move `open` → `mitigated`, stamping `mitigatedAt` once (the
+  `incident show --json` field; the column is `mitigated_at`).
+- `resolve` — move `mitigated` → `resolved`, stamping `resolvedAt` once (the
+  `incident show --json` field; the column is `resolved_at`).
+- `review` — the close: move `resolved` → `reviewed` with the four-part review
+  and the follow-up, geoyws only (below). There is no separate `close` verb.
+- `note` (timeline add) — append one `time`/`actor`/`text` entry; history is
+  never rewritten.
+- `link` / `unlink` — attach or detach task, attention, deployment, sitrep, or
+  host targets; a removal is itself recorded on the timeline.
+- `evidence` (update) — record the evidence pointer verbatim; it is stored,
+  never fetched or expanded, so keep secrets out of every incident field.
+- `list` — read incidents, optionally filtered by status and severity.
+- `show` — read one incident: identity, severity, status, timestamps, timeline
+  in append order, links, evidence pointer as given, and — once closed — the
+  review and the follow-up.
+
+**The reviewed close belongs to the owner.** Only `--as geoyws` with
+`--attest-reviewed` moves a row to `reviewed`, carrying the four-part review
+(cause, impact, what worked, what did not) and either a follow-up task on the
+same board or a recorded reason for none (decision `a-26347425`). Lane agents
+author the review text and file or propose the follow-up through `note` and
+ordinary task creation; geoyws alone effects the transition. The byte-exact
+refusal sentences live in the kanban spec (`docs/specs/incident.md`,
+`INCIDENT-09`/`INCIDENT-10`/`INCIDENT-15`) — cite that file and pass any
+refusal on verbatim rather than paraphrasing it.
+
+`incident list` and `incident show` are read-only: their generated MCP tools
+carry `readOnlyHint` true (ADR-010), like every read. The lane's open incidents
+additionally surface on the `/kb-att` digest, `SEV1` first, then oldest first.
+An unknown or unreadable `i-` id answers `denied or not found` without
+distinguishing unknown from unreadable.
+
 ## Search and bounded RAG context
 
 Search before opening many cards speculatively. Results cover board tasks,
@@ -906,6 +982,46 @@ Handoffs are history: removing a task drops the link and keeps the account.
 A task can be restricted to models: `kb h acc --model NAME` is checked
 against the task's list the same way a claim is.
 
+## Messages — addressed lane correspondence, never a handoff
+
+A message is one addressed row (`m-` id) from a lane actor to a named
+recipient: a question, request, report, or blocker the recipient pulls from
+its inbox. The row lives on the sender's board and nowhere else — queues,
+wakes, and notices are views over it, never second stores. Messages never
+carry leases and never move claims: no claim, lease, handoff-create, or
+handoff-accept verb takes an `m-` id, and a handoff still carries the work,
+the lease, and the tree facts. A message reply is correspondence, never an
+owner verdict: attention stays the owner's channel, and pointing an
+attention resolve path at an `m-` id is refused.
+
+Board-owned: route every verb below through `kb-board BOARD`. The same
+surface is generated as MCP tools (`message_send`, `message_inbox`,
+`message_show`, `message_ack`, `message_answer`, `message_close`) under the
+same actor, authz, and refusal rules. `message cat` reads as `message show`.
+
+- Send: `kb message send --to NAME --kind question|request|report|blocker --as ACTOR --body TEXT [--task ID] [--in-reply-to m-ID] [--id m-ID] --json`. The recipient is a lane, the lead, or a registered role; anything else is refused naming the fix. The kind is written once and never edited. The body is bounded text (16 KiB); there is no edit verb, so a correction is a reply. `--task` links one task on the sender board. A reply is its own `m-` row carrying the original's id, addressed to the original's sender, landing in that sender's inbox.
+- Pull: `kb message inbox --as ACTOR [--unanswered N] [--limit N] --json`. An array of `{id, from, kind, status, headline, board}` rows, open first, gathered across every board the caller may read — never the body. `board` names the project that holds the row: every later verb on that row (`show`, `ack`, `answer`, `close`) must run against that board (`kb-board <board> …`); the same verb on another board is refused as denied or not found. The headline is the body's first line truncated to 160 characters, so fetch bodies per id. `--unanswered N` keeps only rows still unanswered after N minutes.
+- Read one: `kb message show m-ID --as ACTOR --json`. Inbox rows and the mail notice never carry a body; every single-row receipt does — `send`, `show`, `ack`, `answer` and `close` all print the whole row, body included, so treat those receipts as message content, never as headline-only logs.
+- Move it: `kb message ack m-ID --as ACTOR --json` takes `open` to `acked`, recipient only; `kb message answer m-ID --as ACTOR --body TEXT --json` takes `acked` to `answered`, recipient only, the only move that takes `--body`; `kb message close m-ID --as ACTOR --json` takes `open`, `acked`, or `answered` to `closed`, sender or recipient. Any other move is refused quoting the id and both statuses, and the row keeps its status. Unread means not-yet-acked: every carrier below repeats a message until its recipient acks it.
+
+Two views ride along with calls that know their caller (`--as`, else
+`KANBAN_ACTOR`; a call with no identity carries neither):
+
+- The unread-mail notice: object outputs gain a top-level
+  `mail: {unread: [{id, from, kind, headline}, …], remaining: N}` — at most
+  five entries, never bodies. Array listings pass through byte-identical, failures carry
+  no notice, and a lookup that fails leaves no notice rather than failing
+  the call. `watch --follow` heartbeat frames do not carry it yet (spec
+  OB-15 is still planned), so a lane that only holds a watch stream must
+  pull `message inbox` itself.
+- The wake: an idle lane may be woken with a pointer — the `m-` id only,
+  never the body, the headline, the kind, or any metadata beyond routing.
+  A wake that reaches a pane follows the pane-agent discipline:
+  capture-before-send, idle panes only unless the owner says otherwise in
+  the thread or on the board. Content arrives only when the woken lane
+  pulls its inbox under its own read authority; a denied row stays denied
+  and wakes nothing.
+
 ## Working a task
 
 **A unit of work is two write round trips**, one at each boundary, with a single
@@ -913,10 +1029,12 @@ read before them — on the measured link that is two round trips where there we
 six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
 in one request, answered by one process with one board open — `kb batch
 --items-file items.json --json` from the CLI, or the MCP `batch` tool
-(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx`, `r ls`
-and `att ls` for the task you are about to pick up all arrive together. This is
-the default for any run of three or more related reads, never a string of
-one-shots (**Runs of reads do not go one-shot**, above). A batch
+(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx` and
+`att ls` for the task you are about to pick up all arrive together; `ctx`
+already carries the task's rules index and always-tier bodies, so the batch
+takes no `r ls`. This is the default for any run of three or more related
+reads, never a string of one-shots (**Runs of reads do not go one-shot**,
+above). A batch
 is reads only: an item that writes refuses the whole batch before anything runs.
 Each boundary is one `transact` (**Batched writes — `transact`**), which lands
 entirely or not at all. The three together are **The loop in three batches**,
@@ -959,6 +1077,10 @@ task `handoff_create` is the same story from the other end — it writes its own
 wants no checkpoint before it and no release after it. Every END item carries
 `lease: "$TOKEN"` literally, the token the START batch returned: `$ref` reaches
 strictly earlier items **of its own batch**, never back into an earlier one.
+
+Definition of Done includes cleanup — the `finished` shape moves the row
+done only when every manifest entry is removed or held with a live expiry;
+see **Cleanup ledger — what you allocated, you remove**.
 
 The worked JSON is **The loop's write half, in one batch**, below — a claim, a
 checkpoint that takes the lease from item 0 by `$ref`, and the note: three
@@ -1045,6 +1167,23 @@ own readable local edges, not inherited or foreign blockers. For list field
 selection, `--fields blockingGates` requires `--with-relations`, just like
 `--fields dependencies`. An empty `blockingGates` array says only that no
 dependency gate is unmet, not that the task is otherwise claimable.
+
+**Parked rows and parked gates refuse with their own sentences.** Named claim
+refuses — and `claim --next` / `claim --candidates` exclude — a row whose own
+status **or any ancestor's** is `kiv` or `abandoned`, however urgent it is.
+Only `done` satisfies a prerequisite: a `kiv` or `abandoned` prerequisite
+stays unmet and its edge is never silently cleared. Pass these on verbatim:
+
+| gate | refusal |
+|---|---|
+| own status parked | `task {id} is {kiv\|abandoned}, not claimable: resume/reopen it with \`task move {id} todo\` before claiming` |
+| parked ancestor | `task {id} sits under {ancestor} ({kiv\|abandoned}), not claimable: resume/reopen with \`task move {ancestor} todo\` or reparent the task` |
+| draft ancestor | `task {id} sits under {ancestor}, which is still a draft: open it with \`task move {ancestor} todo\` before this can be worked` |
+| unmet prerequisite | `{kind} {id} is gated on work that is not done: {details}. A prerequisite satisfies a gate only at status done: finish it, or drop the edge with \`task update <owner> --depends-on ...\` or \`--clear-dependencies\`.` — plus ` Re-plan the dependency before claiming.` when the blocking prerequisite itself is `kiv` or `abandoned` |
+
+Explicit resumption of a `kiv` ancestor (or an authorized reopen of an
+`abandoned` one) restores its descendants under the normal gates; otherwise
+reparent or replan — never an automatic release.
 
 A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
 does; `kb-board` fills them from your checkout, and a flag you pass wins.
@@ -1151,6 +1290,102 @@ an optional flag.
 
 Plan steps are child rows or one `--kind plan` note. There is no checklist
 field, and adding one would put the same truth in two places.
+
+## Cleanup ledger — what you allocated, you remove
+
+**A done row holds no host resources.** Every worktree, container, volume,
+scratch dir or hal clone a unit of work allocates leaks past the row unless
+something records it — so the moment you create one, register it on the
+task, and before the row moves done every entry is either removed with a
+measured receipt or held with a live expiry. Kanban records the attestation
+and never deletes anything itself: removal happens on the host, the ledger
+holds the receipt.
+
+```bash
+kb task cleanup add t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --run run-7 --as "$AGENT" --json
+kb task cleanup list t-1a2b3c4d --json
+kb task cleanup remove t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --proof-kind tree-merged-published --proof "rev-list empty, status clean, ls-remote merged" --bytes 412000 --as "$AGENT" --json
+kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --owner "@:geoyws/acies/driver" --expiry "$(( ($(date +%s) + 7*86400) * 1000 ))" --reason "kept for the next lane's repro" --as "$AGENT" --json   # expiry: epoch ms, a week out
+kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --release --as "$AGENT" --json
+kb cleanup report --json
+```
+
+The manifest is per task: `task cleanup add ID --host HOST --kind KIND
+(--path ABSPATH | --ref ID) --run RUN --as ACTOR` registers one `allocated`
+entry the moment the resource is created, carrying host, kind, path-or-id,
+the creating run id, and state. Filesystem kinds (`worktree`,
+`hal-cargo-dir`, `gate-dir`, `tmp-log`) take an absolute `--path`; runtime
+kinds (`container`, `image`, `volume`, `network`, `e2e-database`) take a
+non-empty `--ref`. `kind` is exactly one of `worktree hal-cargo-dir gate-dir
+container image volume network e2e-database tmp-log`. Entries survive
+restarts, retags and metadata patches; removing the task deletes its
+manifest rows in the same transaction. A duplicate non-removed `(host, kind,
+path_or_id)` on the same task is refused as already registered. `--as` is
+mandatory on every write verb, and each write appends one hash-chained board
+event (`cleanup_registered`, `cleanup_removed`, `cleanup_held`,
+`cleanup_released`).
+
+Remove when torn down: `task cleanup remove ID --host HOST --kind KIND
+(--path ABSPATH | --ref ID) --proof-kind KIND --proof TEXT --bytes N --as
+ACTOR` marks the entry `removed`, storing the receipt — a validated
+`--proof-kind` from the entry kind's allowed set, inline `--proof` text of
+1..2000 characters naming the measurement run on the host, and `--bytes` of
+0 or more reclaimed. `worktree` takes `tree-merged-published` only (fresh
+`git ls-remote` showing the branch merged/published, `git rev-list HEAD
+--not --remotes` empty, `git status --porcelain` empty); `hal-cargo-dir`
+takes `build-dir-removed`; `gate-dir` takes `gate-dir-removed`;
+`container`, `image` and `volume` take `runtime-gone`; `network` takes
+`network-gone`; `e2e-database` takes `database-gone`; `tmp-log` takes
+`log-gone`. Whether the named checks actually ran is attested, not checked:
+a false attestation is attributable to the `--as` writer in the chained
+event, never to a host check.
+
+Hold what must outlive the row: `task cleanup hold ID --host HOST --kind
+KIND (--path ABSPATH | --ref ID) --owner OWNER --expiry MS --reason TEXT --as
+ACTOR` holds one entry with a non-empty owner, an expiry in epoch
+milliseconds strictly after the write time, and a reason of 1..500
+characters; `--release` returns it to `allocated`, and holding an
+already-held entry refreshes owner, expiry and reason in place. An expired
+hold — `held` with expiry at or before now — counts as outstanding: it
+refuses the done-write and renders with the `(held by {owner} until
+{expiry}, expired)` suffix. Nothing auto-releases it; refreshing the hold or
+removing the entry opens the gate again. Removing a held entry is allowed;
+holding or re-holding a removed one is refused.
+
+Read it back with `task cleanup list ID [--include-removed]`, which answers
+`allocated` and `held` first in registration order and `removed` only with
+the flag. `task show` and `task ctx` include the task's open entries.
+`cleanup report [--board-tag group/NAME [--group-snapshot TOKEN]]` answers
+per board which task rows reached `done` with nothing outstanding
+(`cleanupDone`), every outstanding entry with its age, and every live hold
+in its own held section — or one section per member board across a named
+group, with the same membership and read-only snapshot rules as the other
+group reads. There is no `--all` flag.
+
+MCP mirrors the five verbs as generated tools with the same fields and
+refusals: `task_cleanup_add`, `task_cleanup_remove` and `task_cleanup_hold`
+are write tools, while `task_cleanup_list` and `cleanup_report` are read
+tools.
+
+The done refusal: every write whose resulting status is `done` on a
+task-type row — `task move ID done` (including done-to-done), `checkpoint
+--state done` (refused inside the one transaction, so the checkpoint row
+rolls back too), an import upsert that flips an existing entry-carrying row
+to `done` (the whole import rolls back), and the same dispatch through
+`transact` items — is refused while any entry is `allocated` or
+held-expired, landing nothing. (`task add --status done` carries no manifest
+and always passes this gate; story and epic rows check none.) It applies to
+every actor including `geoyws`, and there is no `--force` past it — the way
+past is removal or hold, both audited. The sentence, verbatim with only the
+bracketed values varying:
+
+```
+task {id} cannot reach done: {n} cleanup resource(s) still allocated — {entry}, {entry} — remove each with task cleanup remove {id} --host HOST --kind KIND --path PATH|--ref ID --proof-kind KIND --proof PROOF --bytes N --as ACTOR or hold it with task cleanup hold {id} --host HOST --kind KIND --path PATH|--ref ID --owner OWNER --expiry MS --reason TEXT --as ACTOR
+```
+
+Each entry renders as `{host}/{kind}/{path_or_id}` in registration order,
+oldest first, joined with `, `; pass that sentence on rather than
+paraphrasing it.
 
 ## Batched writes — `transact`
 
@@ -1317,14 +1552,16 @@ Keep `TOKEN` from `results[0].result.leaseToken`; the END batch needs it.
 [
   { "name": "task_show",      "arguments": { "id": "t-1a2b3c4d", "limit": 200 } },
   { "name": "context",        "arguments": { "id": "t-1a2b3c4d" } },
-  { "name": "rule_list",      "arguments": {} },
   { "name": "attention_list", "arguments": { "status": "open", "task": "t-1a2b3c4d" } }
 ]
 ```
 
 Each item answers on its own, in order, as `{"index": N, "ok": true, "result":
 …}` or `{"index": N, "ok": false, "error": …}`; `result` is exactly what that
-read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). A
+read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). The
+rules ride item 1: `context` already carries the task's applicable `rulesIndex`
+and inline `alwaysRules`, so the READ batch adds no `rule_list`; fetch a lazy
+page with `kb r cat ID` only when the index says you need it. A
 failed item does not stop the others, and the batch exits zero. Item names are
 the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
@@ -1385,8 +1622,10 @@ progress count is a projection of the board.
 
 The child epic is the roadmap item's checkbox. The current CLI does not
 generically derive epic completion from all descendants, so move a child epic
-to `done` only after every non-cancelled descendant is settled and its evidence
-is durable. A single standalone action stays a task; do not wrap it in
+to `done` only after every non-cancelled, non-abandoned descendant is settled
+and its evidence is durable (`abandoned` is terminal dropped work, settled like
+`cancelled`; a `kiv` descendant is still parked work and keeps the epic open).
+A single standalone action stays a task; do not wrap it in
 ornamental epics.
 
 `--body-file` reads the body from disk, because a plan is markdown measured in
@@ -1439,6 +1678,25 @@ records intended work. Keep ADRs in the repo.
 before `backlog`: a row still being written, whose title, body or scope may still
 be wrong. `claim --next` skips it however urgent its priority, and naming it
 explicitly is refused.
+
+**Below `draft` sit two parked states, neither ever claimable** (kanban 0.3.1):
+`kiv` (kept in view) is a parked idea awaiting explicit
+resumption — never claimable, `completed_at` stays NULL, and age-archive never
+takes it; `abandoned` is terminal dropped work — never claimable,
+`completed_at` is set, and it archives like `done`/`cancelled`. Neither is
+`cancelled` (stopped committed work) nor `done` (completed work). Default
+`t ls` and the working `ctx` omit both; address them explicitly with
+`t ls --status kiv` / `--status abandoned --json` or `t cat <id>`. Park with
+`kb t mv <id> kiv --as "$ACTOR"`, drop with `kb t mv <id> abandoned --as
+"$ACTOR"`; resume a parked idea only with an explicit move to `draft`,
+`backlog` or `todo`, and reopen dropped work like a cancelled row. The
+adjacency refusals, verbatim:
+
+| move | refusal |
+|---|---|
+| terminal row to `kiv` | `task {id} is {done|cancelled|abandoned}, not parkable: reopen it to draft, backlog or todo before moving to kiv` |
+| `kiv` anywhere but home | `task {id} is kiv: resume it explicitly to draft, backlog or todo before moving to {to}` |
+| `done` to `abandoned` | `task {id} is done: completed work cannot be abandoned; use cancelled for stopped committed work` |
 
 Because a plan is an epic, a drafted plan holds back its whole tree: no task
 beneath it is offered or granted until the plan is opened, however deep it sits.
@@ -1493,8 +1751,8 @@ Add a rule for one board and one of its sprints through the registry-owned
 `kb-host` path, never `kb-board`:
 
 ```bash
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." \
-  --board BOARD --sprint sp-ID [--tag slug] --as ACTOR
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." --title "..." \
+  --board BOARD --sprint sp-ID [--tag slug] [--load always|lazy] --as ACTOR
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
   --sprint sp-ID --as ACTOR
 <skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
@@ -1964,9 +2222,12 @@ kb t ls --all --json             # active plus cold tasks
 kb ev --task <id> --all --json   # cold audit history for one task
 ```
 
-The sweep archives only settled rows older than the cutoff: `done`/`cancelled`
-tasks without a lease, their notes/checkpoints/tags/events, settled handoffs,
+The sweep archives only settled rows older than the cutoff:
+`done`/`cancelled`/`abandoned` tasks without a lease, their
+notes/checkpoints/tags/events, settled handoffs,
 resolved attention and linked sitreps. Old taskless settled records are included.
+`kiv` rows are never archived for age: parking is not settling, and only an
+explicit resume or abandon moves them.
 It also archives terminal deployment attempts that are no longer the current
 verified success for their `(repo, tier, environment)`. Started attempts and
 each target's latest verified success always remain hot.
@@ -2087,6 +2348,20 @@ once a silent wrong answer.
   reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
+- `--as` (or `--actor`) and `--lane` must name the same lane on the six
+  self-lane writes — `claim`, `handoff accept`, `scope bind`, `scope revoke`,
+  `scope release`, `contrib record` — and a disagreement is refused before
+  anything is opened, naming both: `--as @:geoyws/kanban/driver-3 --lane
+  driver-2` answers `--as @:geoyws/kanban/driver-3 names lane driver-3 but
+  --lane is driver-2: pass --lane driver-3, or name lane driver-2's own
+  callsign`. The lane of a callsign of three or more segments is its third
+  segment; seat and deeper segments are ignored. The
+  one- and two-segment cockpit-side form (`@:superdriver/executor`, `@:medic`)
+  names its first segment instead; that half is specified (kanban
+  `t-0fb1e43d`, SPEC-READY) and implemented (kanban `t-af6a3630`), so until
+  the binary you call carries it, only the three-or-more-segment check fires.
+  Routing verbs (`task add`, `sitrep post`, `attention raise`, ...) are never
+  checked: there `--lane` names where the row goes, not who writes it.
 - A capped listing with more rows than the default the caller never set is
   refused naming `--limit N`. `kb att list` on a busy board without `--limit`
   fails, and that is correct: a page cut at the default would read as the

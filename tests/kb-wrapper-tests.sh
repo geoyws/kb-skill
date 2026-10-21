@@ -1452,6 +1452,7 @@ test_host_surface_matches_source_allowlist() {
     contrib
   )
   local denied=(
+    board
     deploy
     import
     tag
@@ -1479,6 +1480,10 @@ test_host_surface_matches_source_allowlist() {
     batch
     incident
     worktree
+    message
+    milestone
+    cleanup
+    overlap
   )
 
   local command
@@ -2082,6 +2087,35 @@ test_host_remote_exec_uses_ssh_and_preserves_argv() {
   assert_argv_file "$kb_log" r ls --json "$empty" "$single_quote" "$embedded_newline" "$trailing_newline" "$dollar_paren" "$glob"
 }
 
+test_host_remote_rule_list_board_reaches_kb_argv() {
+  local fakebin="$tmp_dir/host-rule-board/fakebin"
+  local ssh_log="$tmp_dir/host-rule-board/ssh.argv"
+  local kb_log="$tmp_dir/host-rule-board/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local host_id home_host ssh_target remote_host table kb_exec
+  host_id=$(make_id host)
+  home_host=$(make_id home)
+  ssh_target=$(make_id target)
+  remote_host=$(make_id remote)
+  kb_exec="$fakebin/kb"
+  table="$tmp_dir/host-rule-board/hosts.tsv"
+  make_table "$table" "$host_id" "$home_host" "$ssh_target" "$remote_host" "$kb_exec"
+
+  FAKE_HOSTNAME_VALUE=$(make_id current) \
+  FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+  FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+  FAKE_REMOTE_PATH="$fakebin" \
+  FAKE_SSH_LOG="$ssh_log" \
+  FAKE_KB_LOG="$kb_log" \
+  KB_HOSTS_TABLE="$table" \
+  PATH="$fakebin:$PATH" \
+  "$package_dir/scripts/kb-host" "$home_host" r ls --board kanban
+
+  assert_argv_prefix "$ssh_log" -- "$ssh_target"
+  assert_argv_file "$kb_log" r ls --board kanban
+}
+
 test_host_table_conflicts_are_fail_closed() {
   local fakebin="$tmp_dir/host-conflict/fakebin"
   local ssh_log="$tmp_dir/host-conflict/ssh.argv"
@@ -2681,6 +2715,7 @@ main() {
     test_host_registry_commands_are_allowed_without_transport
     test_host_local_exec_preserves_argv_and_uses_table_binary
     test_host_remote_exec_uses_ssh_and_preserves_argv
+    test_host_remote_rule_list_board_reaches_kb_argv
     test_host_table_conflicts_are_fail_closed
     test_host_refuses_board_owned_commands_without_transport
     test_host_remote_hostname_mismatch_is_fail_closed
