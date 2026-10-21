@@ -33,7 +33,17 @@ umask 077
 if [[ "$op" = claim || "$op" = handoff-accept ]]; then
   [[ ! -e "$session" ]] || { echo 'kb-session-lease: session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)' >&2; exit 64; }
   if [[ "$op" = claim ]]; then
-    cmd=(claim "$id" "$@" --json)
+    cmd=(claim "$id" "$@")
+    # Record the claim under this session, so the session-end form
+    # `release --session "$KB_SESSION_ID"` frees it. An explicit --session wins.
+    explicit_session=''
+    for arg in "$@"; do
+      case "$arg" in --session|--session=*) explicit_session=1 ;; esac
+    done
+    if [[ -n "${KB_SESSION_ID:-}" && -z "$explicit_session" ]]; then
+      cmd+=(--session "$KB_SESSION_ID")
+    fi
+    cmd+=(--json)
   else
     cmd=(h acc "$id" "$@" --json)
   fi

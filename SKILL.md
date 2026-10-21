@@ -1241,6 +1241,56 @@ boundary is recorded or nothing is.
 `kb note` needs no lease, so a progress line still lands after a lease lapsed —
 which is exactly when you most want it to.
 
+### Session end releases its own claims — `release --session`
+
+A session that ends without releasing leaves its rows locked until the lease
+runs out, invisible to every other lane. The session-end form frees them at
+once:
+
+```bash
+kb release --session "$KB_SESSION_ID" --as "$ACTOR" --force --json
+# {"session": "<id>", "released": ["t-1a2b3c4d", "t-5e6f7a8b"]}
+```
+
+- It selects every live claim whose stored session is that id, on the board
+  the command addresses. Run it once per board the session claimed on.
+- It frees only claims held by the worker `--as` names (the two seats of one
+  lane are one worker). If any selected claim belongs to another worker, the
+  whole call is refused and nothing is freed:
+  `release --session ID found task T held by H, not ACTOR; that session is not yours to end`.
+- `--force` is required; it is what makes the release audited. Each freed
+  claim writes a `claim_released` event carrying `{"sessionId", "endedBy"}`.
+- With no matching claims it succeeds and prints an empty `released` list, so
+  a harness session-end hook can run it unconditionally.
+- `kb-session-lease BOARD claim` records the claim under `KB_SESSION_ID` when
+  it is set (it adds `--session "$KB_SESSION_ID"`; an explicit `--session`
+  wins). A bare `kb claim` records a session only if you pass `--session`. A
+  claim with no session is never selected; end it with `release ID --lease TOKEN`.
+- The harness must export the same `KB_SESSION_ID` to the claiming shell and
+  to its session-end hook. A pane-keyed session (no `KB_SESSION_ID`) records
+  no session, so its claims are not reachable by this form.
+
+The single-task form `kb release <id> --lease "$TOKEN"` is unchanged, and it
+stays the right verb inside a session: the session form is for the end.
+
+### `staleClaims` — holders that have gone quiet
+
+`kb doctor --json` (each readable entry in `projects`) and `kb dashboard
+--json` (each readable board row, including `--all` and `--board-tag`) carry
+`staleClaims`: live claims whose last heartbeat is more than 30 minutes old.
+
+```json
+{ "taskID": "t-1a2b3c4d", "holder": "@:example/example/driver-2",
+  "sessionID": "…", "heartbeatAt": 1788599100000, "expiresAt": 1788602700000,
+  "ageMinutes": 41 }
+```
+
+It is advisory: it never changes `healthy` or the exit status, and reading it
+writes, sweeps and renews nothing. `sessionID` is `null` for a claim taken
+without a session. A stale claim is still live; ask its holder, or wait for
+expiry. Never release it for them: only the holder, or its own session's
+end, ends a claim.
+
 ### `orphanedFrom` — what the previous holder left behind
 
 When you claim or read a task whose previous holder died, the claim receipt and

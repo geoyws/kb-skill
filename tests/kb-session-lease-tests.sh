@@ -52,6 +52,8 @@ out=$("$lease" dotfiles claim t-fake --as test)
 case "$out" in *12345678*) exit 1 ;; esac
 [ "$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")" = 600 ] || exit 1
 [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
+# The claim is recorded under KB_SESSION_ID, so `release --session` can end it.
+[ "$(sed -n '1p' "$t/calls")" = 'dotfiles claim t-fake --as test --session lease-test-session --json' ] || exit 1
 # An unrelated second claim must not silently overwrite this session's token.
 if "$lease" dotfiles claim t-other --as test >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = 1 ] || exit 1
@@ -67,6 +69,11 @@ out=$("$lease" dotfiles claim t-fake --as test)
 [ -f "$session" ] || exit 1
 out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done --intent done --next-action next)
 [ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+# An explicit --session is passed through once and wins over KB_SESSION_ID.
+out=$("$lease" dotfiles claim t-fake --as test --session explicit-session)
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session explicit-session --json' ] || exit 1
+out=$("$lease" dotfiles release t-fake)
 [ ! -e "$session" ] || exit 1
 out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
