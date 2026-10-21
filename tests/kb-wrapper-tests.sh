@@ -145,6 +145,12 @@ contains_item() {
   return 1
 }
 
+extract_source_surface_commands() {
+  local source_file=$1
+  local script_dir
+  script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  "$script_dir/parse-rust-surface.pl" commands "$source_file"
+}
 
 extract_canonical_aliases() {
   local source_file=$1
@@ -188,6 +194,11 @@ assert_exact_surface() {
   done
 }
 
+assert_source_surface_matches_fixture() {
+  local source_file=$1
+  local fixture_file=$2
+  assert_exact_surface "$source_file" "$fixture_file" extract_source_surface_commands 'command surface'
+}
 
 assert_exact_alias_surface() {
   local source_file=$1
@@ -195,6 +206,20 @@ assert_exact_alias_surface() {
   assert_exact_surface "$source_file" "$fixture_file" extract_canonical_aliases 'alias surface'
 }
 
+make_synthetic_source_surface() {
+  local source_file=$1
+  local fixture_file=$2
+
+  mkdir -p "$(dirname -- "$source_file")"
+  {
+    printf '%s\n' 'pub(crate) const COMMANDS: &[CommandRow] = &['
+    while IFS= read -r command; do
+      [[ -z "$command" ]] && continue
+      printf '    ("%s", None, &[], &[], false),\n' "$command"
+    done <"$fixture_file"
+    printf '%s\n' '];'
+  } >"$source_file"
+}
 
 make_synthetic_canonical_alias_source() {
   local source_file=$1
@@ -214,6 +239,11 @@ make_synthetic_canonical_alias_source() {
   } >"$source_file"
 }
 
+make_spoofed_command_surface() {
+  local source_file=$1
+  local fixture_file=$2
+  "$script_dir/make-spoofed-surface.pl" commands "$fixture_file" "$source_file"
+}
 
 make_spoofed_alias_surface() {
   local source_file=$1
@@ -1392,6 +1422,173 @@ test_registry_commands_are_rejected_without_transport() {
   done
 }
 
+test_host_surface_matches_source_allowlist() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file=${KB_SOURCE_RUST_FILE:-"$tmp_dir/source-surface/rust/lib.rs"}
+  if [[ -n ${KB_SOURCE_RUST_FILE-} ]]; then
+    [[ -r "$source_file" ]] || fail "missing source command surface file: $source_file"
+  else
+    make_synthetic_source_surface "$source_file" "$fixture_file"
+  fi
+
+  assert_source_surface_matches_fixture "$source_file" "$fixture_file"
+
+  local allowed=(
+    version v
+    init
+    workspace w ws
+    dashboard dash
+    doctor
+    audit
+    backup
+    restore
+    rule r
+    schema
+    mcp
+    access
+    plugin
+    worker
+    link
+    scope
+    contrib
+    model
+  )
+  local denied=(
+    board
+    deploy
+    import
+    tag
+    archive
+    search
+    search-rebuild
+    task t
+    story s
+    handoff h
+    attention att attn
+    claim
+    checkpoint cp
+    heartbeat hb
+    release rel
+    note n
+    context ctx
+    events ev
+    watch
+    sitrep sr
+    subscription
+    todo
+    stale
+    transact
+    sprint
+    batch
+    incident
+    worktree
+    message
+    milestone
+    cleanup
+    overlap
+  )
+
+  local command
+  while IFS= read -r command; do
+    [[ -z "$command" ]] && continue
+    if contains_item "$command" "${allowed[@]}"; then
+      continue
+    fi
+    if contains_item "$command" "${denied[@]}"; then
+      continue
+    fi
+    fail "unexpected top-level command in $source_file: $command"
+  done < <(extract_source_surface_commands "$source_file")
+}
+
+test_host_surface_external_source_override_is_accepted() {
+  if [[ -z ${KB_SOURCE_RUST_FILE-} ]]; then
+    return 0
+  fi
+
+  test_host_surface_matches_source_allowlist
+}
+
+test_host_surface_missing_command_drift_is_fail_closed() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file="$tmp_dir/source-missing/rust/lib.rs"
+  local pruned_fixture="$tmp_dir/source-missing/expected.txt"
+  mkdir -p "$(dirname -- "$pruned_fixture")"
+  grep -vx '^schema$' "$fixture_file" >"$pruned_fixture"
+  make_synthetic_source_surface "$source_file" "$pruned_fixture"
+
+  local output status
+  set +e
+  output=$(assert_source_surface_matches_fixture "$source_file" "$fixture_file" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'missing command drift should fail closed'
+  fi
+  assert_contains "$output" 'command surface mismatch' 'missing command drift'
+}
+
+test_host_surface_new_command_drift_is_fail_closed() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file="$tmp_dir/source-new/rust/lib.rs"
+  make_synthetic_source_surface "$source_file" "$fixture_file"
+  local needle=$'\n];\n'
+  local replacement_file="$tmp_dir/source-new/replacement.txt"
+  mkdir -p "$(dirname -- "$replacement_file")"
+  "$script_dir/make-drift-replacement.pl" command >"$replacement_file"
+  inject_text_before_literal "$source_file" "$needle" "$replacement_file"
+
+  local output status
+  set +e
+  output=$(assert_source_surface_matches_fixture "$source_file" "$fixture_file" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'new command drift should fail closed'
+  fi
+  assert_contains "$output" 'command surface mismatch' 'new command drift'
+}
+
+test_host_surface_spoofed_strings_are_ignored() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file="$tmp_dir/source-spoofed/rust/lib.rs"
+  make_spoofed_command_surface "$source_file" "$fixture_file"
+  assert_source_surface_matches_fixture "$source_file" "$fixture_file"
+}
+
+test_host_surface_duplicate_commands_are_fail_closed() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file="$tmp_dir/source-duplicate/rust/lib.rs"
+  "$script_dir/make-spoofed-surface.pl" commands "$fixture_file" "$source_file" duplicate
+
+  local output status
+  set +e
+  output=$(assert_source_surface_matches_fixture "$source_file" "$fixture_file" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'duplicate command declarations should fail closed'
+  fi
+  assert_contains "$output" 'duplicate COMMANDS declaration' 'duplicate command declarations'
+}
+
+test_host_surface_missing_commands_table_is_fail_closed() {
+  local fixture_file="$script_dir/kb-source-commands.txt"
+  local source_file="$tmp_dir/source-missing-table/rust/lib.rs"
+  mkdir -p "$(dirname -- "$source_file")"
+  : >"$source_file"
+
+  local output status
+  set +e
+  output=$(assert_source_surface_matches_fixture "$source_file" "$fixture_file" 2>&1)
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    fail 'missing COMMANDS table should fail closed'
+  fi
+  assert_contains "$output" 'missing COMMANDS table' 'missing COMMANDS table'
+}
+
 test_alias_surface_matches_fixture() {
   local fixture_file="$script_dir/kb-canonical-aliases.txt"
   local source_file=${KB_SOURCE_RUST_FILE:-"$tmp_dir/alias-surface/rust/lib.rs"}
@@ -2498,6 +2695,13 @@ main() {
     test_board_body_file_with_inline_items_is_refused_without_staging
     test_transact_items_file_at_the_boundary_needs_no_streaming
     test_generated_table_transfers_body_file
+    test_host_surface_matches_source_allowlist
+    test_host_surface_external_source_override_is_accepted
+    test_host_surface_missing_command_drift_is_fail_closed
+    test_host_surface_new_command_drift_is_fail_closed
+    test_host_surface_spoofed_strings_are_ignored
+    test_host_surface_duplicate_commands_are_fail_closed
+    test_host_surface_missing_commands_table_is_fail_closed
     test_alias_surface_matches_fixture
     test_alias_surface_missing_alias_drift_is_fail_closed
     test_alias_surface_new_alias_drift_is_fail_closed
