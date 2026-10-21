@@ -146,9 +146,10 @@ Outside the board home host, do not call `kb` directly.
   `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
   board helper. `sprint`, `batch`, `incident` and `worktree` are board-owned
   and route here.
-  On `checkpoint` and `handoff create` it also forwards your checkout as
-  `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
-  otherwise capture the board host's cwd (see Provenance).
+  On `checkpoint`, `handoff create` and `sitrep post` it also forwards your
+  checkout as `--repo` / `--branch` / `--head` / `--dirty`, because the binary
+  would otherwise capture the board host's cwd, and adds `--git-captured` when
+  it filled all four itself (see Provenance).
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
@@ -937,8 +938,8 @@ REQUIRED ACTION, session handoff. The lane's position as a whole: no task,
 no lease. Through `kb-board`, run from inside the checkout so `--repo`,
 `--branch`, `--head` and `--dirty` are captured from it:
 
-1. Run `<skill-dir>/scripts/kb-board BOARD_ID h new --as "$ACTOR" --to "$ACTOR" --reason session_end --summary "…" --intent "…" --next-action "…" --json` from inside the checkout, and omit all four provenance flags there: they are auto-captured from the cwd and stored as `repoPath`, `branch`, `headSha`, `dirtySummary`. `--to` takes the full canonical lane actor, not the short lane name.
-2. In an interactive board-host shell your checkout is not there, so pass all four provenance flags yourself: `--repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY"`.
+1. Run `<skill-dir>/scripts/kb-board BOARD_ID h new --as "$ACTOR" --to "$ACTOR" --reason session_end --summary "…" --intent "…" --next-action "…" --json` from inside the checkout, and omit all four provenance flags there: they are auto-captured from the cwd and stored as `repoPath`, `branch`, `headSha`, `dirtySummary`, and the wrapper adds `--git-captured` so the head is recorded as read (`headSource: kb-wrapper`). `--to` takes the full canonical lane actor, not the short lane name.
+2. In an interactive board-host shell your checkout is not there, so pass all four provenance flags yourself: `--repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY"`. Never add `--git-captured` by hand.
 3. `--dirty` is measured, never guessed: `clean`, `1 file changed`, or `N files changed`. An explicit flag always wins over capture.
 
 REQUIRED ACTION, list and accept:
@@ -1063,7 +1064,7 @@ decides what may follow it:
 
 | the unit | items |
 |---|---|
-| finished | `checkpoint` `state: done` + `note` |
+| finished | not a `transact`: `kb-board BOARD cp ID --state done` from the trunk checkout, then `note` (see below) |
 | continues later | `checkpoint` `state: continue` + `note` + `release` |
 | continues in another lane | `note` + `handoff_create` |
 
@@ -1567,31 +1568,33 @@ the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
 (`"with-relations": true`).
 
-**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
-note. `state: done` releases the lease in the same transaction, so no
-`release` follows it.
+**3. END** — a finished unit closes **outside** `transact`. A done write needs
+a full head read from a checkout (Trunk, below), and `kb-board` reads it only
+for a direct `checkpoint`, never for a `transact` item; a typed `head` such as
+`da9a794` is refused and takes the whole batch, closing note included, down
+with it. So land the work on trunk first, then run the done checkpoint from
+that checkout and send the closing note after it. `--state done` releases the
+lease in the same write, so no `release` follows it. Leave `--repo`,
+`--branch`, `--head` and `--dirty` off: the wrapper fills all four from one git
+read and attests them, and any one typed by hand voids the attestation.
 
-```json
-[
-  { "name": "checkpoint",
-    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
-                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
-                   "summary": "wrapper change merged and gated",
-                   "intent": "close the unit",
-                   "next-action": "none; the train carries it",
-                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
-                   "head": "da9a794", "dirty": "clean" } },
-  { "name": "note",
-    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
-                   "as": "@:geoyws/kanban/driver/executor",
-                   "text": "gate green at da9a794" } }
-]
+```bash
+cd /root/work/src/kanban            # the trunk checkout, at the landed commit
+<skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d --lease TOKEN \
+  --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
+<skill-dir>/scripts/kb-board BOARD_ID note t-1a2b3c4d "gate green at <full head>" \
+  --as "@:geoyws/kanban/driver/executor" --kind evidence --json
 ```
+
+A unit that continues later still ends in one `transact` — `checkpoint`
+`state: continue` + `note` + `release` — because nothing in it reaches done.
 
 ```bash
 kb transact --items-file start.json --json
 kb batch    --items-file read.json  --json
-kb transact --items-file end.json   --json
+kb transact --items-file end.json   --json   # a continue-later END only
 # through the wrapper, each file travels on the one ssh's stdin:
 <skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
 ```
@@ -1955,6 +1958,18 @@ Recorded automatically. You do not pass it, and you should not have to:
   detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
   you pass is left alone. All three refuse a row whose provenance would be
   blank, so in an interactive board-host shell, pass the four yourself.
+- **`--git-captured` — the wrapper's attestation, never typed.** When
+  `kb-board` filled all four of `--repo`, `--branch`, `--head` and `--dirty`
+  from its own git read, and you passed none of them, it appends the boolean
+  `--git-captured`. Pass any one of the four yourself and it adds nothing.
+  kanban records each `checkpoint`, `handoff` and `sitrep` head's
+  `headSource`: `kanban` (the binary's own git read at `--repo`, or its cwd,
+  agreed with the head), `kb-wrapper` (a complete `--git-captured` call) or
+  `typed` (anything else). Only a read head — `kanban` or `kb-wrapper` — can
+  take a row to `done` (see Trunk). The wrapper adds the flag; you never type
+  it. Typing it is a recorded false attestation that git was read, and a call
+  carrying it without all four values is refused before anything is written:
+  `--git-captured needs --repo, --branch, --head and --dirty from the same git read`.
 - **Cross-board overlap uses a separate repository key.** Routed `kb-board`
   claim and task handoff acceptance derive it on the caller from the canonical
   Git common-dir and stable local machine ID. Linked worktrees of one repository
@@ -1981,6 +1996,37 @@ Recorded automatically. You do not pass it, and you should not have to:
 
 Run outside a git repository and provenance is recorded as absent rather than
 invented, and the command works exactly the same.
+
+## Trunk — done means on trunk
+
+Every write that takes a row of any type to `done` — `task move … done`,
+`checkpoint --state done`, `story advance` into `done`, `task add --status
+done`, an import — is refused unless the row's own recorded head is a full
+40-character SHA, read from a checkout (a claim's head, or `headSource`
+`kanban` / `kb-wrapper`), and contained in the board's trunk. This holds on
+every board, whatever its `done_gate`: it is not opt-in. The trunk is asked
+fresh each time (`git ls-remote`), so a merge that has not been pushed is not
+on trunk.
+
+```bash
+kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws   # geoyws only
+kb trunk show --json                                              # {"repo","remote","branch"} or null
+```
+
+- `trunk set` is accepted only from `geoyws`. `PATH` is a readable,
+  non-shallow checkout on the ledger's host, `NAME` a remote configured there
+  that answers `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is
+  refused. A set writes one `trunk_set` event; there is no unset.
+- `trunk show` reads only, and is open to anyone who can read the board.
+- To land work: merge and push it to trunk, then record the landed commit
+  from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
+  epic (a story cannot be claimed) — through `kb-board` from inside the
+  checkout, so the head is read rather than typed. Then move it to `done`.
+- Refusals name the task, the head and `{remote}/{branch}`: no trunk set, no
+  head, a short head, a head not read from a checkout, trunk unreachable, not
+  on trunk, or the head moved during the check. Only `task move ID done --force
+  --as geoyws` passes a miss, and it records a `trunk_gate_override` event;
+  `--force` from anyone else is refused.
 
 ## Reading
 

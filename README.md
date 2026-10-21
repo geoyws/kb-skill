@@ -71,7 +71,10 @@ and `handoff_accept` items; unrelated item arguments remain unchanged.
 The local file or stdin is read once, rewritten locally, and remote batches
 still use one SSH connection. This identity is distinct from the historical
 `--repo`/`--branch`/`--head`/`--dirty` provenance
-recorded by checkpoint, handoff create and sitrep.
+recorded by checkpoint, handoff create and sitrep. When `kb-board` fills all
+four of those from its own git read and the caller passed none, it appends
+`--git-captured`, which kanban records as `headSource: kb-wrapper`; the flag
+is the wrapper's attestation and is never typed by hand.
 
 ## Workspace adoption and rule transfer
 
