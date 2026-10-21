@@ -1064,9 +1064,15 @@ decides what may follow it:
 
 | the unit | items |
 |---|---|
-| finished | `checkpoint` `state: done` + `note` |
+| finished | `note` in a `transact`, then `kb-board … cp ID --state done` as a command from the landed checkout |
 | continues later | `checkpoint` `state: continue` + `note` + `release` |
 | continues in another lane | `note` + `handoff_create` |
+
+`finished` is the one shape that cannot be one batch. A done checkpoint must
+carry a head read from a checkout (see **Trunk — done means on trunk**), and a
+batch item's `head` is always typed: `kb-board` reads git only for a
+`checkpoint` **command**, never for an item. So the done checkpoint goes last,
+as its own `kb-board` call from inside the checkout whose head is on trunk.
 
 `--state done` or `blocked` on a checkpoint **releases the lease in the same
 transaction** that records it — there is no window where the work reads finished
@@ -1568,24 +1574,19 @@ the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
 (`"with-relations": true`).
 
-**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
-note. `state: done` releases the lease in the same transaction, so no
-`release` follows it.
+**3. END** — for a finished unit, two calls: `end.json`, one `transact` with
+the closing note, and then the done checkpoint as a `kb-board` command from
+inside the checkout that landed on trunk. The checkpoint cannot ride in the
+batch: an item's `head` is typed, and only a head read from a checkout takes a
+row to `done` (see **Trunk — done means on trunk**). `--state done` releases
+the lease in the same transaction, so no `release` follows it.
 
 ```json
 [
-  { "name": "checkpoint",
-    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
-                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
-                   "summary": "wrapper change merged and gated",
-                   "intent": "close the unit",
-                   "next-action": "none; the train carries it",
-                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
-                   "head": "da9a794", "dirty": "clean" } },
   { "name": "note",
     "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
                    "as": "@:geoyws/kanban/driver/executor",
-                   "text": "gate green at da9a794" } }
+                   "text": "gate green; merged to trunk" } }
 ]
 ```
 
@@ -1595,7 +1596,17 @@ kb batch    --items-file read.json  --json
 kb transact --items-file end.json   --json
 # through the wrapper, each file travels on the one ssh's stdin:
 <skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
+# last, from inside the landed checkout, so kb-board reads the head itself:
+cd "$LANDED_CHECKOUT" && <skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d \
+  --lease "$TOKEN" --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
 ```
+
+Pass none of `--repo`, `--branch`, `--head` or `--dirty` there. `kb-board`
+fills all four from the checkout and adds `--git-captured`, so the row records
+`headSource: kb-wrapper`. Typing any one of them records a typed head, and the
+trunk gate refuses it.
 
 Replace `TOKEN` with the real token before sending: `$ref` reaches earlier
 items of its own batch only, never back into the START batch.
