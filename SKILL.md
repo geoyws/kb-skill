@@ -1064,7 +1064,7 @@ decides what may follow it:
 
 | the unit | items |
 |---|---|
-| finished | `checkpoint` `state: done` + `note` |
+| finished | not a `transact`: `kb-board BOARD cp ID --state done` from the trunk checkout, then `note` (see below) |
 | continues later | `checkpoint` `state: continue` + `note` + `release` |
 | continues in another lane | `note` + `handoff_create` |
 
@@ -1568,31 +1568,33 @@ the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
 (`"with-relations": true`).
 
-**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
-note. `state: done` releases the lease in the same transaction, so no
-`release` follows it.
+**3. END** — a finished unit closes **outside** `transact`. A done write needs
+a full head read from a checkout (Trunk, below), and `kb-board` reads it only
+for a direct `checkpoint`, never for a `transact` item; a typed `head` such as
+`da9a794` is refused and takes the whole batch, closing note included, down
+with it. So land the work on trunk first, then run the done checkpoint from
+that checkout and send the closing note after it. `--state done` releases the
+lease in the same write, so no `release` follows it. Leave `--repo`,
+`--branch`, `--head` and `--dirty` off: the wrapper fills all four from one git
+read and attests them, and any one typed by hand voids the attestation.
 
-```json
-[
-  { "name": "checkpoint",
-    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
-                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
-                   "summary": "wrapper change merged and gated",
-                   "intent": "close the unit",
-                   "next-action": "none; the train carries it",
-                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
-                   "head": "da9a794", "dirty": "clean" } },
-  { "name": "note",
-    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
-                   "as": "@:geoyws/kanban/driver/executor",
-                   "text": "gate green at da9a794" } }
-]
+```bash
+cd /root/work/src/kanban            # the trunk checkout, at the landed commit
+<skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d --lease TOKEN \
+  --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
+<skill-dir>/scripts/kb-board BOARD_ID note t-1a2b3c4d "gate green at <full head>" \
+  --as "@:geoyws/kanban/driver/executor" --kind evidence --json
 ```
+
+A unit that continues later still ends in one `transact` — `checkpoint`
+`state: continue` + `note` + `release` — because nothing in it reaches done.
 
 ```bash
 kb transact --items-file start.json --json
 kb batch    --items-file read.json  --json
-kb transact --items-file end.json   --json
+kb transact --items-file end.json   --json   # a continue-later END only
 # through the wrapper, each file travels on the one ssh's stdin:
 <skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
 ```
