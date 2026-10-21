@@ -1999,14 +1999,18 @@ invented, and the command works exactly the same.
 
 ## Trunk — done means on trunk
 
-Every write that takes a row of any type to `done` — `task move … done`,
-`checkpoint --state done`, `story advance` into `done`, `task add --status
-done`, an import — is refused unless the row's own recorded head is a full
-40-character SHA, read from a checkout (a claim's head, or `headSource`
-`kanban` / `kb-wrapper`), and contained in the board's trunk. This holds on
-every board, whatever its `done_gate`: it is not opt-in. The trunk is asked
-fresh each time (`git ls-remote`), so a merge that has not been pushed is not
-on trunk.
+On a board whose trunk `geoyws` has set, every write that takes a row of any
+type to `done` — `task move … done`, `checkpoint --state done`, `story
+advance` into `done`, an import flip — is refused when the row has recorded a
+head unless that head is a full 40-character SHA, read from a checkout (a
+claim's head, kept even after the claim ends, or `headSource` `kanban` /
+`kb-wrapper`), and contained in the board's trunk. The head judged is the
+newest across the row's checkpoints, handoffs, sitreps and claim heads. The
+check is opt-in per board: a board with no trunk set (`trunk show` answers
+`null`) is not checked, and a row that never recorded a head (non-code work,
+a `task add --status done`, a newly imported row) is not checked either,
+whatever the board's `done_gate`. The trunk is asked fresh each time (`git
+ls-remote`), so a merge that has not been pushed is not on trunk.
 
 ```bash
 kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws   # geoyws only
@@ -2022,11 +2026,14 @@ kb trunk show --json                                              # {"repo","rem
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
   epic (a story cannot be claimed) — through `kb-board` from inside the
   checkout, so the head is read rather than typed. Then move it to `done`.
-- Refusals name the task, the head and `{remote}/{branch}`: no trunk set, no
-  head, a short head, a head not read from a checkout, trunk unreachable, not
-  on trunk, or the head moved during the check. Only `task move ID done --force
-  --as geoyws` passes a miss, and it records a `trunk_gate_override` event;
-  `--force` from anyone else is refused.
+- Refusals name the task, the head and `{remote}/{branch}`: a short head, a
+  head not read from a checkout, trunk unreachable, not on trunk, or the head
+  moved during the check (the old "no trunk set" and "no head" refusals are
+  retired). Only `task move ID done --force --as geoyws` passes a miss, and it
+  records a `trunk_gate_override` event; `--force` from anyone else is
+  refused. A `--force` on a write that is not checked records nothing.
+- An outstanding cleanup entry refuses every done path on every row type,
+  stories and epics included, with no `--force` past it.
 
 ## Reading
 
