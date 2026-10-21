@@ -4,8 +4,10 @@ attention
 audit
 backup
 batch
+board
 checkpoint
 claim
+cleanup
 context
 contrib
 dashboard
@@ -19,7 +21,10 @@ incident
 init
 link
 mcp
+message
+milestone
 note
+overlap
 plugin
 release
 restore
