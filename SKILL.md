@@ -430,9 +430,9 @@ identifiers run out. A cockpit-side pane (`_medic`, `_superdriver`) has no
 group, team or lane, so its callsign is the window token, then its seat —
 `@:superdriver/executor`, `@:medic/planner` — with `--lane` set to that token.
 
-Nothing verifies the two agree today. If you write `--as
-"@:geoyws/px/driver-3/executor" --lane driver-2`, the ledger stores both without
-complaint — see the `kanban` board for the refusal that should exist.
+The ledger checks that the two agree on the six self-lane writes: `--as
+"@:geoyws/px/driver-3/executor" --lane driver-2` on a `claim` is refused, naming
+both lanes (the `--as` and `--lane` rule under the refusal list below).
 
 ## Tag-scoped rules — what frames work
 
@@ -2392,6 +2392,20 @@ once a silent wrong answer.
   reads like a finding, and that is how a typo becomes a wrong answer somebody acts on.
 - `--tag` and `--clear-tags` together are refused rather than ranked, like every
   other pair of answers to one question.
+- `--as` (or `--actor`) and `--lane` must name the same lane on the six
+  self-lane writes — `claim`, `handoff accept`, `scope bind`, `scope revoke`,
+  `scope release`, `contrib record` — and a disagreement is refused before
+  anything is opened, naming both: `--as @:geoyws/kanban/driver-3 --lane
+  driver-2` answers `--as @:geoyws/kanban/driver-3 names lane driver-3 but
+  --lane is driver-2: pass --lane driver-3, or name lane driver-2's own
+  callsign`. The lane of a callsign of three or more segments is its third
+  segment; seat and deeper segments are ignored. The
+  one- and two-segment cockpit-side form (`@:superdriver/executor`, `@:medic`)
+  names its first segment instead; that half is specified (kanban
+  `t-0fb1e43d`, SPEC-READY) and implemented (kanban `t-af6a3630`), so until
+  the binary you call carries it, only the three-or-more-segment check fires.
+  Routing verbs (`task add`, `sitrep post`, `attention raise`, ...) are never
+  checked: there `--lane` names where the row goes, not who writes it.
 - A capped listing with more rows than the default the caller never set is
   refused naming `--limit N`. `kb att list` on a busy board without `--limit`
   fails, and that is correct: a page cut at the default would read as the
