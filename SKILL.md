@@ -1259,13 +1259,19 @@ kb release --session "$KB_SESSION_ID" --as "$ACTOR" --force --json
   whole call is refused and nothing is freed:
   `release --session ID found task T held by H, not ACTOR; that session is not yours to end`.
 - `--force` is required; it is what makes the release audited. Each freed
-  claim writes a `claim_released` event carrying `{"sessionId", "endedBy"}`.
+  claim writes a `lease_seized` event and then a `claim_released` event
+  carrying `{"sessionId", "endedBy"}`.
 - With no matching claims it succeeds and prints an empty `released` list, so
   a harness session-end hook can run it unconditionally.
-- `kb-session-lease BOARD claim` records the claim under `KB_SESSION_ID` when
-  it is set (it adds `--session "$KB_SESSION_ID"`; an explicit `--session`
-  wins). A bare `kb claim` records a session only if you pass `--session`. A
-  claim with no session is never selected; end it with `release ID --lease TOKEN`.
+- `kb-session-lease BOARD claim` and `handoff-accept` record the lease under
+  `KB_SESSION_ID` when it is set (they add `--session "$KB_SESSION_ID"`; an
+  explicit `--session` wins). A bare `kb claim` records a session from
+  `--session`, or from the `sessionId` of a `--session-context` file. A claim
+  with no session is never selected; end it with `release ID --lease TOKEN`.
+- A LINKED scope binding made without `--session` refuses a sessioned claim.
+  The helper then retries once without the session and warns that
+  `release --session` will not free that lease; rebind with
+  `scope bind ... --session` to make it reachable.
 - The harness must export the same `KB_SESSION_ID` to the claiming shell and
   to its session-end hook. A pane-keyed session (no `KB_SESSION_ID`) records
   no session, so its claims are not reachable by this form.
@@ -1288,8 +1294,8 @@ stays the right verb inside a session: the session form is for the end.
 It is advisory: it never changes `healthy` or the exit status, and reading it
 writes, sweeps and renews nothing. `sessionID` is `null` for a claim taken
 without a session. A stale claim is still live; ask its holder, or wait for
-expiry. Never release it for them: only the holder, or its own session's
-end, ends a claim.
+expiry. Do not end it for them: besides expiry, only the holder, its own
+session's end, or an audited `--force` ends a live claim.
 
 ### `orphanedFrom` — what the previous holder left behind
 
