@@ -1320,6 +1320,9 @@ What the verb checks, so you are not surprised by a refusal:
   held the row's claim. The lane that did the work never records its own
   review: the planner seat or the coordinator writes the row for the
   reviewer it spawned. A reviewer subagent never writes to the ledger itself.
+- **Who closes it.** On a gated board the actor that moves the row to `done`
+  must be neither the verdict's writer nor its reviewer, or the move is
+  refused as self-review. The planner writes the verdict; the executor closes.
 - **Which SHA.** Full 40-character SHAs only, already on origin.
   `--attest-published` is your statement that you checked; the ledger records
   who said so and when, and does not ask the remote.
