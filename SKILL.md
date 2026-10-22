@@ -1717,6 +1717,19 @@ included, so the core's agreement check sees exactly what you exported.
 Unreadable, oversized or repeated `--session-context` refuses on your machine
 before any connection.
 
+**A session file can also choose the board for a read.** `kb-board BOARD
+task list --session-board ctx.json` (kanban done-gate DG-31) travels exactly
+like `--session-context`, but the call then carries no `--project`: the board
+host resolves the file's board through its registry and reads it under your
+own grants, which is what works under managed enforcement, where `--project`
+is refused. It fills no `--as`, `--lane` or `--session`, so a board-wide read
+stays board-wide; add `--session-context` naming the same file to scope it to
+the file's lane. Only one-board reads accept it (the read-only commands,
+`batch`, `claim --candidates`); the binary refuses a write. The file's `board`
+must be BOARD, and a missing path, a repeat, an unreadable, oversized or
+unparseable file, or one naming no board or another board refuses on your
+machine before any connection.
+
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
 `kb ev --task <epic-id> --json` and needs nobody to have kept a copy:

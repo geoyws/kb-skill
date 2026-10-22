@@ -364,6 +364,18 @@ if [[ -n "${FAKE_KB_CTX_OUT:-}" ]]; then
     printf 'unset' >"$FAKE_KB_CTX_OUT.session"
   fi
 fi
+# DG-31's `--session-board`: what file the binary was handed, and its bytes.
+if [[ -n "${FAKE_KB_SB_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--session-board" ]]; then
+      cat -- "$arg" >"$FAKE_KB_SB_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_SB_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
+fi
 EOF
 
   cat >"$fakebin/git" <<'EOF'
@@ -811,6 +823,121 @@ test_session_context_at_the_boundary_needs_no_transfer() {
   assert_log_clean "$dir/ssh.argv" 'session context at the boundary'
   assert_argv_file "$dir/kb.argv" --project "$board_id" task show t-1 --session-context "$context"
   [[ "$(cat "$dir/seen.session")" == set:s-local ]] || fail 'local KB_SESSION_ID not inherited'
+}
+
+# kanban done-gate DG-31: `--session-board FILE` crosses like
+# `--session-context`, and the call then carries no `--project`; one file under
+# both flags crosses once, so the board host sees one path for both.
+test_board_session_board_is_transferred_and_sends_no_project() {
+  local dir="$tmp_dir/sessionboard"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  setup_fakebin "$fakebin"
+  local board_id remote_host table file
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '{"version":1,"board":"%s","lane":"driver","actor":"r","role":"executor","sessionId":"s-b","operatorIntent":[]}\n' "$board_id" >"$file"
+
+  run_sb() {
+    local seen=$1
+    shift
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_SB_OUT="$seen" \
+    FAKE_KB_CTX_OUT="$seen.ctx" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$@"
+  }
+
+  KB_SESSION_ID=s-b run_sb "$dir/seen1" "$board_id" task list --json --session-board "$file"
+  assert_argv_prefix "$kb_log" task list --json --session-board
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--project'; then fail 'a session-board call still sent --project'; fi
+  cmp -s "$dir/seen1" "$file" || fail 'the session board file did not arrive byte for byte'
+  [[ "$(cat "$dir/seen1.path")" != "$file" ]] || fail 'the remote was handed the caller path'
+  [[ ! -e "$(cat "$dir/seen1.path")" ]] || fail 'the decoded session board file was left behind'
+  [[ "$(cat "$dir/seen1.ctx.session")" == set:s-b ]] || fail 'KB_SESSION_ID did not cross'
+
+  # The same file under both flags: one transfer, one board-host path.
+  KB_SESSION_ID=s-b run_sb "$dir/seen2" "$board_id" task list --session-context "$file" "--session-board=$file"
+  [[ "$(cat "$dir/seen2.path")" == "$(cat "$dir/seen2.ctx.path")" ]] ||
+    fail 'one file under both flags crossed twice'
+  cmp -s "$dir/seen2" "$file" || fail 'shared session file lost'
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--project'; then fail 'a session-board call still sent --project'; fi
+
+  # At the boundary the caller's path is the board host's: no transfer, no --project.
+  local home_host local_table
+  home_host=$(/bin/hostname)
+  local_table="$dir/local-hosts.tsv"
+  make_table "$local_table" "$board_id" "$home_host" "$(make_id target)" "$home_host" "$fakebin/kb"
+  FAKE_SSH_LOG="$dir/ssh-local.argv" FAKE_SSH_MODE=fail FAKE_KB_LOG="$dir/kb-local.argv" \
+    KB_SESSION_ID=s-b KB_HOSTS_TABLE="$local_table" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" task list --session-board "$file"
+  assert_log_clean "$dir/ssh-local.argv" 'session board at the boundary'
+  assert_argv_file "$dir/kb-local.argv" task list --session-board "$file"
+}
+
+test_board_refuses_session_board_whose_file_names_another_board() {
+  local dir="$tmp_dir/sessionboardother"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id table file output
+  board_id=$(make_id board)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '%s\n' '{"version":1,"board":"B"}' >"$file"
+  output=$(FAKE_SSH_MODE=fail FAKE_SSH_LOG="$dir/ssh.argv" FAKE_KB_LOG="$dir/kb.argv" \
+    KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task list --session-board "$file")
+  [[ "$output" == *"kb-board: --session-board $file names board B, not $board_id; refusing before routing"* ]] ||
+    fail "wrong board refusal: $output"
+  assert_log_clean "$dir/ssh.argv" 'session board for another board'
+  assert_log_clean "$dir/kb.argv" 'session board for another board'
+}
+
+test_board_session_board_refusals_invoke_nothing() {
+  local dir="$tmp_dir/sessionboardbad"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id table file big malformed boardless output
+  board_id=$(make_id board)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '{"board":"%s"}\n' "$board_id" >"$file"
+  big="$dir/big.json"
+  head -c 65537 /dev/zero | tr '\0' 'x' >"$big"
+  malformed="$dir/malformed.json"
+  printf '%s\n' '{not json' >"$malformed"
+  boardless="$dir/boardless.json"
+  printf '%s\n' '{"board":7}' >"$boardless"
+  refuse() {
+    local expected=$1
+    shift
+    output=$(FAKE_SSH_MODE=fail FAKE_SSH_LOG="$dir/ssh.argv" FAKE_KB_LOG="$dir/kb.argv" \
+      KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+      run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task list "$@")
+    [[ "$output" == *"$expected"* ]] || fail "expected '$expected', got: $output"
+  }
+  refuse 'kb-board: --session-board requires a path' --session-board
+  refuse 'kb-board: --session-board requires a path' --session-board ''
+  refuse 'kb-board: --session-board requires a path' --session-board=
+  refuse 'kb-board: --session-board given twice' --session-board "$file" --session-board "$file"
+  refuse "kb-board: cannot read --session-board $dir/missing.json" --session-board "$dir/missing.json"
+  refuse "kb-board: --session-board $big is 65537 bytes; a session context is at most 65536" --session-board "$big"
+  refuse "kb-board: --session-board $malformed names no board; refusing before routing" --session-board "$malformed"
+  refuse "kb-board: --session-board $boardless names no board; refusing before routing" --session-board "$boardless"
+  assert_log_clean "$dir/ssh.argv" 'refused session board'
+  assert_log_clean "$dir/kb.argv" 'refused session board'
 }
 
 test_body_file_at_the_boundary_needs_no_transfer() {
@@ -2815,6 +2942,9 @@ main() {
     test_board_session_context_and_session_id_are_transferred
     test_board_session_end_release_is_forwarded
     test_session_context_at_the_boundary_needs_no_transfer
+    test_board_session_board_is_transferred_and_sends_no_project
+    test_board_refuses_session_board_whose_file_names_another_board
+    test_board_session_board_refusals_invoke_nothing
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
