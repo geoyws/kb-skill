@@ -1579,6 +1579,71 @@ test_registry_commands_are_rejected_without_transport() {
   done
 }
 
+# The two classes of top-level kanban commands, with their aliases.
+# test_host_surface_matches_source_allowlist fails on a source command in
+# neither, and test_host_refuses_board_owned_commands_without_transport requires
+# kb-host to give the kb-board remedy for every board-owned one, so a new board
+# command cannot be classified here and still be missing from kb-host. Nothing
+# checks that the classes are disjoint or that a registry entry is allowed by
+# kb-host; test_host_registry_commands_are_allowed_without_transport keeps its
+# own list.
+HOST_REGISTRY_COMMANDS=(
+  version v
+  init
+  workspace w ws
+  dashboard dash
+  doctor
+  audit
+  backup
+  restore
+  rule r
+  schema
+  mcp
+  access
+  plugin
+  worker
+  link
+  scope
+  contrib
+  model
+)
+BOARD_OWNED_COMMANDS=(
+  board
+  deploy
+  import
+  tag
+  archive
+  search
+  search-rebuild
+  task t
+  story s
+  handoff h
+  attention att attn
+  claim
+  checkpoint cp
+  heartbeat hb
+  release rel
+  note n
+  context ctx
+  events ev
+  watch
+  sitrep sr
+  subscription
+  todo
+  stale
+  transact
+  sprint
+  batch
+  incident
+  worktree
+  message
+  milestone
+  cleanup
+  overlap
+  trunk
+  test
+)
+
 test_host_surface_matches_source_allowlist() {
   local fixture_file="$script_dir/kb-source-commands.txt"
   local source_file=${KB_SOURCE_RUST_FILE:-"$tmp_dir/source-surface/rust/lib.rs"}
@@ -1590,70 +1655,14 @@ test_host_surface_matches_source_allowlist() {
 
   assert_source_surface_matches_fixture "$source_file" "$fixture_file"
 
-  local allowed=(
-    version v
-    init
-    workspace w ws
-    dashboard dash
-    doctor
-    audit
-    backup
-    restore
-    rule r
-    schema
-    mcp
-    access
-    plugin
-    worker
-    link
-    scope
-    contrib
-    model
-  )
-  local denied=(
-    board
-    deploy
-    import
-    tag
-    archive
-    search
-    search-rebuild
-    task t
-    story s
-    handoff h
-    attention att attn
-    claim
-    checkpoint cp
-    heartbeat hb
-    release rel
-    note n
-    context ctx
-    events ev
-    watch
-    sitrep sr
-    subscription
-    todo
-    stale
-    transact
-    sprint
-    batch
-    incident
-    worktree
-    message
-    milestone
-    cleanup
-    overlap
-    trunk
-    test
-  )
 
   local command
   while IFS= read -r command; do
     [[ -z "$command" ]] && continue
-    if contains_item "$command" "${allowed[@]}"; then
+    if contains_item "$command" "${HOST_REGISTRY_COMMANDS[@]}"; then
       continue
     fi
-    if contains_item "$command" "${denied[@]}"; then
+    if contains_item "$command" "${BOARD_OWNED_COMMANDS[@]}"; then
       continue
     fi
     fail "unexpected top-level command in $source_file: $command"
@@ -2336,15 +2345,8 @@ test_host_refuses_board_owned_commands_without_transport() {
   table="$tmp_dir/host-board/hosts.tsv"
   make_table "$table" "$host_id" "$home_host" "$ssh_target" "$remote_host" "$kb_exec"
 
-  local -a commands=(
-    deploy import tag archive search search-rebuild
-    task t story s handoff h attention att attn claim checkpoint cp
-    heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale transact sprint batch incident worktree
-  )
-
   local command
-  for command in "${commands[@]}"; do
+  for command in "${BOARD_OWNED_COMMANDS[@]}"; do
     : >"$ssh_log"
     : >"$kb_log"
     output=$(run_expect_failure env \
