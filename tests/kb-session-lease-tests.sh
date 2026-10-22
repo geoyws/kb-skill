@@ -82,6 +82,16 @@ out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done 
 out=$("$lease" dotfiles claim t-fake --as test --session explicit-session)
 [ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session explicit-session --json' ] || exit 1
 out=$("$lease" dotfiles release t-fake)
+# A blocked checkpoint parks the row: the lease leaves the session, so a lane
+# waiting on a long job can claim its next row from the same pane.
+out=$("$lease" dotfiles claim t-fake --as test)
+[ -f "$session" ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state blocked --blocker 'gate running' --summary parked --intent wait --next-action reclaim)
+[ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+[ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done --intent done --next-action next)
 [ ! -e "$session" ] || exit 1
 out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
