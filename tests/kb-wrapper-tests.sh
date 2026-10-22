@@ -763,6 +763,36 @@ test_board_session_context_and_session_id_are_transferred() {
   assert_log_clean "$kb_log.empty" 'empty session context'
 }
 
+# The session-end hook (kanban SESSION-02) runs `release --session ID --as A
+# --force` through kb-board: the verb and every flag reach the board host
+# verbatim, quoting intact.
+test_board_session_end_release_is_forwarded() {
+  local dir="$tmp_dir/sessionend"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  KB_SESSION_ID="end 1'\$(x)" \
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_CTX_OUT="$dir/seen" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
+  assert_argv_prefix "$kb_log" --project "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
+}
+
 test_session_context_at_the_boundary_needs_no_transfer() {
   local dir="$tmp_dir/sessionlocal"
   local fakebin="$dir/fakebin"
@@ -1399,6 +1429,7 @@ test_registry_commands_are_rejected_without_transport() {
     link
     scope
     contrib
+    model
   )
 
   local command
@@ -1450,8 +1481,10 @@ test_host_surface_matches_source_allowlist() {
     link
     scope
     contrib
+    model
   )
   local denied=(
+    board
     deploy
     import
     tag
@@ -1483,6 +1516,7 @@ test_host_surface_matches_source_allowlist() {
     milestone
     cleanup
     overlap
+    trunk
   )
 
   local command
@@ -1989,6 +2023,11 @@ test_host_registry_commands_are_allowed_without_transport() {
     'link show --board demo --id t-1'
     'scope show --set demo'
     'contrib status --board demo --id t-1'
+    'model list'
+    'model list --json'
+    'model add demo --as tester --json'
+    'model alias demo-alias --for demo --as tester --json'
+    'model unalias demo-alias --as tester --json'
   )
 
   local entry command_arg
@@ -2393,7 +2432,7 @@ test_board_checkpoint_carries_the_callers_git_provenance() {
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
   assert_argv_file "$kb_log" --project "$board_id" checkpoint t-1 \
     --lease tok --as agent --summary s --intent i --next-action n --json \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # The local hop gets the same flags. A detached HEAD is named as such
   # rather than sent as an empty branch, and a clean tree says so.
@@ -2415,7 +2454,7 @@ test_board_checkpoint_carries_the_callers_git_provenance() {
   )
   assert_argv_file "$local_kb_log" --project "$board_id" h new \
     --as agent --summary s --intent i --next-action n \
-    --repo "$top" --branch DETACHED --head "$head" --dirty clean
+    --repo "$top" --branch DETACHED --head "$head" --dirty clean --git-captured
 }
 
 test_board_explicit_provenance_flag_is_kept_not_duplicated() {
@@ -2501,13 +2540,13 @@ test_board_provenance_is_only_for_the_three_provenance_writers() {
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
     "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json
   assert_argv_file "$kb_log" --project "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # The short forms are the same command.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
     "$board_id" sr new 'still red' --as agent --lane driver-2
   assert_argv_file "$kb_log" --project "$board_id" sr new 'still red' --as agent --lane driver-2 \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # sitrep list reads; nothing is appended.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
@@ -2545,7 +2584,104 @@ test_board_provenance_repo_path_with_a_space_round_trips() {
     "$board_id" checkpoint t-1 --lease tok --as agent --summary s
 
   assert_argv_file "$kb_log" --project "$board_id" checkpoint t-1 --lease tok --as agent --summary s \
-    --repo "$top" --branch main --head "$head" --dirty '2 files changed'
+    --repo "$top" --branch main --head "$head" --dirty '2 files changed' --git-captured
+}
+
+test_board_adds_git_captured_only_when_it_filled_all_provenance_flags() {
+  local fakebin="$tmp_dir/prov-captured/fakebin"
+  local ssh_log="$tmp_dir/prov-captured/ssh.argv"
+  local kb_log="$tmp_dir/prov-captured/kb.argv"
+  setup_fakebin_with_real_git "$fakebin"
+
+  local board_id remote_host table repo top head
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/prov-captured/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  repo="$tmp_dir/prov-captured/repo"
+  make_scratch_repo "$repo" dirty.txt
+  top=$(git -C "$repo" rev-parse --show-toplevel)
+  head=$(git -C "$repo" rev-parse HEAD)
+
+  # The wrapper filled all four from one git read: it attests that with
+  # --git-captured, once, after the four (done-gate DG-21, `kb-wrapper`).
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --state done --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --state done --summary s \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" handoff create --as agent --summary s
+  assert_argv_file "$kb_log" --project "$board_id" handoff create --as agent --summary s \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" sitrep post 'landed' --as agent --task t-1
+  assert_argv_file "$kb_log" --project "$board_id" sitrep post 'landed' --as agent --task t-1 \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  # A caller-typed head is no git read of the wrapper's: the rest is still
+  # filled, but nothing attests the set.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --head "$head" --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --head "$head" --summary s \
+    --repo "$top" --branch main --dirty '1 file changed'
+
+  # Any one of the four, in either spelling, withholds it the same way.
+  local typed
+  for typed in --repo="$top" --branch=main --dirty=clean; do
+    run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+      "$board_id" cp t-1 --lease tok --as agent "$typed" --summary s
+    if tr '\0' '\n' <"$kb_log" | grep -qx -- '--git-captured'; then
+      fail "--git-captured appended although the caller passed $typed"
+    fi
+    tr '\0' '\n' <"$kb_log" | grep -qx -- '--head' \
+      || fail "the wrapper stopped filling --head when the caller passed $typed"
+  done
+
+  # All four typed by the caller: forwarded as given, nothing added.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --repo /r --branch b --head "$head" --dirty clean
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent \
+    --repo /r --branch b --head "$head" --dirty clean
+
+  # A `git status` that fails is no read of the dirty state: the four are
+  # still filled, but the set is not attested.
+  local broken="$tmp_dir/prov-captured/broken"
+  make_scratch_repo "$broken" dirty.txt
+  printf 'not an index' >"$broken/.git/index"
+  if git -C "$broken" status --porcelain >/dev/null 2>&1; then
+    fail "a corrupt index did not make git status fail"
+  fi
+  run_board_remote_from "$broken" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --summary s
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--git-captured'; then
+    fail "--git-captured appended although git status failed"
+  fi
+  tr '\0' '\n' <"$kb_log" | grep -qx -- '--dirty' \
+    || fail "the wrapper stopped filling --dirty when git status failed"
+
+  # Outside a repository there is no git read, so no provenance and no flag.
+  local plain="$tmp_dir/prov-captured/plain"
+  mkdir -p "$plain"
+  if git -C "$plain" rev-parse --show-toplevel >/dev/null 2>&1; then
+    fail "$plain sits inside a git repository; point TMPDIR outside one"
+  fi
+  run_board_remote_from "$plain" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --summary s
+
+  # Verbs that record no provenance never carry it, even from a checkout.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" h ls --status pending --json
+  assert_argv_file "$kb_log" --project "$board_id" h ls --status pending --json
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" task move t-1 done --as agent
+  assert_argv_file "$kb_log" --project "$board_id" task move t-1 done --as agent
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" trunk show --json
+  assert_argv_file "$kb_log" --project "$board_id" trunk show --json
 }
 
 test_denylist_and_hook_behaviour() {
@@ -2677,6 +2813,7 @@ main() {
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
     test_board_session_context_and_session_id_are_transferred
+    test_board_session_end_release_is_forwarded
     test_session_context_at_the_boundary_needs_no_transfer
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
@@ -2725,6 +2862,7 @@ main() {
     test_board_outside_a_repository_appends_no_provenance
     test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
+    test_board_adds_git_captured_only_when_it_filled_all_provenance_flags
     test_denylist_and_hook_behaviour
     test_content_audit
   )

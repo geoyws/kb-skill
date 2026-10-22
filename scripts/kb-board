@@ -32,7 +32,7 @@ reject_registry_commands() {
     r|rule)
       die 'kb-board is for board-owned commands only; use kb directly for registry rules.'
       ;;
-    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib)
+    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib|model)
       die "kb-board does not route registry-wide command '$1'."
       ;;
   esac
@@ -116,26 +116,53 @@ case "$kb_bin" in
   *) die "kb-board: KB executable path must be absolute: $kb_bin" ;;
 esac
 
+# `--git-captured` is the wrapper's attestation that the four provenance
+# values come from ONE git read of the caller's checkout (done-gate DG-21):
+# kanban records such a head as `kb-wrapper` and lets it reach done. It is
+# added only when the wrapper filled all four itself; a caller who passed any
+# of them has typed a value no git read here vouches for, so nothing is added.
 if captures_git_provenance "$command" "${1-}" \
   && git_top=$(git rev-parse --show-toplevel 2>/dev/null) \
   && git_head=$(git -C "$git_top" rev-parse HEAD 2>/dev/null); then
-  has_flag --repo "$@" || set -- "$@" --repo "$git_top"
-  if ! has_flag --branch "$@"; then
+  git_filled_all=1
+  if has_flag --repo "$@"; then
+    git_filled_all=0
+  else
+    set -- "$@" --repo "$git_top"
+  fi
+  if has_flag --branch "$@"; then
+    git_filled_all=0
+  else
     # symbolic-ref, not `branch --show-current`: a git too old for the latter
     # would print nothing and be recorded as detached, which is wrong
     # provenance rather than none. symbolic-ref fails only when HEAD is detached.
     git_branch=$(git -C "$git_top" symbolic-ref --short -q HEAD 2>/dev/null) || git_branch=DETACHED
     set -- "$@" --branch "$git_branch"
   fi
-  has_flag --head "$@" || set -- "$@" --head "$git_head"
-  if ! has_flag --dirty "$@"; then
+  if has_flag --head "$@"; then
+    git_filled_all=0
+  else
+    set -- "$@" --head "$git_head"
+  fi
+  if has_flag --dirty "$@"; then
+    git_filled_all=0
+  else
     git_dirty=0
-    while IFS= read -r line; do
-      if [[ -n "${line//[[:space:]]/}" ]]; then
-        git_dirty=$((git_dirty + 1))
-      fi
-    done < <(git -C "$git_top" status --porcelain 2>/dev/null)
+    # A failed `git status` is no read of the dirty state: the summary is
+    # still filled as before, but the wrapper does not attest the set.
+    if git_status=$(git -C "$git_top" status --porcelain 2>/dev/null); then
+      while IFS= read -r line; do
+        if [[ -n "${line//[[:space:]]/}" ]]; then
+          git_dirty=$((git_dirty + 1))
+        fi
+      done <<<"$git_status"
+    else
+      git_filled_all=0
+    fi
     set -- "$@" --dirty "$(dirty_summary "$git_dirty")"
+  fi
+  if [[ "$git_filled_all" -eq 1 ]] && ! has_flag --git-captured "$@"; then
+    set -- "$@" --git-captured
   fi
 fi
 

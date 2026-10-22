@@ -4,6 +4,7 @@ attention
 audit
 backup
 batch
+board
 checkpoint
 claim
 cleanup
@@ -22,6 +23,7 @@ link
 mcp
 message
 milestone
+model
 note
 overlap
 plugin
@@ -41,6 +43,7 @@ tag
 task
 todo
 transact
+trunk
 watch
 worker
 workspace
