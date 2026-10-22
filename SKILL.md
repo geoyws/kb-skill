@@ -1291,14 +1291,16 @@ an optional flag.
 Plan steps are child rows or one `--kind plan` note. There is no checklist
 field, and adding one would put the same truth in two places.
 
-### Recording a review — `task verdict add`, never a note
+### Recording a review — `task verdict add`
 
-**A review result goes on the ledger as a verdict row, and only there.**
-`task verdict add` is the one way to record that a reviewer checked a SHA,
-whether it passed or failed. A note beginning `review verdict:` is free text:
-the done gate cannot read it, the review lists in `doctor` and `dash` only
-point at it as something to convert, and the model scorecard never counts it.
-Do not write one for a new review.
+**A review result goes on the ledger as a verdict row.** `task verdict add` is
+the one structured record that a reviewer checked a SHA, whether it passed or
+failed. A note beginning `review verdict:` is free text: the done gate cannot
+read it, the review lists in `doctor` and `dash` only point at it as something
+to convert, and the model scorecard never counts it. One reader still needs
+the note: Kanban's milestone check (MILESTONE-06) judges a milestone task from
+its latest `review verdict:` note, until kanban `t-43967001` teaches it the
+verdict row. Until then write the verdict row first, then the note.
 
 ```bash
 # pass: the reviewer checked these exact published SHAs
