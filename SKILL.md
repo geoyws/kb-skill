@@ -2150,7 +2150,7 @@ the whole; a board holding exactly the default lists all of it. An explicit
 `--limit N` is honoured as-is with no marker — ask for one more than you need
 if you want to know whether your own bound was hit.
 
-### Review visibility — original evidence, not a second review (DG-20..DG-22)
+### Review visibility — original evidence, not a second review (DG-28..DG-30)
 
 `doctor` and `dashboard` (`dash`) expose read-only review diagnostics on each
 authorized board/project in existing single-board, estate and group results.
