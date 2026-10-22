@@ -1452,11 +1452,14 @@ test_registry_commands_are_rejected_without_transport() {
   done
 }
 
-# Every top-level kanban command, with its aliases, is in exactly one of these
-# two classes. test_host_surface_matches_source_allowlist fails on a source
-# command in neither, and test_host_refuses_board_owned_commands_without_transport
-# requires kb-host to give the kb-board remedy for every board-owned one, so a
-# new board command cannot be classified here and still be missing from kb-host.
+# The two classes of top-level kanban commands, with their aliases.
+# test_host_surface_matches_source_allowlist fails on a source command in
+# neither, and test_host_refuses_board_owned_commands_without_transport requires
+# kb-host to give the kb-board remedy for every board-owned one, so a new board
+# command cannot be classified here and still be missing from kb-host. Nothing
+# checks that the classes are disjoint or that a registry entry is allowed by
+# kb-host; test_host_registry_commands_are_allowed_without_transport keeps its
+# own list.
 HOST_REGISTRY_COMMANDS=(
   version v
   init
@@ -1524,6 +1527,7 @@ test_host_surface_matches_source_allowlist() {
   fi
 
   assert_source_surface_matches_fixture "$source_file" "$fixture_file"
+
 
   local command
   while IFS= read -r command; do
