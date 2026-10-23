@@ -140,7 +140,8 @@ file as a fallback. If SSH or the installed binary is unavailable, stop and repo
 Outside the board home host, do not call `kb` directly.
 
 - Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
-  board-owned one-shot command. It injects exactly one project selector, rejects
+  board-owned one-shot command. It injects exactly one board selector (the
+  project, or for `--session-board` reads the file instead), rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
   `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
@@ -1485,7 +1486,7 @@ board's rows.
 **The selector goes to `transact`, never to an item.** A batch addresses the one
 board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
 is refused rather than having it silently discarded, and `kb-board` already
-injects exactly one selector. There is no batch-level `--as` either: each item
+injects exactly one board selector. There is no batch-level `--as` either: each item
 carries its own actor and is authorized exactly as if it had arrived alone, so a
 batch cannot elevate.
 

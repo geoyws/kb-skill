@@ -53,8 +53,9 @@ The installed package expects either `KB_HOSTS_TABLE` or an adjacent
 5. absolute KB executable path
 
 The parser rejects missing, duplicate, unknown, or malformed board mappings.
-The KB executable path must be absolute. `kb-board` injects the project
-selector for board-owned commands; `kb-host` preserves registry commands
+The KB executable path must be absolute. `kb-board` injects the board
+selector for board-owned commands (the project, or the `--session-board`
+file for those reads); `kb-host` preserves registry commands
 without a board selector. Remote execution uses the board home host identity,
 the SSH target, and the remote hostname check is fail-closed.
 
