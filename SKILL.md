@@ -146,8 +146,8 @@ Outside the board home host, do not call `kb` directly.
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
   `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
   board helper. `board`, `sprint`, `batch`, `incident`, `worktree`, `message`,
-  `milestone`, `cleanup`, `overlap`, `trunk` and `test` are board-owned and
-  route here; `kb-host` refuses each of them with this remedy.
+  `milestone`, `cleanup`, `overlap`, `trunk`, `test` and `stats` are board-owned
+  and route here; `kb-host` refuses each of them with this remedy.
   On `checkpoint`, `handoff create` and `sitrep post` it also forwards your
   checkout as `--repo` / `--branch` / `--head` / `--dirty`, because the binary
   would otherwise capture the board host's cwd, and adds `--git-captured` when

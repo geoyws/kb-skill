@@ -37,6 +37,7 @@ search-rebuild
 sitrep
 sprint
 stale
+stats
 story
 subscription
 tag
