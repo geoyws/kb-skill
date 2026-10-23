@@ -1417,8 +1417,10 @@ need the owner); the verdict row is what the gate and the scorecard read.
 
 **The done gate is per board, and off by default.** `task verdict gate on|off
 --as geoyws` switches it; only `geoyws` may. With it on, a task or bug reaches
-`done` only with a current-head pass (or `geoyws --force`, which is audited).
-With it off, verdict rows are still the record: write them the same way.
+`done` only with a current-head pass (or `geoyws --force`, audited, which
+answers only a missing verdict). On code work the final proof (see Trunk)
+still applies and no `--force` passes it. With the gate off, verdict rows are
+still the record: write them the same way.
 
 ## Cleanup ledger — what you allocated, you remove
 
@@ -2170,9 +2172,17 @@ kb trunk show --json                                              # {"repo","rem
 - Refusals name the task, the head and `{remote}/{branch}`: a short head, a
   head not read from a checkout, trunk unreachable, not on trunk, or the head
   moved during the check (the old "no trunk set" and "no head" refusals are
-  retired). Only `task move ID done --force --as geoyws` passes a miss, and it
-  records a `trunk_gate_override` event; `--force` from anyone else is
-  refused. A `--force` on a write that is not checked records nothing.
+  retired). No `--force` passes a miss, for any actor including `geoyws`, and
+  no `trunk_gate_override` is written. On code work the done write must also
+  find every reviewed commit contained in the task's owner-bound final branch.
+- Work that landed only on an interim branch stays open. Record it with
+  `kb task promotion record ID --repository-id ID --branch NAME --sha FULL
+  --owner ACTOR --next-action TEXT [--integration-task ID | --clear-integration]
+  --as ACTOR`, and read it back with `kb task promotion show ID --json`. A
+  record is progress, never completion. `kb doctor` and `kb dash` list
+  `pendingFinalTasks`; `task show` and `claim --candidates` carry
+  `finalPromotion`. A task with promotion progress cannot be removed — cancel
+  or abandon it.
 - An outstanding cleanup entry refuses every done path on every row type,
   stories and epics included, with no `--force` past it.
 
