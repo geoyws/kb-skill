@@ -6,6 +6,11 @@ installation.
 ## What is here
 
 - `SKILL.md` documents the public skill surface.
+  Its Reading section carries the DG-28..DG-30 review-visibility consumer
+  contract: diagnostic task age, original evidence-note provenance and owner
+  reconciliation without a second review. The existing watcher lives in
+  skills-root `kb/kb-watch` (`scripts/kb-watch.py`), not in this package; the
+  `kb watch` CLI remains the separate ledger subscription.
 - `scripts/kb-board` routes board-owned commands. For claim, heartbeat and
   task handoff acceptance it derives caller-side repository identity and prevents
   remote-cwd capture; for checkpoint, handoff creation and sitrep posting it
@@ -48,8 +53,9 @@ The installed package expects either `KB_HOSTS_TABLE` or an adjacent
 5. absolute KB executable path
 
 The parser rejects missing, duplicate, unknown, or malformed board mappings.
-The KB executable path must be absolute. `kb-board` injects the project
-selector for board-owned commands; `kb-host` preserves registry commands
+The KB executable path must be absolute. `kb-board` injects the board
+selector for board-owned commands (the project, or the `--session-board`
+file for those reads); `kb-host` preserves registry commands
 without a board selector. Remote execution uses the board home host identity,
 the SSH target, and the remote hostname check is fail-closed.
 
@@ -71,7 +77,10 @@ and `handoff_accept` items; unrelated item arguments remain unchanged.
 The local file or stdin is read once, rewritten locally, and remote batches
 still use one SSH connection. This identity is distinct from the historical
 `--repo`/`--branch`/`--head`/`--dirty` provenance
-recorded by checkpoint, handoff create and sitrep.
+recorded by checkpoint, handoff create and sitrep. When `kb-board` fills all
+four of those from its own git read and the caller passed none, it appends
+`--git-captured`, which kanban records as `headSource: kb-wrapper`; the flag
+is the wrapper's attestation and is never typed by hand.
 
 ## Workspace adoption and rule transfer
 

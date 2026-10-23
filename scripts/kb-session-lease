@@ -33,11 +33,35 @@ umask 077
 if [[ "$op" = claim || "$op" = handoff-accept ]]; then
   [[ ! -e "$session" ]] || { echo 'kb-session-lease: session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)' >&2; exit 64; }
   if [[ "$op" = claim ]]; then
-    cmd=(claim "$id" "$@" --json)
+    cmd=(claim "$id" "$@")
   else
-    cmd=(h acc "$id" "$@" --json)
+    cmd=(h acc "$id" "$@")
   fi
-  if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
+  # Record the lease under this session, so the session-end form
+  # `release --session "$KB_SESSION_ID"` frees it. An explicit --session wins.
+  explicit_session=''
+  for arg in "$@"; do
+    case "$arg" in --session|--session=*) explicit_session=1 ;; esac
+  done
+  injected=''
+  if [[ -n "${KB_SESSION_ID:-}" && -z "$explicit_session" ]]; then
+    injected=1
+  fi
+  if [[ -n "$injected" ]]; then
+    ok=''
+    "$here/kb-board" "$board" "${cmd[@]}" --session "$KB_SESSION_ID" --json >"$private" 2>"$error" && ok=1
+    # A LINKED scope binding made without a session matches only a sessionless
+    # triple; keep that caller working, unreachable by the session-end form.
+    if [[ -z "$ok" ]] && grep -qF 'matches no live binding; the actor holds lane' "$private" "$error" \
+      && grep -qF ', session (none) on that set' "$private" "$error"; then
+      echo 'kb-session-lease: scope binding has no session; leasing without --session, so release --session will not free this lease (rebind with scope bind --session to fix)' >&2
+      "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1
+    fi
+  else
+    ok=''
+    "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1
+  fi
+  if [[ -z "$ok" ]]; then
     echo 'kb-session-lease: claim or handoff acceptance failed (details withheld to protect token)' >&2
     exit 1
   fi

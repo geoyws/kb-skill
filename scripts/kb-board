@@ -32,7 +32,7 @@ reject_registry_commands() {
     r|rule)
       die 'kb-board is for board-owned commands only; use kb directly for registry rules.'
       ;;
-    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib)
+    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib|model)
       die "kb-board does not route registry-wide command '$1'."
       ;;
   esac
@@ -116,26 +116,53 @@ case "$kb_bin" in
   *) die "kb-board: KB executable path must be absolute: $kb_bin" ;;
 esac
 
+# `--git-captured` is the wrapper's attestation that the four provenance
+# values come from ONE git read of the caller's checkout (done-gate DG-21):
+# kanban records such a head as `kb-wrapper` and lets it reach done. It is
+# added only when the wrapper filled all four itself; a caller who passed any
+# of them has typed a value no git read here vouches for, so nothing is added.
 if captures_git_provenance "$command" "${1-}" \
   && git_top=$(git rev-parse --show-toplevel 2>/dev/null) \
   && git_head=$(git -C "$git_top" rev-parse HEAD 2>/dev/null); then
-  has_flag --repo "$@" || set -- "$@" --repo "$git_top"
-  if ! has_flag --branch "$@"; then
+  git_filled_all=1
+  if has_flag --repo "$@"; then
+    git_filled_all=0
+  else
+    set -- "$@" --repo "$git_top"
+  fi
+  if has_flag --branch "$@"; then
+    git_filled_all=0
+  else
     # symbolic-ref, not `branch --show-current`: a git too old for the latter
     # would print nothing and be recorded as detached, which is wrong
     # provenance rather than none. symbolic-ref fails only when HEAD is detached.
     git_branch=$(git -C "$git_top" symbolic-ref --short -q HEAD 2>/dev/null) || git_branch=DETACHED
     set -- "$@" --branch "$git_branch"
   fi
-  has_flag --head "$@" || set -- "$@" --head "$git_head"
-  if ! has_flag --dirty "$@"; then
+  if has_flag --head "$@"; then
+    git_filled_all=0
+  else
+    set -- "$@" --head "$git_head"
+  fi
+  if has_flag --dirty "$@"; then
+    git_filled_all=0
+  else
     git_dirty=0
-    while IFS= read -r line; do
-      if [[ -n "${line//[[:space:]]/}" ]]; then
-        git_dirty=$((git_dirty + 1))
-      fi
-    done < <(git -C "$git_top" status --porcelain 2>/dev/null)
+    # A failed `git status` is no read of the dirty state: the summary is
+    # still filled as before, but the wrapper does not attest the set.
+    if git_status=$(git -C "$git_top" status --porcelain 2>/dev/null); then
+      while IFS= read -r line; do
+        if [[ -n "${line//[[:space:]]/}" ]]; then
+          git_dirty=$((git_dirty + 1))
+        fi
+      done <<<"$git_status"
+    else
+      git_filled_all=0
+    fi
     set -- "$@" --dirty "$(dirty_summary "$git_dirty")"
+  fi
+  if [[ "$git_filled_all" -eq 1 ]] && ! has_flag --git-captured "$@"; then
+    set -- "$@" --git-captured
   fi
 fi
 
@@ -173,6 +200,8 @@ fi
 # retain their bytes even when the wrapper must replay the consumed stream.
 body_file=""
 session_context=""
+session_board=""
+session_board_seen=0
 items_file=""
 args=()
 items_json=""
@@ -201,6 +230,18 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${1#*=}" ]] || die 'kb-board: --session-context requires a path'
       [[ -z "$session_context" ]] || die 'kb-board: --session-context given twice'
       session_context=${1#*=}
+      shift ;;
+    --session-board)
+      [[ $# -ge 2 && -n "$2" ]] || die 'kb-board: --session-board requires a path'
+      [[ "$session_board_seen" -eq 0 ]] || die 'kb-board: --session-board given twice'
+      session_board=$2
+      session_board_seen=1
+      shift 2 ;;
+    --session-board=*)
+      [[ -n "${1#*=}" ]] || die 'kb-board: --session-board requires a path'
+      [[ "$session_board_seen" -eq 0 ]] || die 'kb-board: --session-board given twice'
+      session_board=${1#*=}
+      session_board_seen=1
       shift ;;
     --items-file)
       [[ $# -ge 2 ]] || die 'kb-board: --items-file requires a path'
@@ -263,6 +304,47 @@ if [[ -n "$session_context" ]]; then
   session_context_b64=$(base64 <"$session_context" | tr -d '\n') ||
     die "kb-board: cannot encode --session-context $session_context"
 fi
+# `--session-board PATH` (kanban done-gate DG-31) selects the file's board for
+# a one-board read. It is transferred exactly like `--session-context`, and the
+# call then carries no `--project`: the board host resolves the file's board
+# through its registry under the caller's grants. The file is read here only
+# for its `board`, which must be this call's BOARD. Verbs are not classified
+# here; the binary refuses a write itself.
+session_board_b64=""
+session_board_shares_ctx=0
+if [[ -n "$session_board" ]]; then
+  [[ -r "$session_board" && -f "$session_board" ]] ||
+    die "kb-board: cannot read --session-board $session_board"
+  board_bytes=$(wc -c <"$session_board" | tr -d ' ')
+  [[ "$board_bytes" -le 65536 ]] ||
+    die "kb-board: --session-board $session_board is $board_bytes bytes; a session context is at most 65536"
+  session_board_b64=$(base64 <"$session_board" | tr -d '\n') ||
+    die "kb-board: cannot encode --session-board $session_board"
+  file_board=$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        value = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(3)
+board = value.get("board") if isinstance(value, dict) else None
+if not isinstance(board, str):
+    sys.exit(3)
+sys.stdout.write(board)
+' "$session_board") ||
+    die "kb-board: --session-board $session_board names no board; refusing before routing"
+  [[ "$file_board" = "$board" ]] ||
+    die "kb-board: --session-board $session_board names board $file_board, not $board; refusing before routing"
+  # One file under both flags crosses once, so the board host sees one path
+  # for both and answers today's --session-context sentences.
+  if [[ -n "$session_context" && "$session_context_b64" = "$session_board_b64" ]] &&
+    [[ "$session_context" -ef "$session_board" ]]; then
+    session_board_shares_ctx=1
+  fi
+fi
+# Without a session board every call addresses BOARD by name, as before.
+project_args=(--project "$board")
+[[ -z "$session_board" ]] || project_args=()
 
 staged=""
 if [[ "$command" = transact && ( -n "$items_file" || "$items_arg_index" -ge 0 ) ]]; then
@@ -297,21 +379,22 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
   # Already at the boundary: the caller's path IS the board host's path, and
   # the caller's KB_SESSION_ID is already in this process's environment.
   [[ -z "$session_context" ]] || set -- "$@" --session-context "$session_context"
+  [[ -z "$session_board" ]] || set -- "$@" --session-board "$session_board"
   if [[ -n "$body_file" ]]; then
-    exec "$kb_bin" --project "$board" "$command" "$@" --body-file "$body_file"
+    exec "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@" --body-file "$body_file"
   fi
   if [[ -n "$items_file" ]]; then
     if [[ -n "$staged" ]]; then
-      "$kb_bin" --project "$board" "$command" "$@" --items-file "$items_file"
+      "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@" --items-file "$items_file"
       exit $?
     fi
-    exec "$kb_bin" --project "$board" "$command" "$@" --items-file "$items_file"
+    exec "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@" --items-file "$items_file"
   fi
   if [[ -n "$staged" ]]; then
-    "$kb_bin" --project "$board" "$command" "$@"
+    "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@"
     exit $?
   fi
-  exec "$kb_bin" --project "$board" "$command" "$@"
+  exec "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@"
 fi
 
 remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
@@ -321,6 +404,11 @@ remote_cleanup=""
 if [[ -n "$session_context" ]]; then
   remote_cmd+=" ctx=\$(mktemp \"\${TMPDIR:-/tmp}/kb-ctx.XXXXXX\") || exit 70;"
   remote_cleanup+=" \"\$ctx\""
+  remote_cmd+=" trap $(shell_quote "rm -f$remote_cleanup") EXIT;"
+fi
+if [[ -n "$session_board" && "$session_board_shares_ctx" -eq 0 ]]; then
+  remote_cmd+=" sb=\$(mktemp \"\${TMPDIR:-/tmp}/kb-sb.XXXXXX\") || exit 70;"
+  remote_cleanup+=" \"\$sb\""
   remote_cmd+=" trap $(shell_quote "rm -f$remote_cleanup") EXIT;"
 fi
 if [[ -n "$body_file" ]]; then
@@ -335,6 +423,11 @@ fi
 if [[ -n "$session_context" ]]; then
   remote_cmd+=" printf '%s' $(shell_quote "$session_context_b64") | base64 -d >\"\$ctx\" || exit 70;"
 fi
+if [[ -n "$session_board" && "$session_board_shares_ctx" -eq 0 ]]; then
+  remote_cmd+=" printf '%s' $(shell_quote "$session_board_b64") | base64 -d >\"\$sb\" || exit 70;"
+fi
+remote_project=""
+[[ -n "$session_board" ]] || remote_project=" --project $(shell_quote "$board")"
 if [[ -n "$body_file" ]]; then
   remote_cmd+=" base64 -d >\"\$body\" <&0 || exit 70;"
 fi
@@ -344,15 +437,22 @@ if [[ -n "${KB_SESSION_ID+set}" ]]; then
   remote_env="env KB_SESSION_ID=$(shell_quote "$KB_SESSION_ID") "
 fi
 if [[ -n "$remote_cleanup" ]]; then
-  remote_cmd+=" ${remote_env}$(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+  remote_cmd+=" ${remote_env}$(shell_quote "$kb_bin")${remote_project} $(shell_quote "$command")"
 else
-  remote_cmd+=" exec ${remote_env}$(shell_quote "$kb_bin") --project $(shell_quote "$board") $(shell_quote "$command")"
+  remote_cmd+=" exec ${remote_env}$(shell_quote "$kb_bin")${remote_project} $(shell_quote "$command")"
 fi
 for arg in "$@"; do
   remote_cmd+=" $(shell_quote "$arg")"
 done
 if [[ -n "$session_context" ]]; then
   remote_cmd+=" --session-context \"\$ctx\""
+fi
+if [[ -n "$session_board" ]]; then
+  if [[ "$session_board_shares_ctx" -eq 1 ]]; then
+    remote_cmd+=" --session-board \"\$ctx\""
+  else
+    remote_cmd+=" --session-board \"\$sb\""
+  fi
 fi
 if [[ -n "$body_file" ]]; then
   # Not `exec`: the EXIT trap must still run to remove the decoded body.

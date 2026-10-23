@@ -140,20 +140,23 @@ file as a fallback. If SSH or the installed binary is unavailable, stop and repo
 Outside the board home host, do not call `kb` directly.
 
 - Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
-  board-owned one-shot command. It injects exactly one project selector, rejects
+  board-owned one-shot command. It injects exactly one board selector (the
+  project, or for `--session-board` reads the file instead), rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
-  `contrib` and `plugin` verbs so registry operations cannot be routed through a
-  board helper. `sprint`, `batch`, `incident` and `worktree` are board-owned
-  and route here.
-  On `checkpoint` and `handoff create` it also forwards your checkout as
-  `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
-  otherwise capture the board host's cwd (see Provenance).
+  `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
+  board helper. `board`, `sprint`, `batch`, `incident`, `worktree`, `message`,
+  `milestone`, `cleanup`, `overlap`, `trunk` and `test` are board-owned and
+  route here; `kb-host` refuses each of them with this remedy.
+  On `checkpoint`, `handoff create` and `sitrep post` it also forwards your
+  checkout as `--repo` / `--branch` / `--head` / `--dirty`, because the binary
+  would otherwise capture the board host's cwd, and adds `--git-captured` when
+  it filled all four itself (see Provenance).
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
   and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
-  `scope`, `contrib` and `plugin` verbs stay on the raw registry routing path
+  `scope`, `contrib`, `model` and `plugin` verbs stay on the raw registry routing path
   rather than `kb-board`.
 
 ```bash
@@ -937,8 +940,8 @@ REQUIRED ACTION, session handoff. The lane's position as a whole: no task,
 no lease. Through `kb-board`, run from inside the checkout so `--repo`,
 `--branch`, `--head` and `--dirty` are captured from it:
 
-1. Run `<skill-dir>/scripts/kb-board BOARD_ID h new --as "$ACTOR" --to "$ACTOR" --reason session_end --summary "…" --intent "…" --next-action "…" --json` from inside the checkout, and omit all four provenance flags there: they are auto-captured from the cwd and stored as `repoPath`, `branch`, `headSha`, `dirtySummary`. `--to` takes the full canonical lane actor, not the short lane name.
-2. In an interactive board-host shell your checkout is not there, so pass all four provenance flags yourself: `--repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY"`.
+1. Run `<skill-dir>/scripts/kb-board BOARD_ID h new --as "$ACTOR" --to "$ACTOR" --reason session_end --summary "…" --intent "…" --next-action "…" --json` from inside the checkout, and omit all four provenance flags there: they are auto-captured from the cwd and stored as `repoPath`, `branch`, `headSha`, `dirtySummary`, and the wrapper adds `--git-captured` so the head is recorded as read (`headSource: kb-wrapper`). `--to` takes the full canonical lane actor, not the short lane name.
+2. In an interactive board-host shell your checkout is not there, so pass all four provenance flags yourself: `--repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY"`. Never add `--git-captured` by hand.
 3. `--dirty` is measured, never guessed: `clean`, `1 file changed`, or `N files changed`. An explicit flag always wins over capture.
 
 REQUIRED ACTION, list and accept:
@@ -1063,7 +1066,7 @@ decides what may follow it:
 
 | the unit | items |
 |---|---|
-| finished | `checkpoint` `state: done` + `note` |
+| finished | not a `transact`: `kb-board BOARD cp ID --state done` from the trunk checkout, then `note` (see below) |
 | continues later | `checkpoint` `state: continue` + `note` + `release` |
 | continues in another lane | `note` + `handoff_create` |
 
@@ -1239,6 +1242,62 @@ boundary is recorded or nothing is.
 
 `kb note` needs no lease, so a progress line still lands after a lease lapsed —
 which is exactly when you most want it to.
+
+### Session end releases its own claims — `release --session`
+
+A session that ends without releasing leaves its rows locked until the lease
+runs out, invisible to every other lane. The session-end form frees them at
+once:
+
+```bash
+kb release --session "$KB_SESSION_ID" --as "$ACTOR" --force --json
+# {"session": "<id>", "released": ["t-1a2b3c4d", "t-5e6f7a8b"]}
+```
+
+- It selects every live claim whose stored session is that id, on the board
+  the command addresses. Run it once per board the session claimed on.
+- It frees only claims held by the worker `--as` names (the two seats of one
+  lane are one worker). If any selected claim belongs to another worker, the
+  whole call is refused and nothing is freed:
+  `release --session ID found task T held by H, not ACTOR; that session is not yours to end`.
+- `--force` is required; it is what makes the release audited. Each freed
+  claim writes a `lease_seized` event and then a `claim_released` event
+  carrying `{"sessionId", "endedBy"}`.
+- With no matching claims it succeeds and prints an empty `released` list, so
+  a harness session-end hook can run it unconditionally.
+- `kb-session-lease BOARD claim` and `handoff-accept` record the lease under
+  `KB_SESSION_ID` when it is set (they add `--session "$KB_SESSION_ID"`; an
+  explicit `--session` wins). A bare `kb claim` records a session from
+  `--session`, or from the `sessionId` of a `--session-context` file. A claim
+  with no session is never selected; end it with `release ID --lease TOKEN`.
+- A LINKED scope binding made without `--session` refuses a sessioned claim.
+  The helper then retries once without the session and warns that
+  `release --session` will not free that lease; rebind with
+  `scope bind ... --session` to make it reachable.
+- The harness must export the same `KB_SESSION_ID` to the claiming shell and
+  to its session-end hook. A pane-keyed session (no `KB_SESSION_ID`) records
+  no session, so its claims are not reachable by this form.
+
+The single-task form `kb release <id> --lease "$TOKEN"` is unchanged, and it
+stays the right verb inside a session: the session form is for the end.
+
+### `staleClaims` — holders that have gone quiet
+
+`kb doctor --json` (each readable entry in `projects`) and `kb dashboard
+--json` (each readable board row, including `--all` and `--board-tag`) carry
+`staleClaims`: live claims whose last heartbeat is more than 30 minutes old.
+
+```json
+{ "taskID": "t-1a2b3c4d", "holder": "@:example/example/driver-2",
+  "sessionID": "…", "heartbeatAt": 1788599100000, "expiresAt": 1788602700000,
+  "ageMinutes": 41 }
+```
+
+It is advisory: it never changes `healthy` or the exit status, and reading it
+writes, sweeps and renews nothing. `sessionID` is `null` for a claim taken
+without a session. A stale claim is still live; ask its holder, or wait for
+expiry. Do not end it for them: besides expiry, only the holder, its own
+session's end, or an audited `--force` ends a live claim.
 
 ### `orphanedFrom` — what the previous holder left behind
 
@@ -1484,7 +1543,7 @@ board's rows.
 **The selector goes to `transact`, never to an item.** A batch addresses the one
 board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
 is refused rather than having it silently discarded, and `kb-board` already
-injects exactly one selector. There is no batch-level `--as` either: each item
+injects exactly one board selector. There is no batch-level `--as` either: each item
 carries its own actor and is authorized exactly as if it had arrived alone, so a
 batch cannot elevate.
 
@@ -1624,31 +1683,33 @@ the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
 (`"with-relations": true`).
 
-**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
-note. `state: done` releases the lease in the same transaction, so no
-`release` follows it.
+**3. END** — a finished unit closes **outside** `transact`. A done write needs
+a full head read from a checkout (Trunk, below), and `kb-board` reads it only
+for a direct `checkpoint`, never for a `transact` item; a typed `head` such as
+`da9a794` is refused and takes the whole batch, closing note included, down
+with it. So land the work on trunk first, then run the done checkpoint from
+that checkout and send the closing note after it. `--state done` releases the
+lease in the same write, so no `release` follows it. Leave `--repo`,
+`--branch`, `--head` and `--dirty` off: the wrapper fills all four from one git
+read and attests them, and any one typed by hand voids the attestation.
 
-```json
-[
-  { "name": "checkpoint",
-    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
-                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
-                   "summary": "wrapper change merged and gated",
-                   "intent": "close the unit",
-                   "next-action": "none; the train carries it",
-                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
-                   "head": "da9a794", "dirty": "clean" } },
-  { "name": "note",
-    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
-                   "as": "@:geoyws/kanban/driver/executor",
-                   "text": "gate green at da9a794" } }
-]
+```bash
+cd /root/work/src/kanban            # the trunk checkout, at the landed commit
+<skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d --lease TOKEN \
+  --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
+<skill-dir>/scripts/kb-board BOARD_ID note t-1a2b3c4d "gate green at <full head>" \
+  --as "@:geoyws/kanban/driver/executor" --kind evidence --json
 ```
+
+A unit that continues later still ends in one `transact` — `checkpoint`
+`state: continue` + `note` + `release` — because nothing in it reaches done.
 
 ```bash
 kb transact --items-file start.json --json
 kb batch    --items-file read.json  --json
-kb transact --items-file end.json   --json
+kb transact --items-file end.json   --json   # a continue-later END only
 # through the wrapper, each file travels on the one ssh's stdin:
 <skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
 ```
@@ -1714,6 +1775,19 @@ call, and removes it afterwards. Because ssh carries no environment, a set
 included, so the core's agreement check sees exactly what you exported.
 Unreadable, oversized or repeated `--session-context` refuses on your machine
 before any connection.
+
+**A session file can also choose the board for a read.** `kb-board BOARD
+task list --session-board ctx.json` (kanban done-gate DG-31) travels exactly
+like `--session-context`, but the call then carries no `--project`: the board
+host resolves the file's board through its registry and reads it under your
+own grants, which is what works under managed enforcement, where `--project`
+is refused. It fills no `--as`, `--lane` or `--session`, so a board-wide read
+stays board-wide; add `--session-context` naming the same file to scope it to
+the file's lane. Only one-board reads accept it (the read-only commands,
+`batch`, `claim --candidates`); the binary refuses a write. The file's `board`
+must be BOARD, and a missing path, a repeat, an unreadable, oversized or
+unparseable file, or one naming no board or another board refuses on your
+machine before any connection.
 
 **Revising a plan keeps the old one.** `task update --body-file` records the
 previous body on the event trail, so the plan's history is
@@ -2012,6 +2086,18 @@ Recorded automatically. You do not pass it, and you should not have to:
   detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
   you pass is left alone. All three refuse a row whose provenance would be
   blank, so in an interactive board-host shell, pass the four yourself.
+- **`--git-captured` — the wrapper's attestation, never typed.** When
+  `kb-board` filled all four of `--repo`, `--branch`, `--head` and `--dirty`
+  from its own git read, and you passed none of them, it appends the boolean
+  `--git-captured`. Pass any one of the four yourself and it adds nothing.
+  kanban records each `checkpoint`, `handoff` and `sitrep` head's
+  `headSource`: `kanban` (the binary's own git read at `--repo`, or its cwd,
+  agreed with the head), `kb-wrapper` (a complete `--git-captured` call) or
+  `typed` (anything else). Only a read head — `kanban` or `kb-wrapper` — can
+  take a row to `done` (see Trunk). The wrapper adds the flag; you never type
+  it. Typing it is a recorded false attestation that git was read, and a call
+  carrying it without all four values is refused before anything is written:
+  `--git-captured needs --repo, --branch, --head and --dirty from the same git read`.
 - **Cross-board overlap uses a separate repository key.** Routed `kb-board`
   claim and task handoff acceptance derive it on the caller from the canonical
   Git common-dir and stable local machine ID. Linked worktrees of one repository
@@ -2038,6 +2124,44 @@ Recorded automatically. You do not pass it, and you should not have to:
 
 Run outside a git repository and provenance is recorded as absent rather than
 invented, and the command works exactly the same.
+
+## Trunk — done means on trunk
+
+On a board whose trunk `geoyws` has set, every write that takes a row of any
+type to `done` — `task move … done`, `checkpoint --state done`, `story
+advance` into `done`, an import flip — is refused when the row has recorded a
+head unless that head is a full 40-character SHA, read from a checkout (a
+claim's head, kept even after the claim ends, or `headSource` `kanban` /
+`kb-wrapper`), and contained in the board's trunk. The head judged is the
+newest across the row's checkpoints, handoffs, sitreps and claim heads. The
+check is opt-in per board: a board with no trunk set (`trunk show` answers
+`null`) is not checked, and a row that never recorded a head (non-code work,
+a `task add --status done`, a newly imported row) is not checked either,
+whatever the board's `done_gate`. The trunk is asked fresh each time (`git
+ls-remote`), so a merge that has not been pushed is not on trunk.
+
+```bash
+kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws   # geoyws only
+kb trunk show --json                                              # {"repo","remote","branch"} or null
+```
+
+- `trunk set` is accepted only from `geoyws`. `PATH` is a readable,
+  non-shallow checkout on the ledger's host, `NAME` a remote configured there
+  that answers `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is
+  refused. A set writes one `trunk_set` event; there is no unset.
+- `trunk show` reads only, and is open to anyone who can read the board.
+- To land work: merge and push it to trunk, then record the landed commit
+  from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
+  epic (a story cannot be claimed) — through `kb-board` from inside the
+  checkout, so the head is read rather than typed. Then move it to `done`.
+- Refusals name the task, the head and `{remote}/{branch}`: a short head, a
+  head not read from a checkout, trunk unreachable, not on trunk, or the head
+  moved during the check (the old "no trunk set" and "no head" refusals are
+  retired). Only `task move ID done --force --as geoyws` passes a miss, and it
+  records a `trunk_gate_override` event; `--force` from anyone else is
+  refused. A `--force` on a write that is not checked records nothing.
+- An outstanding cleanup entry refuses every done path on every row type,
+  stories and epics included, with no `--force` past it.
 
 ## Reading
 
@@ -2084,6 +2208,84 @@ command fails and names `--limit N` instead of passing the first page off as
 the whole; a board holding exactly the default lists all of it. An explicit
 `--limit N` is honoured as-is with no marker — ask for one more than you need
 if you want to know whether your own bound was hit.
+
+### Review visibility — original evidence, not a second review (DG-28..DG-30)
+
+`doctor` and `dashboard` (`dash`) expose read-only review diagnostics on each
+authorized board/project in existing single-board, estate and group results.
+These are diagnostic fields, not new CLI verbs or aliases. Preserve existing
+board ordering, archive defaults, gate-off behavior, health and exit status.
+Only visible, nonarchived task-type rows in `review` are candidates; stories,
+epics and other statuses are not. Authorization precedes note parsing and
+projection: denied tasks expose no IDs, notes, ages or counts, and denied or
+omitted boards retain the existing omission/refusal rules.
+
+- `unreviewedReviewTasks` retains its existing membership: candidates without
+  an attested pass covering the current head. A launch or free-text verdict
+  note is not a pass and cannot open the done gate.
+- `originalReviewLaunchMissingTasks` is the subset of `unreviewedReviewTasks`
+  without valid original-launch evidence matching the current head: no current
+  attested pass **and** no matching launch. An existing current-head attested
+  pass excludes the task from both lists, even without a launch note; its
+  original verdict is sufficient. Missing both appears in both lists; a matching
+  launch without a pass appears only in `unreviewedReviewTasks`. Any matching
+  launch suffices; no launch proves a verdict.
+- Each readable board/project carries integer `reviewObservedAt`, captured once
+  per command result and shared across all boards. Both arrays retain `taskID`,
+  nullable/string `headSha`, integer `createdAt`, and ascending numeric
+  `freeTextVerdictNoteSeqs` (active notes only); they add integer `taskAgeMs` and
+  array `originalReviewLaunches`. Empty lists are arrays, not absent fields.
+- Both arrays sort by task `createdAt` ascending, then typed task ID, regardless
+  of priority, review-entry, note or launch time. All timestamps are epoch
+  milliseconds; `taskAgeMs` is the nonnegative saturating whole-millisecond
+  difference `max(0, reviewObservedAt - createdAt)`. Label it **task age**, never
+  time in review. Repeated reads may change age, not creation ordering.
+
+**Original-launch evidence uses the ordinary existing `evidence` note kind.**
+Its complete body, apart from JSON whitespace, must be exactly one JSON object:
+
+```json
+{"reviewLaunchVersion":1,"reviewer":"lane-r","launchRef":"agent-17","headSha":"1111111111111111111111111111111111111111"}
+```
+
+The four keys are required and unique, with no extra keys.
+`reviewLaunchVersion` must be the JSON integer `1`; `reviewer` and `launchRef`
+must be strings containing a non-whitespace character, with `launchRef`
+identifying the original launched reviewer. `headSha` must be a string of
+exactly 40 ASCII hexadecimal characters. No type coercion is permitted.
+Duplicate, extra or missing keys, unknown versions, blank strings, malformed
+JSON, surrounding prose and Markdown fences are invalid records: ignored for
+launch matching, not failures of the diagnostic read. This payload creates no
+new note kind, schema or write verb, and is not an instruction to launch a
+reviewer or invent evidence.
+
+`originalReviewLaunches` includes every valid active **and archived** evidence
+record on the authorized candidate, sorted by numeric note sequence. Each
+record is `{noteSeq, noteArchived, reviewer, launchRef, headSha, matchesCurrentHead}`:
+integer sequence, boolean archive flag, the three payload strings, and boolean
+match flag. Retain historical records, including duplicate launches and stale
+heads; expose provenance, not note bodies or unrelated evidence. A launch
+matches only when the existing current head is full-length and equals its
+`headSha` byte-for-byte. Never expand a short head, normalize case, infer it
+from prose or use a launch as the task head. Null/short heads cannot match.
+Changing H1 to H2 retains H1 records as nonmatching; returning to H1 makes
+them match again. Archival changes provenance only, not matching, and does
+not change the active-only `freeTextVerdictNoteSeqs` contract.
+
+**Consumer ownership and owner routing.** The existing watcher is skills-root
+`kb/kb-watch`, with `scripts/kb-watch.py`; this package documents its contract
+and must not grow a duplicate watcher. It is distinct from the `kb watch`
+ledger subscription below. The watcher must consume the real authorized
+diagnostic, show oldest-first task age and note provenance, and deduplicate a
+task appearing in both arrays without losing either missing reason. Reuse the
+original pinned verdict when present. Missing original launch/verdict evidence
+or a current-head mismatch belongs on the existing task-owner work path for
+reconciliation, **never a SECOND review**. A diagnostic read, including repeated
+watcher reads, must not spawn reviewers, write verdicts, mutate the ledger,
+erase historical evidence or change the done gate. Delivery requires real
+compiled-binary-to-existing-watcher E2E evidence, including owner routing and
+zero second-review launches/diagnostic writes; mock JSON or prose checks do
+not prove that integration.
 
 ## Watch — cursor-native live subscription
 

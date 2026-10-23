@@ -23,6 +23,7 @@ link
 mcp
 message
 milestone
+model
 note
 overlap
 plugin
@@ -40,8 +41,10 @@ story
 subscription
 tag
 task
+test
 todo
 transact
+trunk
 watch
 worker
 workspace

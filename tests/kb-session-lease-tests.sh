@@ -11,6 +11,14 @@ set -eu
 printf '%s\n' "$*" >>"$TEST_ROOT/calls"
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # A LINKED scope binding made without a session refuses a sessioned triple.
+  'claim t-bound')
+    case " $* " in
+      *' --session '*) printf '{"error":"task t-bound is not claimable under selected set ss-1: test matches no live binding; the actor holds lane driver, session (none) on that set. Present the bound triple, or rebind with an audited `scope bind` revision"}\n'; exit 1 ;;
+    esac
+    printf '{"taskID":"t-bound","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # Any other refusal must not trigger the sessionless retry.
+  'claim t-refused') printf '{"error":"task t-refused is gated"}\n'; exit 1 ;;
   'h acc')
     if [ "$4" = h-session ]; then
       printf '{"claim":null,"handoff":{"id":"h-session","taskID":null}}\n'
@@ -52,6 +60,8 @@ out=$("$lease" dotfiles claim t-fake --as test)
 case "$out" in *12345678*) exit 1 ;; esac
 [ "$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")" = 600 ] || exit 1
 [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
+# The claim is recorded under KB_SESSION_ID, so `release --session` can end it.
+[ "$(sed -n '1p' "$t/calls")" = 'dotfiles claim t-fake --as test --session lease-test-session --json' ] || exit 1
 # An unrelated second claim must not silently overwrite this session's token.
 if "$lease" dotfiles claim t-other --as test >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = 1 ] || exit 1
@@ -68,6 +78,10 @@ out=$("$lease" dotfiles claim t-fake --as test)
 out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done --intent done --next-action next)
 [ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
 [ ! -e "$session" ] || exit 1
+# An explicit --session is passed through once and wins over KB_SESSION_ID.
+out=$("$lease" dotfiles claim t-fake --as test --session explicit-session)
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session explicit-session --json' ] || exit 1
+out=$("$lease" dotfiles release t-fake)
 # A blocked checkpoint parks the row: the lease leaves the session, so a lane
 # waiting on a long job can claim its next row from the same pane.
 out=$("$lease" dotfiles claim t-fake --as test)
@@ -81,6 +95,23 @@ out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done 
 [ ! -e "$session" ] || exit 1
 out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
+[ "$(grep -c '^dotfiles h acc h-test --as test --session lease-test-session --json$' "$t/calls")" = 1 ] || exit 1
+out=$("$lease" dotfiles release t-fake)
+[ ! -e "$session" ] || exit 1
+# Sessionless scope binding: one sessioned try, one sessionless retry, a warning, and the lease stored.
+n=$(wc -l < "$t/calls" | tr -d ' ')
+out=$("$lease" dotfiles claim t-bound --as test 2>"$t/warn")
+[ "$out" = '{"taskID":"t-bound","leaseStored":true}' ] || exit 1
+grep -qF 'release --session will not free this lease' "$t/warn" || exit 1
+[ "$(tail -n 2 "$t/calls" | head -n 1)" = 'dotfiles claim t-bound --as test --session lease-test-session --json' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-bound --as test --json' ] || exit 1
+[ "$(wc -l < "$t/calls" | tr -d ' ')" = $((n + 2)) ] || exit 1
+rm -f "$session"
+# Any other refusal fails once, with no retry.
+n=$(wc -l < "$t/calls" | tr -d ' ')
+if "$lease" dotfiles claim t-refused --as test >"$t/refusal" 2>&1; then exit 1; fi
+[ "$(wc -l < "$t/calls" | tr -d ' ')" = $((n + 1)) ] || exit 1
+out=$("$lease" dotfiles handoff-accept h-test --as test)
 out=$("$lease" dotfiles handoff-create t-fake --as test --summary done --intent done --next-action done)
 [ "$out" = '{"taskID":"t-fake","operation":"handoff-create","ok":true}' ] || exit 1
 [ ! -e "$session" ] || exit 1
