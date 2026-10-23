@@ -96,6 +96,7 @@ lookup_board() {
       BOARD_SSH_TARGET=${BOARD_SSH_TARGETS[$i]}
       BOARD_EXPECTED_REMOTE_HOST=${BOARD_EXPECTED_REMOTE_HOSTS[$i]}
       BOARD_KB_EXEC=${BOARD_KB_EXECS[$i]}
+      BOARD_LOGIN=${BOARD_LOGINS[$i]}
       return 0
     fi
   done
@@ -105,11 +106,12 @@ lookup_board() {
 load_table() {
   local table_file=$1
   [[ -r "$table_file" ]] || die "$router_name: routing table is not readable: $table_file"
-  local line board home_host ssh_target expected_remote kb_exec extra
+  local line board home_host ssh_target expected_remote kb_exec login extra
+  BOARD_LOGINS=()
   local loaded=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue
-    IFS=$'\t' read -r board home_host ssh_target expected_remote kb_exec extra <<<"$line"
+    IFS=$'\t' read -r board home_host ssh_target expected_remote kb_exec login extra <<<"$line"
     if [[ -n "${extra-}" || -z "${board-}" || -z "${home_host-}" || -z "${ssh_target-}" || -z "${expected_remote-}" || -z "${kb_exec-}" ]]; then
       die "$router_name: malformed routing row: $line"
     fi
@@ -117,6 +119,14 @@ load_table() {
       /*) ;;
       *) die "$router_name: KB executable path must be absolute: $kb_exec" ;;
     esac
+    login=${login:-ssh}
+    case "$login" in
+      ssh|own) ;;
+      *) routing_die "login must be ssh or own: $login" ;;
+    esac
+    if [[ "$login" = own && "$kb_exec" = /root/* ]]; then
+      routing_die "board $board routes as your own login, so its KB executable must be one every login can run, not under /root: $kb_exec"
+    fi
     if board_exists "$board"; then
       die "$router_name: duplicate board mapping: $board"
     fi
@@ -125,7 +135,48 @@ load_table() {
     BOARD_SSH_TARGETS+=("$ssh_target")
     BOARD_EXPECTED_REMOTE_HOSTS+=("$expected_remote")
     BOARD_KB_EXECS+=("$kb_exec")
+    BOARD_LOGINS+=("$login")
     loaded=1
   done <"$table_file"
   [[ "$loaded" -eq 1 ]] || die "$router_name: routing table has no rows: $table_file"
+}
+
+# kb-group owns its prefix; the other wrappers expect a complete sentence.
+routing_die() {
+  if [[ "$router_name" = kb-group ]]; then
+    die "$1"
+  else
+    die "$router_name: $1"
+  fi
+}
+
+own_login_local_preflight() {
+  if [[ "$BOARD_LOGIN" = own && "$EUID" -eq 0 ]]; then
+    routing_die "board $1 routes as your own login, but this shell is root; run $router_name from your own account"
+  fi
+}
+
+# This selects transport only; no principal assertion crosses the boundary.
+prepare_ssh_login() {
+  local board=$1 ssh_bin=$2 login config key value rest
+  ssh_login_args=()
+  [[ "$BOARD_LOGIN" = own ]] || return 0
+  login=${KB_SSH_LOGIN:-}
+  if [[ -n "$login" ]]; then
+    ssh_login_args=(-l "$login")
+  else
+    config=$("$ssh_bin" -G "$BOARD_SSH_TARGET") || :
+    while read -r key value rest; do
+      if [[ "$key" = user ]]; then
+        login=$value
+        break
+      fi
+    done <<<"$config"
+  fi
+  if [[ -z "$login" ]]; then
+    routing_die "board $board routes as your own login, but ssh -G $BOARD_SSH_TARGET named no user; set User for $BOARD_SSH_TARGET in your ssh config or export KB_SSH_LOGIN"
+  fi
+  if [[ "$login" = root ]]; then
+    routing_die "board $board routes as your own login, but ssh would log in to $BOARD_SSH_TARGET as root; set User for $BOARD_SSH_TARGET in your ssh config or export KB_SSH_LOGIN"
+  fi
 }

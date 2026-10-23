@@ -32,7 +32,7 @@ reject_registry_commands() {
     r|rule)
       die 'kb-board is for board-owned commands only; use kb directly for registry rules.'
       ;;
-    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib|model)
+    init|schema|mcp|doctor|backup|restore|audit|dashboard|dash|w|ws|workspace|access|plugin|worker|link|scope|contrib|model|broker)
       die "kb-board does not route registry-wide command '$1'."
       ;;
   esac
@@ -376,6 +376,7 @@ set -- "${args[@]+${args[@]}}"
 current_host=$(/bin/hostname)
 
 if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
+  own_login_local_preflight "$board"
   # Already at the boundary: the caller's path IS the board host's path, and
   # the caller's KB_SESSION_ID is already in this process's environment.
   [[ -z "$session_context" ]] || set -- "$@" --session-context "$session_context"
@@ -396,6 +397,8 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
   fi
   exec "$kb_bin" "${project_args[@]+${project_args[@]}}" "$command" "$@"
 fi
+
+prepare_ssh_login "$board" "$ssh_bin"
 
 remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
 # Decoded temp files the remote must remove on exit; while any exists the
@@ -472,21 +475,21 @@ if [[ -n "$body_file" ]]; then
   trap 'rm -f "$encoded"' EXIT
   base64 <"$body_file" >"$encoded" || die "kb-board: cannot encode --body-file $body_file"
   status=0
-  "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
+  "$ssh_bin" "${ssh_login_args[@]+${ssh_login_args[@]}}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$encoded" || status=$?
   exit "$status"
 fi
 
 if [[ -n "$items_file" ]]; then
   # Staged batches keep their EXIT trap until ssh finishes.
   if [[ -n "$staged" ]]; then
-    "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
+    "$ssh_bin" "${ssh_login_args[@]+${ssh_login_args[@]}}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
     exit $?
   fi
-  exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
+  exec "$ssh_bin" "${ssh_login_args[@]+${ssh_login_args[@]}}" -- "$BOARD_SSH_TARGET" "$remote_cmd" <"$items_file"
 fi
 
 if [[ -n "$staged" ]]; then
-  "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"
+  "$ssh_bin" "${ssh_login_args[@]+${ssh_login_args[@]}}" -- "$BOARD_SSH_TARGET" "$remote_cmd"
   exit $?
 fi
-exec "$ssh_bin" -- "$BOARD_SSH_TARGET" "$remote_cmd"
+exec "$ssh_bin" "${ssh_login_args[@]+${ssh_login_args[@]}}" -- "$BOARD_SSH_TARGET" "$remote_cmd"

@@ -51,6 +51,24 @@ The installed package expects either `KB_HOSTS_TABLE` or an adjacent
 3. SSH target
 4. expected remote hostname
 5. absolute KB executable path
+6. optional login policy: `ssh` or `own` (absent means `ssh`)
+
+Five-field and explicit `ssh` rows retain existing SSH argv and ignore
+`KB_SSH_LOGIN`. For `own` rows, `kb-board` and `kb-group` use nonempty
+`KB_SSH_LOGIN` as `ssh -l LOGIN -- TARGET`; otherwise they query
+`ssh -G TARGET` for the configured user. Root or a missing user is refused
+before command transport (exit 64). On the home host, effective UID 0 is
+refused before the binary runs. An `own` executable under `/root/` or an
+unknown policy is refused at table load. No principal metadata is forwarded:
+the remote kernel UID identifies the login to the compiled application.
+
+`kb-group` uses its registry board route (`KB_GROUP_REGISTRY_PROJECT`,
+default `kanban`) and requires every member's normalized login policy and
+other route fields to match. `kb-host` accepts the shared table format but
+keeps its registry-only transport and command authority; it does not apply
+own-login policy. `kb-board` refuses `broker` before transport. These wrappers
+do not provision accounts, install binaries or activate enforcement. Fake-SSH
+suites test routing only, not real SSH authentication or broker identity.
 
 The parser rejects missing, duplicate, unknown, or malformed board mappings.
 The KB executable path must be absolute. `kb-board` injects the board

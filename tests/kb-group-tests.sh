@@ -7,6 +7,13 @@ mkdir -p "$t/bin"
 cat >"$t/bin/ssh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+[[ -z "${SSH_ARGS:-}" ]] || printf '%s\0' "$@" >"$SSH_ARGS"
+if [[ "${1-}" = -G ]]; then
+  printf 'config\n' >>"$CALLS"
+  [[ -z "${SSH_USER:-}" ]] || printf 'user %s\n' "$SSH_USER"
+  exit 0
+fi
+[[ "${1-}" != -l ]] || shift 2
 printf 'ssh\n' >>"$CALLS"
 [[ ${OUTAGE:-0} = 0 ]] || { echo 'ssh: connection refused' >&2; exit 255; }
 [[ ${TIMEOUT:-0} = 0 ]] || { echo 'ssh: timed out' >&2; exit 124; }
@@ -295,4 +302,90 @@ import sys
 assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'--project', b'px', b'task', b'list', b'--json']
 PY
 ok
+
+# IDENT-44 fake-transport contract, not a real Unix-principal proof.
+test_own_group_login_policy() (
+  export SSH_ARGS="$t/ssh-args" KB_SSH_LOGIN='' SSH_USER=root
+  own_group_table() {
+    printf 'kanban\thome-local\thome-target\thome-remote\t%s\t%s\npx\thome-local\thome-target\thome-remote\t%s%s\n' "$kb" "$1" "$kb" "$2" >"$KB_HOSTS_TABLE"
+  }
+  exact_refuse() {
+    local expected=$1 status=0 output
+    : >"$CALLS"; rm -f "$ARGS" "$SSH_ARGS"
+    output=$("$here/scripts/kb-group" group/test task list 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "kb-group: $expected" ]] || fail "own group exit $status: $output"
+    [[ ! -e "$ARGS" ]] || fail 'own refusal ran operation'
+  }
+  own_group_table own $'\town'
+  exact_refuse 'board kanban routes as your own login, but ssh would log in to home-target as root; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls config
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'-G', b'home-target']
+PY
+  export SSH_USER=''
+  exact_refuse 'board kanban routes as your own login, but ssh -G home-target named no user; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls config
+  export KB_SSH_LOGIN=root
+  exact_refuse 'board kanban routes as your own login, but ssh would log in to home-target as root; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls ''
+  export KB_SSH_LOGIN=alice SSH_USER=root
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'ssh\nshow\noperation'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:4] == [b'-l', b'alice', b'--', b'home-target']
+PY
+  own_group_table own ''
+  exact_refuse 'cross-home group member: px'
+  check_calls $'ssh\nshow'
+  own_group_table own $'\town'
+  export KB_SSH_LOGIN='' SSH_USER=bob
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'config\nssh\nshow\noperation'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:2] == [b'--', b'home-target']
+PY
+  export KB_SSH_LOGIN=alice
+  make_table
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  cp "$SSH_ARGS" "$t/legacy-group-argv"
+  # Explicit ssh and absent policy normalize identically, ignoring override.
+  own_group_table ssh ''
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'ssh\nshow\noperation'
+  cmp -s "$SSH_ARGS" "$t/legacy-group-argv" || fail 'normalized legacy group SSH argv changed'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:2] == [b'--', b'home-target']
+PY
+  own_group_table self ''
+  exact_refuse 'login must be ssh or own: self'
+  check_calls ''
+  printf 'kanban\thome-local\thome-target\thome-remote\t/root/.local/bin/kb\town\n' >"$KB_HOSTS_TABLE"
+  exact_refuse 'board kanban routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb'
+  check_calls ''
+  printf 'kanban\t%s\thome-target\thome-remote\t%s\town\npx\t%s\thome-target\thome-remote\t%s\town\n' "$(/bin/hostname)" "$kb" "$(/bin/hostname)" "$kb" >"$KB_HOSTS_TABLE"
+  if [[ "$EUID" = 0 ]]; then
+    exact_refuse 'board kanban routes as your own login, but this shell is root; run kb-group from your own account'
+    check_calls ''
+  else
+    : >"$CALLS"
+    "$here/scripts/kb-group" group/test task list
+    check_calls $'show\noperation'
+  fi
+)
+test_own_group_login_policy
+ok
+make_table
+
 printf 'kb-group: %d tests passed\n' "$pass"
