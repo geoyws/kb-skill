@@ -1749,6 +1749,8 @@ HOST_REGISTRY_COMMANDS=(
   scope
   contrib
   model
+  broker
+  whoami
 )
 BOARD_OWNED_COMMANDS=(
   board

@@ -5,6 +5,7 @@ audit
 backup
 batch
 board
+broker
 checkpoint
 claim
 cleanup
@@ -46,6 +47,7 @@ todo
 transact
 trunk
 watch
+whoami
 worker
 workspace
 worktree
