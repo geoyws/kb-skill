@@ -1460,7 +1460,7 @@ kb h new <id> --lease "$TOKEN" --as "$AGENT" --summary "…" --intent "…" \
 ```
 
 **A bug names what introduced it.** A bug row claims, nests and gates like a
-task, and needs `--evidence` (a resolved attention id). `--introduced-by`
+task, and needs `--evidence` (an attention id; cited, not looked up). `--introduced-by`
 names the row whose work broke it, or the full 40- or 64-hex SHA. That link is
 what the scorecard blames, so a bug without one counts as `unattributed`:
 
