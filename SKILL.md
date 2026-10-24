@@ -2537,8 +2537,10 @@ kb deploy list --status failed --json
 kb deploy list --all --json
 ```
 
-Canonical tiers are `@_bdt`, `@_bd`, `@_bst`, `@_bs`, `@_s`, `@_uat`, and
-`@_p`. Deployment commands only record attempts and evidence; they neither
+Canonical tiers are `@_bdt`, `@_bd`, `@_bst`, `@_bs`, `@_s`, `@_uat`,
+`@_preview` (PX's shared trunk tier, from board schema 54), and `@_p`. A board
+below schema 54 refuses only `@_preview`, naming its owner's
+`kanban board upgrade`. Deployment commands only record attempts and evidence; they neither
 perform a deployment nor inspect its target. Deploy through the real release
 path, independently observe the live target, then record the full pushed
 commit and what was actually served. `succeeded` is refused unless the served
