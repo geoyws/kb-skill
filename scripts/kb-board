@@ -431,11 +431,15 @@ remote_project=""
 if [[ -n "$body_file" ]]; then
   remote_cmd+=" base64 -d >\"\$body\" <&0 || exit 70;"
 fi
-# ssh carries no environment: a caller's KB_SESSION_ID crosses explicitly.
-remote_env=""
+# ssh carries no environment: a caller's KB_SESSION_ID and KB_MODEL cross
+# explicitly.
+remote_vars=""
 if [[ -n "${KB_SESSION_ID+set}" ]]; then
-  remote_env="env KB_SESSION_ID=$(shell_quote "$KB_SESSION_ID") "
+  remote_vars="KB_SESSION_ID=$(shell_quote "$KB_SESSION_ID") "
 fi
+remote_vars+=$(kb_model_env)
+remote_env=""
+[[ -z "$remote_vars" ]] || remote_env="/usr/bin/env $remote_vars"
 if [[ -n "$remote_cleanup" ]]; then
   remote_cmd+=" ${remote_env}$(shell_quote "$kb_bin")${remote_project} $(shell_quote "$command")"
 else

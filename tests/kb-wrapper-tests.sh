@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# A harness exports KB_MODEL; every case that needs one sets it itself.
+unset KB_MODEL
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
@@ -289,7 +291,9 @@ case "${FAKE_SSH_MODE:-execute}" in
     remote_hostname=${FAKE_REMOTE_HOSTNAME_VALUE:-${FAKE_HOSTNAME_VALUE:-}}
     remote_hostname_bin=${FAKE_REMOTE_HOSTNAME_BIN:-/bin/hostname}
     remote_cmd=${remote_cmd//\/bin\/hostname/$remote_hostname_bin}
-    FAKE_HOSTNAME_VALUE="$remote_hostname" PATH="$remote_path" /bin/sh -c "$remote_cmd"
+    # Real ssh carries no environment: what the board host sees of KB_MODEL
+    # and KB_SESSION_ID is only what the wrapper put on the command line.
+    env -u KB_MODEL -u KB_SESSION_ID FAKE_HOSTNAME_VALUE="$remote_hostname" PATH="$remote_path" /bin/sh -c "$remote_cmd"
     ;;
   fail)
     printf 'ssh unexpectedly invoked: %s\n' "$*" >&2
@@ -362,6 +366,14 @@ if [[ -n "${FAKE_KB_CTX_OUT:-}" ]]; then
     printf 'set:%s' "$KB_SESSION_ID" >"$FAKE_KB_CTX_OUT.session"
   else
     printf 'unset' >"$FAKE_KB_CTX_OUT.session"
+  fi
+fi
+# What the binary saw as KB_MODEL, for any command (kanban MODELSTATS-10).
+if [[ -n "${FAKE_KB_MODEL_OUT:-}" ]]; then
+  if [[ -n "${KB_MODEL+set}" ]]; then
+    printf 'set:%s' "$KB_MODEL" >"$FAKE_KB_MODEL_OUT"
+  else
+    printf 'unset' >"$FAKE_KB_MODEL_OUT"
   fi
 fi
 # DG-31's `--session-board`: what file the binary was handed, and its bytes.
@@ -773,6 +785,73 @@ test_board_session_context_and_session_id_are_transferred() {
     run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task show t-1 --session-context=
   assert_log_clean "$ssh_log.empty" 'empty session context'
   assert_log_clean "$kb_log.empty" 'empty session context'
+}
+
+# KB_MODEL is the harness's declaration of the model it runs, the default
+# author model on every `--as` write (kanban MODELSTATS-10). ssh carries no
+# environment, so kb-board and kb-host cross it to the board-host binary as
+# itself, quoting intact and empty included; an unset one stays unset, so the
+# binary warns and counts `unknown`. It never becomes a `--model` flag, which
+# on claim and handoff accept is also the MODEL allow-list declaration.
+test_kb_model_crosses_to_the_board_host() {
+  local dir="$tmp_dir/kbmodel"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id remote_host table local_table want
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  # The remote PATH holds only the fakebin, as on a minimal board host: the
+  # crossing must not depend on finding `env` there.
+  run_model() {
+    local wrapper=$1 seen=$2
+    shift 2
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin" \
+    FAKE_SSH_LOG="$dir/ssh.argv" \
+    FAKE_KB_LOG="$dir/kb.argv" \
+    FAKE_KB_MODEL_OUT="$seen" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/$wrapper" "$@"
+  }
+
+  want="kimi-k3 'x' \$(y)"
+  KB_MODEL="$want" run_model kb-board "$dir/board-set" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-set")" == "set:$want" ]] || fail "kb-board: KB_MODEL crossed as $(cat "$dir/board-set")"
+  assert_argv_file "$dir/kb.argv" --project "$board_id" note t-1 progress --as a
+  KB_MODEL= run_model kb-board "$dir/board-empty" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-empty")" == "set:" ]] || fail "kb-board: an empty KB_MODEL crossed as $(cat "$dir/board-empty")"
+  run_model kb-board "$dir/board-unset" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-unset")" == unset ]] || fail 'kb-board: an unset KB_MODEL arrived set'
+  # Beside a crossing KB_SESSION_ID, both arrive.
+  KB_SESSION_ID=s-m KB_MODEL=kimi-k3 FAKE_KB_CTX_OUT="$dir/board-both" \
+    run_model kb-board "$dir/board-both.model" "$board_id" task show t-1
+  [[ "$(cat "$dir/board-both.model")" == set:kimi-k3 ]] || fail 'kb-board: KB_MODEL lost beside KB_SESSION_ID'
+  [[ "$(cat "$dir/board-both.session")" == set:s-m ]] || fail 'kb-board: KB_SESSION_ID lost beside KB_MODEL'
+
+  # kb-host routes by host, so give it its own table row.
+  local host_home
+  host_home=$(make_id hosthome)
+  make_table "$table" "$host_home" "$host_home" "$(make_id target)" "$remote_host" "$fakebin/kb"
+  KB_MODEL="$want" run_model kb-host "$dir/host-set" "$host_home" r ls --json
+  [[ "$(cat "$dir/host-set")" == "set:$want" ]] || fail "kb-host: KB_MODEL crossed as $(cat "$dir/host-set")"
+  assert_argv_file "$dir/kb.argv" r ls --json
+  run_model kb-host "$dir/host-unset" "$host_home" r ls --json
+  [[ "$(cat "$dir/host-unset")" == unset ]] || fail 'kb-host: an unset KB_MODEL arrived set'
+
+  # At the boundary no ssh runs: the binary inherits the caller's value.
+  local_table="$dir/local.tsv"
+  make_table "$local_table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(/bin/hostname)" "$fakebin/kb"
+  FAKE_SSH_LOG="$dir/ssh-local.argv" FAKE_SSH_MODE=fail FAKE_KB_LOG="$dir/kb-local.argv" \
+    FAKE_KB_MODEL_OUT="$dir/local" KB_MODEL=kimi-k3 KB_HOSTS_TABLE="$local_table" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" note t-1 progress --as a
+  assert_log_clean "$dir/ssh-local.argv" 'KB_MODEL at the boundary'
+  [[ "$(cat "$dir/local")" == set:kimi-k3 ]] || fail 'kb-board: local KB_MODEL not inherited'
 }
 
 # The session-end hook (kanban SESSION-02) runs `release --session ID --as A
@@ -2944,6 +3023,7 @@ main() {
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
     test_board_session_context_and_session_id_are_transferred
+    test_kb_model_crosses_to_the_board_host
     test_board_session_end_release_is_forwarded
     test_session_context_at_the_boundary_needs_no_transfer
     test_board_session_board_is_transferred_and_sends_no_project

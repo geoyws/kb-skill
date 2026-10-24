@@ -141,6 +141,10 @@ if [[ "$current_host" = "$BOARD_HOME_HOST" ]]; then
   exec "$kb_bin" "$command" "$@"
 fi
 
+# ssh carries no environment: a caller's KB_MODEL crosses explicitly.
+remote_env=""
+remote_vars=$(kb_model_env)
+[[ -z "$remote_vars" ]] || remote_env="/usr/bin/env $remote_vars"
 remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$BOARD_EXPECTED_REMOTE_HOST") ]; then"
 if [[ -n "$body_file" ]]; then
   # The body rides ssh's STDIN, not the command string. Embedding it as an
@@ -150,9 +154,9 @@ if [[ -n "$body_file" ]]; then
   remote_cmd+=" body=\$(mktemp \"\${TMPDIR:-/tmp}/kb-body.XXXXXX\") || exit 70;"
   remote_cmd+=" trap 'rm -f \"\$body\"' EXIT;"
   remote_cmd+=" base64 -d >\"\$body\" <&0 || exit 70;"
-  remote_cmd+=" $(shell_quote "$kb_bin") $(shell_quote "$command")"
+  remote_cmd+=" ${remote_env}$(shell_quote "$kb_bin") $(shell_quote "$command")"
 else
-  remote_cmd+=" exec $(shell_quote "$kb_bin") $(shell_quote "$command")"
+  remote_cmd+=" exec ${remote_env}$(shell_quote "$kb_bin") $(shell_quote "$command")"
 fi
 for arg in "$@"; do
   remote_cmd+=" $(shell_quote "$arg")"

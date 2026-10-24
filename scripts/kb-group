@@ -167,7 +167,11 @@ count=$((${#route_args[@]} / 5))
 if [[ "$(/bin/hostname)" = "$home_host" ]]; then
   exec /bin/bash -c "$remote_script" kb-group "$tag" "$kb_bin" "$count" "${route_args[@]}" -- "$@"
 fi
-remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$expected_remote") ]; then exec /bin/bash -c $(shell_quote "$remote_script") kb-group"
+# ssh carries no environment: a caller's KB_MODEL crosses explicitly.
+remote_env=""
+remote_vars=$(kb_model_env)
+[[ -z "$remote_vars" ]] || remote_env="/usr/bin/env $remote_vars"
+remote_cmd="if [ \"\$(/bin/hostname)\" = $(shell_quote "$expected_remote") ]; then exec ${remote_env}/bin/bash -c $(shell_quote "$remote_script") kb-group"
 for arg in "$tag" "$kb_bin" "$count" "${route_args[@]}" -- "$@"; do
   remote_cmd+=" $(shell_quote "$arg")"
 done
