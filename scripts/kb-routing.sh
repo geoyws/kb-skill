@@ -15,6 +15,17 @@ shell_quote() {
   printf '%s' "$out"
 }
 
+# ssh carries no environment, so KB_MODEL, the harness's declaration of the
+# model it runs, crosses explicitly. The board-host binary reads it as the
+# default author model on every `--as` write (kanban MODELSTATS-10). A set
+# value crosses as itself, empty included; an unset one stays unset, and the
+# binary then warns and counts `unknown`. Prints `KB_MODEL=<quoted> ` for an
+# `env` prefix, or nothing.
+kb_model_env() {
+  [[ -n "${KB_MODEL+set}" ]] || return 0
+  printf 'KB_MODEL=%s ' "$(shell_quote "$KB_MODEL")"
+}
+
 has_flag() {
   local name=$1
   shift

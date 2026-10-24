@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# A harness exports KB_MODEL; every case that needs one sets it itself.
+unset KB_MODEL
 here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 t=$(mktemp -d "${TMPDIR:-/tmp}/kb-group-tests.XXXXXX")
 trap 'rm -rf "$t"' EXIT
@@ -21,7 +23,9 @@ printf 'ssh\n' >>"$CALLS"
 [[ $1 = home-target ]] || exit 98
 shift
 cmd=${1//\/bin\/hostname/$REMOTE_HOSTNAME_BIN}
-/bin/sh -c "$cmd"
+# Real ssh carries no environment: only what kb-group puts on the command
+# line reaches the registry home.
+env -u KB_MODEL /bin/sh -c "$cmd"
 SH
 cat >"$t/bin/hostname" <<'SH'
 #!/bin/bash
@@ -52,6 +56,9 @@ if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
 else
   printf 'operation\n' >>"$CALLS"
   printf '%s\0' "$@" >"$ARGS"
+  if [[ -n "${MODEL_OUT:-}" ]]; then
+    if [[ -n "${KB_MODEL+set}" ]]; then printf 'set:%s' "$KB_MODEL" >"$MODEL_OUT"; else printf unset >"$MODEL_OUT"; fi
+  fi
   if [[ ${RACE_MEMBER:-0} = 1 || ${RACE_RECREATE:-0} = 1 ]]; then
     # The compiled resolver sees either a new cross-home member or a new
     # group UUID under the same name and revision after wrapper verification.
@@ -302,6 +309,21 @@ import sys
 assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'--project', b'px', b'task', b'list', b'--json']
 PY
 ok
+
+# KB_MODEL (kanban MODELSTATS-10, the default author model) crosses ssh to
+# the one compiled operation as itself, quoting intact and empty included;
+# an unset one stays unset, so the binary warns and counts `unknown`.
+model_case() {
+  local want=$1; shift
+  : >"$CALLS"
+  MODEL_OUT="$t/model" "$@" "$here/scripts/kb-group" group/test attention list --json >/dev/null
+  check_calls $'ssh\nshow\noperation'
+  [[ "$(cat "$t/model")" = "$want" ]] || fail "KB_MODEL crossed as [$(cat "$t/model")], want [$want]"
+  ok
+}
+model_case "set:kimi-k3 'x' \$(y)" env "KB_MODEL=kimi-k3 'x' \$(y)"
+model_case 'set:' env KB_MODEL=
+model_case unset env -u KB_MODEL
 
 # IDENT-44 fake-transport contract, not a real Unix-principal proof.
 test_own_group_login_policy() (
