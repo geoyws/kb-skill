@@ -1787,6 +1787,7 @@ BOARD_OWNED_COMMANDS=(
   overlap
   trunk
   test
+  stats
 )
 
 test_host_surface_matches_source_allowlist() {
