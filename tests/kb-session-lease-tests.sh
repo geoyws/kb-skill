@@ -15,6 +15,14 @@ if [ "$(printf '%s\n' "$@" | grep -cx -- '--json')" -gt 1 ]; then
   echo 'Error: --json (true, true) given more than once; it takes a single value' >&2
   exit 2
 fi
+# Real board and transport failures for one call, chosen by FAKE_FAIL (t-8ccffdeb).
+case "${FAKE_FAIL:-}" in
+  ended) echo 'Error: task t-fake has no active lease: it was never claimed, or the lease expired and was retired; claim the task to write to it' >&2; exit 1 ;;
+  mismatch) echo 'Error: task t-fake is leased by @:x/y/z/executor until 1793182679357, and that is not the lease you presented: it was superseded, so reacquire the task before writing to it' >&2; exit 1 ;;
+  ssh) exit 255 ;;
+  silent) exit 1 ;;
+  routing) echo 'kb-board: unknown board: nosuch' >&2; exit 64 ;;
+esac
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
   # A LINKED scope binding made without a session refuses a sessioned triple.
@@ -169,11 +177,33 @@ out=$("$lease" dotfiles checkpoint t-fake --as test --state continue --json --su
 [ "$(tail -n 1 "$t/calls" | grep -o -- '--json' | wc -l | tr -d ' ')" = 1 ] || exit 1
 # A refusal reaches the caller readable, with the lease masked.
 if "$lease" dotfiles checkpoint t-fake --as test --state blocked --summary quote-lease >"$t/out-q" 2>"$t/err-q"; then exit 1; fi
-grep -qF 'lease operation failed: lease <lease> refused: blocker required' "$t/err-q" || exit 1
+grep -qF 'lease operation (checkpoint) failed [cause=refused]: lease <lease> refused: blocker required' "$t/err-q" || exit 1
 out=$("$lease" dotfiles release t-fake)
 [ ! -e "$session" ] || exit 1
 if "$lease" dotfiles claim t-refused --as test >"$t/out-r" 2>"$t/err-r"; then exit 1; fi
-grep -qF 'claim or handoff acceptance failed: task t-refused is gated' "$t/err-r" || exit 1
+grep -qF 'claim or handoff acceptance failed [cause=refused]: task t-refused is gated' "$t/err-r" || exit 1
+# Every failure names a stable cause class and the next step; the session
+# record stays put on a board or transport failure.
+out=$("$lease" dotfiles claim t-fake --as test)
+for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport; do
+  if FAKE_FAIL=${mode%%:*} "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+  grep -qF "lease operation (hb) failed [cause=${mode#*:}]:" "$t/err-c" || exit 1
+  grep -qF '; next: ' "$t/err-c" || exit 1
+  [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
+  if grep -qF 12345678-1234 "$t/out-c" "$t/err-c"; then exit 1; fi
+done
+if FAKE_FAIL=ended "$lease" dotfiles checkpoint t-fake --as test --state continue --summary s --intent i --next-action n >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF "kb-session-lease dotfiles recover t-fake" "$t/err-c" || exit 1
+if FAKE_FAIL=ssh "$lease" dotfiles claim t-other --as test >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'session already has a lease' "$t/err-c" || exit 1
+if "$lease" dotfiles hb t-other >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'lease operation failed [cause=no_session_file]: task does not match session lease: this session holds t-fake' "$t/err-c" || exit 1
+out=$("$lease" dotfiles release t-fake)
+if "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'lease operation failed [cause=no_session_file]: no session lease for t-fake' "$t/err-c" || exit 1
+if FAKE_FAIL=ssh "$lease" dotfiles claim t-fake --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
+[ ! -e "$session" ] || exit 1
 # A granted lease that cannot be stored is released again: no orphaned lease.
 if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-race --as test >"$t/out-race" 2>"$t/err-race"; then exit 1; fi
 [ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-race --lease 12345678-1234-1234-1234-123456789012' ] || exit 1

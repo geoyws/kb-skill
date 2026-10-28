@@ -61,6 +61,42 @@ board_reason() {
     | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<redacted>/g' \
     | cut -c1-600
 }
+# fail_board <what>: report a failed board call with a stable, token-free
+# cause class and the next step, then exit 1 (kb dotfiles t-8ccffdeb):
+#   transport       no board answer: routing (64), hostname mismatch (69),
+#                   ssh (255), or nothing the board would print
+#   claim_ended     the board holds no active lease on the task
+#   lease_mismatch  the board holds a different, live lease on the task
+#   refused         any other board refusal
+# board_rc holds the kb-board exit status.
+board_rc=0
+fail_board() {
+  local reason cause next=''
+  reason=$(board_reason)
+  if [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 255 || "$reason" = 'no reason given by the board' ]]; then
+    cause=transport
+    next="the board did not answer (exit $board_rc); nothing changed on the board or in the session file; retry shortly"
+  elif [[ "$reason" == *'has no active lease'* ]]; then
+    cause=claim_ended
+    next="the board claim has ended; clear the session record with kb-session-lease $board recover $id, then claim again if the work continues"
+  elif [[ "$reason" == *'is not the lease you presented'* ]]; then
+    cause=lease_mismatch
+    next="another lease now holds $id; do not write to it; read its holder with kb-board $board t cat $id, and run kb-session-lease $board recover $id once that claim settles"
+  else
+    cause=refused
+  fi
+  if [[ -n "$next" ]]; then
+    echo "kb-session-lease: $1 failed [cause=$cause]: $reason; next: $next" >&2
+  else
+    echo "kb-session-lease: $1 failed [cause=$cause]: $reason" >&2
+  fi
+  exit 1
+}
+# fail_local <next>: no usable session record for this operation.
+fail_local() {
+  echo "kb-session-lease: lease operation failed [cause=no_session_file]: $1" >&2
+  exit 64
+}
 if [[ "$op" = claim || "$op" = handoff-accept ]]; then
   [[ ! -e "$session" ]] || { echo 'kb-session-lease: session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)' >&2; exit 64; }
   if [[ "$op" = claim ]]; then
@@ -80,21 +116,21 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
   fi
   if [[ -n "$injected" ]]; then
     ok=''
-    "$here/kb-board" "$board" "${cmd[@]}" --session "$KB_SESSION_ID" --json >"$private" 2>"$error" && ok=1
+    "$here/kb-board" "$board" "${cmd[@]}" --session "$KB_SESSION_ID" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
     # A LINKED scope binding made without a session matches only a sessionless
     # triple; keep that caller working, unreachable by the session-end form.
     if [[ -z "$ok" ]] && grep -qF 'matches no live binding; the actor holds lane' "$private" "$error" \
       && grep -qF ', session (none) on that set' "$private" "$error"; then
       echo 'kb-session-lease: scope binding has no session; leasing without --session, so release --session will not free this lease (rebind with scope bind --session to fix)' >&2
-      "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1
+      board_rc=0
+      "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
     fi
   else
     ok=''
-    "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1
+    "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
   fi
   if [[ -z "$ok" ]]; then
-    echo "kb-session-lease: claim or handoff acceptance failed: $(board_reason)" >&2
-    exit 1
+    fail_board 'claim or handoff acceptance'
   fi
   if [[ "$op" = handoff-accept ]] \
     && jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
@@ -229,21 +265,19 @@ if [[ "$op" = recover ]]; then
   printf '{"taskID":"%s","recovered":true,"reason":"%s","preserved":"%s"}\n' "$id" "$reason" "$stale"
   exit 0
 fi
-[[ -f "$session" ]] || { echo 'kb-session-lease: no session lease' >&2; exit 64; }
+[[ -f "$session" ]] || fail_local "no session lease for $id in this session; claim it first with kb-session-lease $board claim $id"
 IFS= read -r task <"$session"
-[[ "$task" = "$id" ]] || { echo 'kb-session-lease: task does not match session lease' >&2; exit 64; }
+[[ "$task" = "$id" ]] || fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
 token=$(sed -n '2p' "$session")
-[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || exit 64
+[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] \
+  || fail_local "malformed session record for $id; clear it with kb-session-lease $board recover $id"
 case "$op" in
   hb) cmd=(hb "$id" --lease "$token" "$@") ;;
   checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
   release) cmd=(release "$id" --lease "$token" "$@") ;;
   handoff-create) cmd=(h new "$id" --lease "$token" "$@") ;;
 esac
-if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
-  echo "kb-session-lease: lease operation failed: $(board_reason)" >&2
-  exit 1
-fi
+"$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error" || { board_rc=$?; fail_board "lease operation ($op)"; }
 if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
   rm -f -- "$session"
 fi
