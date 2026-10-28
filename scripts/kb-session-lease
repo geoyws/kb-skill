@@ -17,12 +17,15 @@ usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|h
 board=$1 op=$2 id=$3
 shift 3
 case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|recover) ;; *) usage ;; esac
-# Row ids the board can claim: tasks and bugs (t-), stories (s-) and epics
-# (e-); the claim reply already accepts all three (kb dotfiles t-10502c21).
+# Only task and bug rows (both t-) are claimable; the board refuses a story
+# or an epic. Say so here, with the remedy, instead of a bare "invalid id"
+# (kb dotfiles t-10502c21).
 case "$op:$id" in
   handoff-accept:h-*) ;;
-  claim:[tse]-*|hb:[tse]-*|checkpoint:[tse]-*|release:[tse]-*|handoff-create:[tse]-*|recover:[tse]-*) ;;
-  *) die usage 'invalid task or handoff id: claim, hb, checkpoint, release, handoff-create and recover take a t-, s- or e- row id; handoff-accept takes an h- handoff id' ;;
+  claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;;
+  handoff-accept:*) die usage "invalid handoff id $id: handoff-accept takes an h- handoff id" ;;
+  *:s-*|*:e-*) die usage "$id is a story or epic, and only task and bug rows (t- ids) are claimable: advance a story with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
+  *) die usage "invalid task id $id: $op takes a t- task or bug id" ;;
 esac
 for arg in "$@"; do
   case "$arg" in --lease|--lease=*) die usage 'lease comes from the private session file' ;; esac

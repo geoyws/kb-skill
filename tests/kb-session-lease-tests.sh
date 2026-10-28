@@ -83,11 +83,6 @@ case "$2 $3" in
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
-  # Stories and epics are claimable rows too (kb dotfiles t-10502c21).
-  'claim s-story'|'claim e-epic') printf '{"taskID":"%s","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' "$3" ;;
-  'hb s-story'|'release s-story'|'cp s-story'|'release e-epic')
-    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
-    printf '{"ok":true}\n' ;;
   't cat')
     case "$4" in
       t-settled) printf '{"id":"t-settled","claim":null}\n' ;;
@@ -240,19 +235,21 @@ out=$("$lease" dotfiles claim t-fake --as test)
 [ "$(cause_of "$lease" dotfiles handoff-accept h-test --as test)" = session_busy ] || exit 1
 [ "$(cause_of "$lease" dotfiles recover t-other)" = no_session_file ] || exit 1
 out=$("$lease" dotfiles release t-fake)
-# Story and epic rows: the whole lease life, as for a task.
-[ "$("$lease" dotfiles claim s-story --as test)" = '{"taskID":"s-story","leaseStored":true}' ] || exit 1
-[ "$(sed -n '1p' "$session")" = s-story ] || exit 1
-[ "$("$lease" dotfiles hb s-story)" = '{"taskID":"s-story","operation":"hb","ok":true}' ] || exit 1
-[ "$("$lease" dotfiles checkpoint s-story --as test --state continue --summary s)" = '{"taskID":"s-story","operation":"checkpoint","ok":true}' ] || exit 1
-[ "$("$lease" dotfiles release s-story)" = '{"taskID":"s-story","operation":"release","ok":true}' ] || exit 1
+# A story or an epic is refused here, before the board, with the remedy:
+# only task and bug rows are claimable (kb dotfiles t-10502c21).
+calls_before=$(wc -l <"$t/calls" | tr -d ' ')
+for call in 'claim s-30067fed --as test' 'claim e-1 --as test' 'hb s-1' 'release e-1' 'recover s-1'; do
+  # shellcheck disable=SC2086 # split the fixed argument list on purpose
+  [ "$(cause_of "$lease" dotfiles $call)" = usage ] || exit 1
+  grep -qF 'only task and bug rows (t- ids) are claimable: advance a story with kb-board dotfiles s adv' "$t/err-c" || exit 1
+done
+[ "$(wc -l <"$t/calls" | tr -d ' ')" = "$calls_before" ] || exit 1
 [ ! -e "$session" ] || exit 1
-[ "$("$lease" dotfiles claim e-epic --as test)" = '{"taskID":"e-epic","leaseStored":true}' ] || exit 1
-[ "$("$lease" dotfiles release e-epic)" = '{"taskID":"e-epic","operation":"release","ok":true}' ] || exit 1
-# A handoff id is no row id, and a row id is no handoff id.
+# A handoff id is no task id, and a task or story id is no handoff id.
 [ "$(cause_of "$lease" dotfiles claim h-test --as test)" = usage ] || exit 1
-[ "$(cause_of "$lease" dotfiles hb h-test)" = usage ] || exit 1
-[ "$(cause_of "$lease" dotfiles handoff-accept s-story --as test)" = usage ] || exit 1
+grep -qF 'invalid task id h-test: claim takes a t- task or bug id' "$t/err-c" || exit 1
+[ "$(cause_of "$lease" dotfiles handoff-accept s-1 --as test)" = usage ] || exit 1
+grep -qF 'invalid handoff id s-1: handoff-accept takes an h- handoff id' "$t/err-c" || exit 1
 printf 't-active\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
 [ "$(cause_of "$lease" dotfiles recover t-active)" = claim_active ] || exit 1
 printf 't-boardfail\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
