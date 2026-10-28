@@ -96,34 +96,42 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
     echo "kb-session-lease: claim or handoff acceptance failed: $(board_reason)" >&2
     exit 1
   fi
-  if [[ "$op" = claim ]]; then
-    jq -e '.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
-    jq -e '.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
-    task=$(jq -r .taskID "$private")
-    token=$(jq -r .leaseToken "$private")
-  else
-    if jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
-      printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
-      exit 0
-    fi
-    jq -e '.claim.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
-    jq -e '.claim.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
-    task=$(jq -r .claim.taskID "$private")
-    token=$(jq -r .claim.leaseToken "$private")
+  if [[ "$op" = handoff-accept ]] \
+    && jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
+    printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
+    exit 0
   fi
-  [[ "$token" != *$'\n'* && "$task" != *$'\n'* ]] || exit 70
-  next=$(mktemp "$parent/.lease-next.XXXXXXXX")
-  printf '%s\n%s\n' "$task" "$token" >"$next"
-  chmod 600 "$next"
-  # The board granted the lease. If it cannot be stored, give it back, so no
-  # lane holds a board lease it cannot heartbeat, checkpoint or release.
-  if ! ln "$next" "$session" 2>/dev/null; then
-    if "$here/kb-board" "$board" release "$task" --lease "$token" >/dev/null 2>&1; then
-      echo "kb-session-lease: cannot persist lease (existing or unsafe session file); released the board lease on $task again, nothing is held" >&2
+  # From here the board may hold a lease for this lane. Every failure goes
+  # through give_back, which releases it with the granted token, so no lane
+  # holds a board lease it cannot heartbeat, checkpoint or release.
+  if [[ "$op" = claim ]]; then
+    task=$(jq -r '.taskID // empty | strings' "$private" 2>/dev/null) || task=''
+    token=$(jq -r '.leaseToken // empty | strings' "$private" 2>/dev/null) || token=''
+    release_id=$id
+  else
+    task=$(jq -r '.claim.taskID // empty | strings' "$private" 2>/dev/null) || task=''
+    token=$(jq -r '.claim.leaseToken // empty | strings' "$private" 2>/dev/null) || token=''
+    release_id=''
+  fi
+  give_back() {
+    local target=$release_id
+    if [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]]; then target=$task; fi
+    if [[ -z "$token" || "$token" == *$'\n'* || -z "$target" ]]; then
+      echo "kb-session-lease: $1; no usable lease token or task to give back, so any board lease expires on its own" >&2
+    elif "$here/kb-board" "$board" release "$target" --lease "$token" >/dev/null 2>&1; then
+      echo "kb-session-lease: $1; released the board lease on $target again, nothing is held" >&2
     else
-      echo "kb-session-lease: cannot persist lease (existing or unsafe session file) and the board release of $task failed; the lease expires on its own" >&2
+      echo "kb-session-lease: $1; the board release of $target failed, so the lease expires on its own" >&2
     fi
     exit 70
+  }
+  [[ -n "$token" && "$token" != *$'\n'* ]] || give_back 'board reply carries no single-line lease token'
+  [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]] || give_back 'board reply names no task'
+  if ! { next=$(mktemp "$parent/.lease-next.XXXXXXXX") \
+    && printf '%s\n%s\n' "$task" "$token" >"$next" \
+    && chmod 600 "$next" \
+    && ln "$next" "$session"; } 2>/dev/null; then
+    give_back 'cannot persist lease (existing or unsafe session file, or an unwritable session directory)'
   fi
   rm -f -- "$next"
   next=''

@@ -44,6 +44,13 @@ case "$2 $3" in
   'claim t-race')
     printf 'other\n' >"$LEASE_SESSION_PATH"
     printf '{"taskID":"t-race","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # The lease is granted, then the session directory stops taking new files.
+  'claim t-nowrite')
+    chmod 500 "$(dirname "$LEASE_SESSION_PATH")"
+    printf '{"taskID":"t-nowrite","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  'release t-nowrite')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    printf '{"ok":true}\n' ;;
   'release t-race')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -162,7 +169,14 @@ if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-race --as test >"$t/o
 grep -qF 'released the board lease on t-race again, nothing is held' "$t/err-race" || exit 1
 [ "$(cat "$session")" = other ] || exit 1
 rm -f "$session"
-if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race"; then exit 1; fi
+# A failure before the link (no new file in the session directory) also gives the lease back.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-nowrite --as test >"$t/out-nw" 2>"$t/err-nw"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-*
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-nowrite --lease 12345678-1234-1234-1234-123456789012' ] || exit 1
+grep -qF 'released the board lease on t-nowrite again, nothing is held' "$t/err-nw" || exit 1
+[ ! -e "$session" ] || exit 1
+if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw"; then exit 1; fi
 printf '%s\n' 'kb-session-lease: claim, heartbeat, release, accept, handoff, and refusal PASS'
 # Stale-record recover coverage: fresh fake tokens and separate session ids per scenario.
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
