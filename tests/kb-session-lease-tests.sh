@@ -22,6 +22,7 @@ case "${FAKE_FAIL:-}" in
   ssh) exit 255 ;;
   silent) exit 1 ;;
   routing) echo 'kb-board: unknown board: nosuch' >&2; exit 64 ;;
+  gated) echo 'Error: task t-fake is gated on work that is not done' >&2; exit 1 ;;
 esac
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
@@ -185,13 +186,17 @@ grep -qF 'claim or handoff acceptance failed [cause=refused]: task t-refused is 
 # Every failure names a stable cause class and the next step; the session
 # record stays put on a board or transport failure.
 out=$("$lease" dotfiles claim t-fake --as test)
-for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport; do
+for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused; do
   if FAKE_FAIL=${mode%%:*} "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
   grep -qF "lease operation (hb) failed [cause=${mode#*:}]:" "$t/err-c" || exit 1
   grep -qF '; next: ' "$t/err-c" || exit 1
   [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
   if grep -qF 12345678-1234 "$t/out-c" "$t/err-c"; then exit 1; fi
 done
+if FAKE_FAIL=ssh "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'may or may not have taken effect' "$t/err-c" || exit 1
+if FAKE_FAIL=routing "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'never reached the board' "$t/err-c" || exit 1
 if FAKE_FAIL=ended "$lease" dotfiles checkpoint t-fake --as test --state continue --summary s --intent i --next-action n >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
 grep -qF "kb-session-lease dotfiles recover t-fake" "$t/err-c" || exit 1
 if FAKE_FAIL=ssh "$lease" dotfiles claim t-other --as test >/dev/null 2>"$t/err-c"; then exit 1; fi
@@ -204,6 +209,17 @@ grep -qF 'lease operation failed [cause=no_session_file]: no session lease for t
 if FAKE_FAIL=ssh "$lease" dotfiles claim t-fake --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
 grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
 [ ! -e "$session" ] || exit 1
+# A malformed record names a path that works: recover refuses it, mv frees it.
+printf 't-fake\n' >"$session"; chmod 600 "$session"
+if "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF '[cause=no_session_file]: malformed session record for t-fake' "$t/err-c" || exit 1
+if "$lease" dotfiles recover t-fake >/dev/null 2>&1; then exit 1; fi
+aside=$(sed -n "s/.*move it aside with \(mv '[^']*' '[^']*'\).*/\1/p" "$t/err-c")
+[ -n "$aside" ] || exit 1
+eval "$aside"
+[ ! -e "$session" ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+out=$("$lease" dotfiles release t-fake)
 # A granted lease that cannot be stored is released again: no orphaned lease.
 if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-race --as test >"$t/out-race" 2>"$t/err-race"; then exit 1; fi
 [ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-race --lease 12345678-1234-1234-1234-123456789012' ] || exit 1

@@ -71,11 +71,18 @@ board_reason() {
 # board_rc holds the kb-board exit status.
 board_rc=0
 fail_board() {
-  local reason cause next=''
+  local reason cause next
   reason=$(board_reason)
-  if [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 255 || "$reason" = 'no reason given by the board' ]]; then
+  if [[ "$board_rc" = 64 || "$board_rc" = 69 ]]; then
+    # kb-board refuses routing (64) and a hostname mismatch (69) before kb runs.
     cause=transport
-    next="the board did not answer (exit $board_rc); nothing changed on the board or in the session file; retry shortly"
+    next="the call never reached the board (exit $board_rc): fix the board name or route, then retry; the session file is unchanged"
+  elif [[ "$board_rc" = 255 || "$reason" = 'no reason given by the board' ]]; then
+    cause=transport
+    next="the board's answer was lost (exit $board_rc), so the call may or may not have taken effect; read the row with kb-board $board t cat $id before retrying; the session file is unchanged"
+    if [[ "$op" = claim || "$op" = handoff-accept ]]; then
+      next="$next, and if the row now shows your claim, this session holds no token for it: it expires on its own"
+    fi
   elif [[ "$reason" == *'has no active lease'* ]]; then
     cause=claim_ended
     next="the board claim has ended; clear the session record with kb-session-lease $board recover $id, then claim again if the work continues"
@@ -84,12 +91,9 @@ fail_board() {
     next="another lease now holds $id; do not write to it; read its holder with kb-board $board t cat $id, and run kb-session-lease $board recover $id once that claim settles"
   else
     cause=refused
+    next="the board refused this call for the reason above; fix that and retry, reading the row with kb-board $board t cat $id if unsure; the session file is unchanged"
   fi
-  if [[ -n "$next" ]]; then
-    echo "kb-session-lease: $1 failed [cause=$cause]: $reason; next: $next" >&2
-  else
-    echo "kb-session-lease: $1 failed [cause=$cause]: $reason" >&2
-  fi
+  echo "kb-session-lease: $1 failed [cause=$cause]: $reason; next: $next" >&2
   exit 1
 }
 # fail_local <next>: no usable session record for this operation.
@@ -270,7 +274,7 @@ IFS= read -r task <"$session"
 [[ "$task" = "$id" ]] || fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
 token=$(sed -n '2p' "$session")
 [[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] \
-  || fail_local "malformed session record for $id; clear it with kb-session-lease $board recover $id"
+  || fail_local "malformed session record for $id (recover refuses it too); move it aside with mv '$session' '$session.malformed-$(date +%Y%m%d%H%M%S)', then read the row with kb-board $board t cat $id: any board lease it held expires on its own"
 case "$op" in
   hb) cmd=(hb "$id" --lease "$token" "$@") ;;
   checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
