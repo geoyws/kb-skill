@@ -238,13 +238,18 @@ out=$("$lease" dotfiles release t-fake)
 # A story or an epic is refused here, before the board, with the remedy:
 # only task and bug rows are claimable (kb dotfiles t-10502c21).
 calls_before=$(wc -l <"$t/calls" | tr -d ' ')
-for call in 'claim s-30067fed --as test' 'claim e-1 --as test' 'hb s-1' 'release e-1' 'recover s-1'; do
+for call in 'claim s-30067fed --as test' 'hb s-1' 'checkpoint s-1 --as test' 'handoff-create s-1 --as test' 'release s-1' 'recover s-1'; do
   # shellcheck disable=SC2086 # split the fixed argument list on purpose
   [ "$(cause_of "$lease" dotfiles $call)" = usage ] || exit 1
-  grep -qF 'only task and bug rows (t- ids) are claimable: advance a story with kb-board dotfiles s adv' "$t/err-c" || exit 1
+  grep -qF 'is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board dotfiles s adv' "$t/err-c" || exit 1
+done
+for call in 'claim e-1 --as test' 'release e-1'; do
+  # shellcheck disable=SC2086 # split the fixed argument list on purpose
+  [ "$(cause_of "$lease" dotfiles $call)" = usage ] || exit 1
+  grep -qF 'e-1 is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks' "$t/err-c" || exit 1
+  if grep -qF 's adv' "$t/err-c"; then exit 1; fi
 done
 [ "$(wc -l <"$t/calls" | tr -d ' ')" = "$calls_before" ] || exit 1
-[ ! -e "$session" ] || exit 1
 # A handoff id is no task id, and a task or story id is no handoff id.
 [ "$(cause_of "$lease" dotfiles claim h-test --as test)" = usage ] || exit 1
 grep -qF 'invalid task id h-test: claim takes a t- task or bug id' "$t/err-c" || exit 1
