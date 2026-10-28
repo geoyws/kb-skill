@@ -24,7 +24,8 @@ case "$op:$id" in
   handoff-accept:h-*) ;;
   claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;;
   handoff-accept:*) die usage "invalid handoff id $id: handoff-accept takes an h- handoff id" ;;
-  *:s-*|*:e-*) die usage "$id is a story or epic, and only task and bug rows (t- ids) are claimable: advance a story with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
+  *:s-*) die usage "$id is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
+  *:e-*) die usage "$id is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks" ;;
   *) die usage "invalid task id $id: $op takes a t- task or bug id" ;;
 esac
 for arg in "$@"; do
