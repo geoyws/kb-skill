@@ -1,6 +1,6 @@
 ---
 name: kb
-description: Use the authoritative Kanban work ledger over SSH — tasks, claims and leases, checkpoints, handoffs, sitreps, and attention items that need the board owner. Use whenever recording, reading, resuming, or handing over durable work state.
+description: Use the authoritative Kanban work ledger over SSH — tasks, claims, lease heartbeats and leases, checkpoints, handoffs, sitreps, and attention items that need the board owner. Use whenever recording, reading, resuming, or handing over durable work state.
 ---
 
 # /kb — the kanban work ledger
@@ -432,6 +432,16 @@ group, team or lane, so its callsign is the window token, then its seat —
 The ledger checks that the two agree on the six self-lane writes: `--as
 "@:geoyws/px/driver-3/executor" --lane driver-2` on a `claim` is refused, naming
 both lanes (the `--as` and `--lane` rule under the refusal list below).
+
+## Lease heartbeats are read, never masked
+**Trigger:** Running `kb-session-lease BOARD hb TASK`.
+**Required:**
+1. Never mask a heartbeat with `|| true`, `>/dev/null`, or any status-hiding wrapper.
+2. Read the reply JSON and require `"ok": true` before the next board write.
+3. On any failure run `recover`, then `claim`, before the next write.
+**Forbidden:** Working on past a failed or unread heartbeat; treating the last successful write as proof the lease is still alive.
+**Evidence:** The `hb` reply JSON in the transcript; a `recover` then `claim` pair after any failure.
+**Why:** The px superdriver ran 165 minutes past a 15-minute lease, unnoticed, until claim-guard refused a write (px t-5cf7d567 notes; kb dotfiles t-195dd728 L1).
 
 ## Tag-scoped rules — what frames work
 
@@ -2384,6 +2394,12 @@ once a silent wrong answer.
   {model} may not claim it` with a `--model` outside the list. `claim --next`
   and `--candidates` never produce these refusals — they skip restricted rows
   silently unless `--model` matches one.
+- A routed wrapper prints refusals as plain text, never JSON. `kb-board does
+  not route registry or cross-board scope flag '--all-boards'` means the
+  query never ran; piped into jq it yields an empty result that reads like
+  "not found". Never conclude "not found" from an empty jq result: check the
+  command's exit status and its unstripped text first, then search the owning
+  board directly (kb dotfiles t-195dd728 L3).
 
 ## Reference
 
