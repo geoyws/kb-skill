@@ -209,6 +209,14 @@ grep -qF 'lease operation failed [cause=no_session_file]: no session lease for t
 if FAKE_FAIL=ssh "$lease" dotfiles claim t-fake --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
 grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
 [ ! -e "$session" ] || exit 1
+[ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
+# A handoff names a handoff lookup, and cleanup prints nothing more.
+if FAKE_FAIL=ssh "$lease" dotfiles handoff-accept h-test --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
+grep -qF 'kb-board dotfiles h ls --all --json (find h-test' "$t/err-c" || exit 1
+if grep -qF 't cat h-test' "$t/err-c"; then exit 1; fi
+[ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
+[ ! -e "$session" ] || exit 1
 # A malformed record names a path that works: recover refuses it, mv frees it.
 printf 't-fake\n' >"$session"; chmod 600 "$session"
 if "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
