@@ -51,6 +51,14 @@ case "$2 $3" in
   'release t-nowrite')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
+  # Granted and unstorable, and the first give-back release fails.
+  'claim t-relfail'|'claim t-nwrf')
+    if [ "$3" = t-nwrf ]; then chmod 500 "$(dirname "$LEASE_SESSION_PATH")"; else printf 'other\n' >"$LEASE_SESSION_PATH"; fi
+    printf '{"taskID":"%s","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' "$3" ;;
+  'release t-relfail'|'release t-nwrf')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    if [ ! -e "$TEST_ROOT/released-$3" ]; then : >"$TEST_ROOT/released-$3"; exit 1; fi
+    printf '{"ok":true}\n' ;;
   'release t-race')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -176,7 +184,28 @@ rm -f -- "$(dirname "$session")"/.lease-*
 [ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-nowrite --lease 12345678-1234-1234-1234-123456789012' ] || exit 1
 grep -qF 'released the board lease on t-nowrite again, nothing is held' "$t/err-nw" || exit 1
 [ ! -e "$session" ] || exit 1
-if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw"; then exit 1; fi
+fmode0() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+# A failed give-back keeps a private record the lane can still release with.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-relfail --as test >"$t/out-rf" 2>"$t/err-rf"; then exit 1; fi
+rec=$(ls "$(dirname "$session")"/unreleased-t-relfail.* 2>/dev/null)
+[ -n "$rec" ] && [ "$(fmode0 "$rec")" = 600 ] || exit 1
+[ "$(sed -n '1p' "$rec")" = t-relfail ] && [ "$(sed -n '2p' "$rec")" = 12345678-1234-1234-1234-123456789012 ] || exit 1
+grep -qF "lease record is kept at $rec" "$t/err-rf" || exit 1
+[ "$(cat "$session")" = other ] || exit 1
+rm -f "$session"
+mv "$rec" "$session"
+out=$("$lease" dotfiles release t-relfail)
+[ "$out" = '{"taskID":"t-relfail","operation":"release","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+# With the session directory unwritable, the record goes to ~/.kb-session-unreleased.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-nwrf --as test >"$t/out-nwrf" 2>"$t/err-nwrf"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-*
+rec=$(ls "$HOME/.kb-session-unreleased"/unreleased-t-nwrf.* 2>/dev/null)
+[ -n "$rec" ] && [ "$(fmode0 "$rec")" = 600 ] && [ "$(fmode0 "$HOME/.kb-session-unreleased")" = 700 ] || exit 1
+grep -qF "lease record is kept at $rec" "$t/err-nwrf" || exit 1
+rm -f -- "$rec"
+if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw" "$t/out-rf" "$t/err-rf" "$t/out-nwrf" "$t/err-nwrf"; then exit 1; fi
 printf '%s\n' 'kb-session-lease: claim, heartbeat, release, accept, handoff, and refusal PASS'
 # Stale-record recover coverage: fresh fake tokens and separate session ids per scenario.
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }

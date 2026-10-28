@@ -113,15 +113,37 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
     token=$(jq -r '.claim.leaseToken // empty | strings' "$private" 2>/dev/null) || token=''
     release_id=''
   fi
+  # keep_record <task>: when the give-back release fails, keep the granted
+  # lease as a private 0600 record in the session directory, else in
+  # ~/.kb-session-unreleased (0700), so the lane can still release it.
+  keep_record() {
+    local dir rec
+    for dir in "$parent" "$HOME/.kb-session-unreleased"; do
+      if [[ "$dir" != "$parent" ]]; then
+        mkdir -p -m 700 "$dir" 2>/dev/null || continue
+        [[ -d "$dir" && ! -L "$dir" ]] || continue
+        chmod 700 "$dir" 2>/dev/null || continue
+      fi
+      rec=$(mktemp "$dir/unreleased-$1.XXXXXXXX" 2>/dev/null) || continue
+      if printf '%s\n%s\n' "$1" "$token" >"$rec" 2>/dev/null && chmod 600 "$rec" 2>/dev/null; then
+        printf '%s' "$rec"
+        return 0
+      fi
+      rm -f -- "$rec"
+    done
+    return 1
+  }
   give_back() {
-    local target=$release_id
+    local target=$release_id rec
     if [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]]; then target=$task; fi
     if [[ -z "$token" || "$token" == *$'\n'* || -z "$target" ]]; then
       echo "kb-session-lease: $1; no usable lease token or task to give back, so any board lease expires on its own" >&2
     elif "$here/kb-board" "$board" release "$target" --lease "$token" >/dev/null 2>&1; then
       echo "kb-session-lease: $1; released the board lease on $target again, nothing is held" >&2
+    elif rec=$(keep_record "$target"); then
+      echo "kb-session-lease: $1; the board release of $target failed too. The lease record is kept at $rec (mode 0600). Once this session holds no other lease, run: mv '$rec' '$session' && kb-session-lease $board release $target" >&2
     else
-      echo "kb-session-lease: $1; the board release of $target failed, so the lease expires on its own" >&2
+      echo "kb-session-lease: $1; the board release of $target failed and no private record could be written, so the lease expires on its own" >&2
     fi
     exit 70
   }
