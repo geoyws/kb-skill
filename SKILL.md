@@ -399,6 +399,15 @@ until release, handoff or terminal checkpoint settles the first (the refusal
 names the recover recovery for a record whose board claim has ended).
 The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
 tmux without a session ID it refuses rather than sharing the legacy file.
+Every helper failure prints one line, `kb-session-lease: <what> failed
+[cause=<class>]: <reason>`, with the token masked and, for board calls, a
+`next:` step. Classes: `usage`, `session_busy`, `session_unsafe`,
+`no_session_file`, `persist_failed`, `claim_active`, `claim_ended` (the board
+holds no lease: recover), `lease_mismatch` (another lease holds the row: do
+not write), `transport` (the call never reached the board, or its answer was
+lost and the outcome is unknown: read the row first) and `refused` (kb dotfiles
+t-8ccffdeb). A caller's own `--json` is dropped; the helper adds it where it
+parses the reply (t-75164807).
 Ordinary `kb-board` commands and transaction/MCP surfaces retain their
 existing contract; never allowlist real lease tokens in the OMP filter.
 **Write the heartbeat session file right after every claim** (George,

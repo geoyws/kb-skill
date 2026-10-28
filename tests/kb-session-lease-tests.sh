@@ -219,6 +219,23 @@ grep -qF 'kb-board dotfiles h ls --all --json (find h-test' "$t/err-c" || exit 1
 if grep -qF 't cat h-test' "$t/err-c"; then exit 1; fi
 [ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
 [ ! -e "$session" ] || exit 1
+# Local refusals name a cause too: usage, a busy session (claim and handoff
+# accept), and each recover refusal.
+cause_of() { "$@" >/dev/null 2>"$t/err-c" && return 1; sed -n 's/.*failed \[cause=\([a-z_]*\)\].*/\1/p' "$t/err-c" | head -n 1; }
+[ "$(cause_of "$lease" dotfiles)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles claim x-1)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles hb t-fake --lease forged)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles recover t-fake)" = no_session_file ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+[ "$(cause_of "$lease" dotfiles claim t-other --as test)" = session_busy ] || exit 1
+[ "$(cause_of "$lease" dotfiles handoff-accept h-test --as test)" = session_busy ] || exit 1
+[ "$(cause_of "$lease" dotfiles recover t-other)" = no_session_file ] || exit 1
+out=$("$lease" dotfiles release t-fake)
+printf 't-active\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
+[ "$(cause_of "$lease" dotfiles recover t-active)" = claim_active ] || exit 1
+printf 't-boardfail\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
+[ "$(cause_of "$lease" dotfiles recover t-boardfail)" = transport ] || exit 1
+rm -f "$session"
 # A damaged record with the token on its first line is never quoted.
 printf '12345678-1234-1234-1234-123456789012\nt-fake\n' >"$session"; chmod 600 "$session"
 if "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
