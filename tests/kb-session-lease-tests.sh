@@ -13,7 +13,7 @@ printf '%s\n' "$*" >>"$TEST_ROOT/calls"
 if [ "$(printf '%s\n' "$@" | grep -cx -- '--json')" -gt 1 ]; then
   printf '{"error":"--json (true, true) given more than once; it takes a single value"}\n'
   echo 'Error: --json (true, true) given more than once; it takes a single value' >&2
-  exit 2
+  exit 1
 fi
 # Real board and transport failures for one call, chosen by FAKE_FAIL (t-8ccffdeb).
 case "${FAKE_FAIL:-}" in
@@ -24,6 +24,10 @@ case "${FAKE_FAIL:-}" in
   routing) echo 'kb-board: unknown board: nosuch' >&2; exit 64 ;;
   gated) echo 'Error: task t-fake is gated on work that is not done' >&2; exit 1 ;;
   exec127) echo 'bash: line 1: kb: command not found' >&2; exit 127 ;;
+  # The router's remote staging fails before kb runs (kb-board exit 70).
+  staging) echo 'mktemp: failed to create file via template /tmp/kb-ctx.XXXXXX: No space left on device' >&2; exit 70 ;;
+  # Exit 1 with stderr that is not kb's: still not a board answer.
+  shell1) echo 'bash: line 1: syntax error near unexpected token' >&2; exit 1 ;;
   exec126) echo 'bash: line 1: /usr/local/bin/kb: Permission denied' >&2; exit 126 ;;
 esac
 case "$2 $3" in
@@ -188,7 +192,7 @@ grep -qF 'claim or handoff acceptance failed [cause=refused]: task t-refused is 
 # Every failure names a stable cause class and the next step; the session
 # record stays put on a board or transport failure.
 out=$("$lease" dotfiles claim t-fake --as test)
-for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused exec127:transport exec126:transport; do
+for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused exec127:transport exec126:transport staging:transport shell1:transport; do
   if FAKE_FAIL=${mode%%:*} "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
   grep -qF "lease operation (hb) failed [cause=${mode#*:}]:" "$t/err-c" || exit 1
   grep -qF '; next: ' "$t/err-c" || exit 1

@@ -78,6 +78,13 @@ board_reason() {
 #   lease_mismatch  the board holds a different, live lease on the task
 #   refused         any other board refusal
 # board_rc holds the kb-board exit status.
+# board_answered: kb itself refused the call (exit 1 with its JSON `error` or
+# its `Error:` line). Any other failure is the route's, not the board's.
+board_answered() {
+  [[ "$board_rc" = 1 ]] || return 1
+  jq -e 'type == "object" and (.error | type == "string")' "$private" >/dev/null 2>&1 \
+    || grep -q '^Error: ' "$error" 2>/dev/null
+}
 board_rc=0
 fail_board() {
   # Not `next`: the EXIT trap removes "$next", and a local of that name would
@@ -89,12 +96,14 @@ fail_board() {
   else
     lookup="kb-board $board t cat $id"
   fi
-  if [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 126 || "$board_rc" = 127 ]]; then
-    # kb-board refuses routing (64) and a hostname mismatch (69) before kb
-    # runs; 126/127 mean the remote kb binary could not be run at all.
+  local answered=''
+  board_answered && answered=1
+  if [[ -z "$answered" ]] && [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 70 || "$board_rc" = 126 || "$board_rc" = 127 ]]; then
+    # kb-board refuses routing (64), a hostname mismatch (69) and failed
+    # remote staging (70) before kb runs; 126/127: kb could not be run.
     cause=transport
-    hint="the call never reached the board (exit $board_rc): fix the board name, route or remote kb install, then retry; the session file is unchanged"
-  elif [[ "$board_rc" = 255 || "$board_rc" -ge 128 || "$reason" = 'no reason given by the board' ]]; then
+    hint="the call never reached the board (exit $board_rc): fix the board name, route, remote host or kb install, then retry; the session file is unchanged"
+  elif [[ -z "$answered" ]]; then
     cause=transport
     hint="the board's answer was lost (exit $board_rc), so the call may or may not have taken effect; check with $lookup before retrying; the session file is unchanged"
     if [[ "$op" = claim || "$op" = handoff-accept ]]; then
@@ -249,9 +258,8 @@ if [[ "$op" = recover ]]; then
   board_rc=0
   "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error" || board_rc=$?
   if [[ "$board_rc" != 0 ]]; then
-    rreason=$(board_reason)
-    if [[ "$board_rc" = 1 && "$rreason" != 'no reason given by the board' ]]; then
-      die refused "board read refused: $rreason; session record retained" 1
+    if board_answered; then
+      die refused "board read refused: $(board_reason); session record retained" 1
     fi
     die transport "board read failed (exit $board_rc); session record retained, retry recover shortly" 1
   fi
