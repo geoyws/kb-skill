@@ -23,6 +23,8 @@ case "${FAKE_FAIL:-}" in
   silent) exit 1 ;;
   routing) echo 'kb-board: unknown board: nosuch' >&2; exit 64 ;;
   gated) echo 'Error: task t-fake is gated on work that is not done' >&2; exit 1 ;;
+  exec127) echo 'bash: line 1: kb: command not found' >&2; exit 127 ;;
+  exec126) echo 'bash: line 1: /usr/local/bin/kb: Permission denied' >&2; exit 126 ;;
 esac
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
@@ -186,7 +188,7 @@ grep -qF 'claim or handoff acceptance failed [cause=refused]: task t-refused is 
 # Every failure names a stable cause class and the next step; the session
 # record stays put on a board or transport failure.
 out=$("$lease" dotfiles claim t-fake --as test)
-for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused; do
+for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused exec127:transport exec126:transport; do
   if FAKE_FAIL=${mode%%:*} "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
   grep -qF "lease operation (hb) failed [cause=${mode#*:}]:" "$t/err-c" || exit 1
   grep -qF '; next: ' "$t/err-c" || exit 1
@@ -217,6 +219,12 @@ grep -qF 'kb-board dotfiles h ls --all --json (find h-test' "$t/err-c" || exit 1
 if grep -qF 't cat h-test' "$t/err-c"; then exit 1; fi
 [ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
 [ ! -e "$session" ] || exit 1
+# A damaged record with the token on its first line is never quoted.
+printf '12345678-1234-1234-1234-123456789012\nt-fake\n' >"$session"; chmod 600 "$session"
+if "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF '[cause=no_session_file]: malformed session record for t-fake' "$t/err-c" || exit 1
+if grep -qF 12345678 "$t/out-c" "$t/err-c"; then exit 1; fi
+rm -f "$session"
 # A malformed record names a path that works: recover refuses it, mv frees it.
 printf 't-fake\n' >"$session"; chmod 600 "$session"
 if "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi

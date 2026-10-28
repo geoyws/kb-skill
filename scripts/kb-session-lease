@@ -80,11 +80,12 @@ fail_board() {
   else
     lookup="kb-board $board t cat $id"
   fi
-  if [[ "$board_rc" = 64 || "$board_rc" = 69 ]]; then
-    # kb-board refuses routing (64) and a hostname mismatch (69) before kb runs.
+  if [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 126 || "$board_rc" = 127 ]]; then
+    # kb-board refuses routing (64) and a hostname mismatch (69) before kb
+    # runs; 126/127 mean the remote kb binary could not be run at all.
     cause=transport
-    hint="the call never reached the board (exit $board_rc): fix the board name or route, then retry; the session file is unchanged"
-  elif [[ "$board_rc" = 255 || "$reason" = 'no reason given by the board' ]]; then
+    hint="the call never reached the board (exit $board_rc): fix the board name, route or remote kb install, then retry; the session file is unchanged"
+  elif [[ "$board_rc" = 255 || "$board_rc" -ge 128 || "$reason" = 'no reason given by the board' ]]; then
     cause=transport
     hint="the board's answer was lost (exit $board_rc), so the call may or may not have taken effect; check with $lookup before retrying; the session file is unchanged"
     if [[ "$op" = claim || "$op" = handoff-accept ]]; then
@@ -277,11 +278,15 @@ if [[ "$op" = recover ]]; then
   exit 0
 fi
 [[ -f "$session" ]] || fail_local "no session lease for $id in this session; claim it first with kb-session-lease $board claim $id"
-IFS= read -r task <"$session"
+task=''
+IFS= read -r task <"$session" || true
+malformed="malformed session record for $id (recover refuses it too); move it aside with mv '$session' '$session.malformed-$(date +%Y%m%d%H%M%S)', then read the row with kb-board $board t cat $id: any board lease it held expires on its own"
+# Quote the record's first line only once it has a task id's shape: a
+# damaged record may hold the bearer token there.
+[[ "$task" =~ ^[tes]-[0-9a-z]{1,32}$ ]] || fail_local "$malformed"
 [[ "$task" = "$id" ]] || fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
 token=$(sed -n '2p' "$session")
-[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] \
-  || fail_local "malformed session record for $id (recover refuses it too); move it aside with mv '$session' '$session.malformed-$(date +%Y%m%d%H%M%S)', then read the row with kb-board $board t cat $id: any board lease it held expires on its own"
+[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || fail_local "$malformed"
 case "$op" in
   hb) cmd=(hb "$id" --lease "$token" "$@") ;;
   checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
