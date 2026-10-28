@@ -9,6 +9,12 @@ cat >"$t/scripts/kb-board" <<'SH'
 #!/bin/bash
 set -eu
 printf '%s\n' "$*" >>"$TEST_ROOT/calls"
+# Like kb: a flag given twice is refused before anything else (t-75164807).
+if [ "$(printf '%s\n' "$@" | grep -cx -- '--json')" -gt 1 ]; then
+  printf '{"error":"--json (true, true) given more than once; it takes a single value"}\n'
+  echo 'Error: --json (true, true) given more than once; it takes a single value' >&2
+  exit 2
+fi
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
   # A LINKED scope binding made without a session refuses a sessioned triple.
@@ -27,11 +33,20 @@ case "$2 $3" in
     fi ;;
   'cp t-fake')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    # A refusal that quotes the lease must reach the caller masked.
+    case " $* " in *' --summary quote-lease '*) printf '{"error":"lease 12345678-1234-1234-1234-123456789012 refused: blocker required"}\n'; exit 1 ;; esac
     case " $* " in
       *' --state done '*) printf '{"state":"done"}\n' ;;
       *' --state blocked '*) printf '{"state":"blocked"}\n' ;;
       *) printf '{"state":"continue"}\n' ;;
     esac ;;
+  # The lease is granted, but the session path fills before the wrapper stores it.
+  'claim t-race')
+    printf 'other\n' >"$LEASE_SESSION_PATH"
+    printf '{"taskID":"t-race","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  'release t-race')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    printf '{"ok":true}\n' ;;
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -125,6 +140,29 @@ if "$lease" dotfiles claim t-fake --lease forged >"$t/refusal" 2>&1; then exit 1
 ln -s "$t/target" "$session"
 if "$lease" dotfiles claim t-fake >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = "$n" ] || exit 1
+rm -f "$session"
+# A caller's own --json reaches the board once (t-75164807: px driver-4 claims
+# failed 6/6 on "--json given more than once"), for claim and checkpoint.
+out=$("$lease" dotfiles claim t-fake --as test --json)
+[ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session lease-test-session --json' ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state continue --json --summary s --intent i --next-action n)
+[ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
+[ "$(tail -n 1 "$t/calls" | grep -o -- '--json' | wc -l | tr -d ' ')" = 1 ] || exit 1
+# A refusal reaches the caller readable, with the lease masked.
+if "$lease" dotfiles checkpoint t-fake --as test --state blocked --summary quote-lease >"$t/out-q" 2>"$t/err-q"; then exit 1; fi
+grep -qF 'lease operation failed: lease <lease> refused: blocker required' "$t/err-q" || exit 1
+out=$("$lease" dotfiles release t-fake)
+[ ! -e "$session" ] || exit 1
+if "$lease" dotfiles claim t-refused --as test >"$t/out-r" 2>"$t/err-r"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed: task t-refused is gated' "$t/err-r" || exit 1
+# A granted lease that cannot be stored is released again: no orphaned lease.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-race --as test >"$t/out-race" 2>"$t/err-race"; then exit 1; fi
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-race --lease 12345678-1234-1234-1234-123456789012' ] || exit 1
+grep -qF 'released the board lease on t-race again, nothing is held' "$t/err-race" || exit 1
+[ "$(cat "$session")" = other ] || exit 1
+rm -f "$session"
+if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race"; then exit 1; fi
 printf '%s\n' 'kb-session-lease: claim, heartbeat, release, accept, handoff, and refusal PASS'
 # Stale-record recover coverage: fresh fake tokens and separate session ids per scenario.
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
