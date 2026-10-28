@@ -52,10 +52,13 @@ case "$2 $3" in
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
   # Granted and unstorable, and the first give-back release fails.
-  'claim t-relfail'|'claim t-nwrf')
-    if [ "$3" = t-nwrf ]; then chmod 500 "$(dirname "$LEASE_SESSION_PATH")"; else printf 'other\n' >"$LEASE_SESSION_PATH"; fi
+  'claim t-relfail'|'claim t-nwrf'|'claim t-norec')
+    case "$3" in
+      t-relfail) printf 'other\n' >"$LEASE_SESSION_PATH" ;;
+      *) chmod 500 "$(dirname "$LEASE_SESSION_PATH")" ;;
+    esac
     printf '{"taskID":"%s","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' "$3" ;;
-  'release t-relfail'|'release t-nwrf')
+  'release t-relfail'|'release t-nwrf'|'release t-norec')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
     if [ ! -e "$TEST_ROOT/released-$3" ]; then : >"$TEST_ROOT/released-$3"; exit 1; fi
     printf '{"ok":true}\n' ;;
@@ -205,7 +208,23 @@ rec=$(ls "$HOME/.kb-session-unreleased"/unreleased-t-nwrf.* 2>/dev/null)
 [ -n "$rec" ] && [ "$(fmode0 "$rec")" = 600 ] && [ "$(fmode0 "$HOME/.kb-session-unreleased")" = 700 ] || exit 1
 grep -qF "lease record is kept at $rec" "$t/err-nwrf" || exit 1
 rm -f -- "$rec"
-if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw" "$t/out-rf" "$t/err-rf" "$t/out-nwrf" "$t/err-nwrf"; then exit 1; fi
+# No new record possible anywhere: the private grant reply survives, and the
+# printed recovery command releases the lease through the wrapper.
+rm -rf -- "$HOME/.kb-session-unreleased"
+mkdir -p "$t/elsewhere"
+ln -s "$t/elsewhere" "$HOME/.kb-session-unreleased"
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-norec --as test >"$t/out-nr" 2>"$t/err-nr"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-error.* "$(dirname "$session")"/.lease-next.*
+kept=$(sed -n 's/.*The board reply holding the lease is kept at \(.*\) (mode 0600).*/\1/p' "$t/err-nr")
+[ -n "$kept" ] && [ -f "$kept" ] && [ "$(fmode0 "$kept")" = 600 ] || exit 1
+[ -z "$(ls -A "$t/elsewhere")" ] || exit 1
+recovery=$(sed -n 's/.*run: //p' "$t/err-nr")
+out=$(PATH="$t/scripts:$PATH" eval "$recovery")
+[ "$out" = '{"taskID":"t-norec","operation":"release","ok":true}' ] || exit 1
+[ ! -e "$session" ] && [ ! -e "$kept" ] || exit 1
+rm -f -- "$HOME/.kb-session-unreleased"
+if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw" "$t/out-rf" "$t/err-rf" "$t/out-nwrf" "$t/err-nwrf" "$t/out-nr" "$t/err-nr"; then exit 1; fi
 printf '%s\n' 'kb-session-lease: claim, heartbeat, release, accept, handoff, and refusal PASS'
 # Stale-record recover coverage: fresh fake tokens and separate session ids per scenario.
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }

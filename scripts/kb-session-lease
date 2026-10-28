@@ -143,7 +143,12 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
     elif rec=$(keep_record "$target"); then
       echo "kb-session-lease: $1; the board release of $target failed too. The lease record is kept at $rec (mode 0600). Once this session holds no other lease, run: mv '$rec' '$session' && kb-session-lease $board release $target" >&2
     else
-      echo "kb-session-lease: $1; the board release of $target failed and no private record could be written, so the lease expires on its own" >&2
+      # Last durable copy of the token: keep the private 0600 reply instead of
+      # letting the EXIT trap delete it.
+      local kept=$private jqpath=.leaseToken
+      [[ "$op" = claim ]] || jqpath=.claim.leaseToken
+      private=''
+      echo "kb-session-lease: $1; the board release of $target failed and no new record could be written. The board reply holding the lease is kept at $kept (mode 0600). Once there is space and this session holds no other lease, run: (umask 077; { echo $target; jq -r $jqpath '$kept'; } >'$session') && rm -f '$kept' && kb-session-lease $board release $target" >&2
     fi
     exit 70
   }
