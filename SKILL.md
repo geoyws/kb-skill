@@ -1,6 +1,6 @@
 ---
 name: kb
-description: Use the authoritative Kanban work ledger over SSH — tasks, claims, lease heartbeats and leases, checkpoints, handoffs, sitreps, and attention items that need the board owner. Use whenever recording, reading, resuming, or handing over durable work state.
+description: Use the authoritative Kanban work ledger over SSH — tasks, claims and leases, checkpoints, handoffs, sitreps, and attention items that need the board owner. Use whenever recording, reading, resuming, or handing over durable work state.
 ---
 
 # /kb — the kanban work ledger
@@ -46,38 +46,6 @@ $K BOARD t ls --all --with-relations --fields id,status,title,parentID --json \
 - For "did we do X", also grep the journal (`~/work/journals/.sb/YYYY/MM/*.md`):
   it carries the decision and the why; the row carries the status.
 
-## Explicit board-group routing (coordinator only)
-
-The default is still **one board**. Group mode is opt-in, and only a
-coordinator uses it, when George names a registered group (BOARDGROUP-18/19):
-
-```bash
-"<skill-dir>/scripts/kb-host" HOME workspace tag show group/NAME --json   # inspect current scope
-"<skill-dir>/scripts/kb-group" group/NAME attention list --json
-"<skill-dir>/scripts/kb-group" group/NAME claim --candidates --as ACTOR --limit N --json
-"<skill-dir>/scripts/kb-group" group/NAME claim --next --as ACTOR --json  # returns the board and lease
-```
-
-- `kb-group` routes through the registry-home row of `KB_HOSTS_TABLE`. It
-  checks the home host's name and every member's one-ledger route, then runs
-  one compiled group operation with literal argv and `--board-tag`.
-- An unknown group, an unavailable home, a member on another home, or a
-  conflicting selector is refused. There is no per-member loop and no local
-  database fallback. `--body-file` and `--items-file` are refused, because
-  no group operation reads them. `kb-board` stays single-board.
-- Keep the `groupSnapshot` from `workspace tag show`. The wrapper checks
-  member routes, then forwards a caller's `--group-snapshot TOKEN` on
-  snapshot-capable reads or `--expect-group-snapshot TOKEN` on claim/watch
-  only if it matches the verified show. If omitted, it supplies the verified
-  assertion itself. A revision alone cannot distinguish a recreated group;
-  `--expect-group-revision` is not supported. Never pass a read snapshot to
-  `claim --candidates`; on scope change, restart from show.
-- Before a board-local write: show the group again, re-read the qualified
-  `(board, id)` target, then write through `kb-board BOARD`. After a
-  group claim, heartbeat/checkpoint/release/handoff use exactly the returned
-  board and lease, even if group membership changes. Only the coordinator
-  resolves groups; never pass a group token to a worker or widen its grants.
-
 ## Board home host is the execution boundary
 
 Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
@@ -87,6 +55,19 @@ there. Historical note (2026-10-03): hax held a fenced pre-cutover copy;
 it is retired, never a board target. Route every board read and write,
 including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
 commands). An unreachable @@hal blocks ledger operations; never fall back.
+
+The consumer table is `board<TAB>home_host<TAB>ssh_target<TAB>expected_remote<TAB>kb_exec[<TAB>login]`.
+Login is `ssh` (the five-field default, unchanged even with `KB_SSH_LOGIN`)
+or `own`. For `own`, `kb-board` and `kb-group` select a nonempty
+`KB_SSH_LOGIN` with `ssh -l LOGIN -- TARGET`, otherwise query `ssh -G TARGET`.
+Root or an absent SSH user is refused before command transport; local effective
+UID 0 is refused before the binary. Invalid policies and `own` executables
+under `/root/` refuse at table load (exit 64). Group members must share the
+registry route's normalized login policy as well as its other route fields.
+No wrapper principal claim is forwarded: the remote kernel UID is the identity.
+`kb-host` only consumes the extended table; its registry-only authority and
+transport are unchanged. `kb-board` refuses `broker` pretransport. This format
+support does not authorize account provisioning, installation or enforcement activation.
 
 The authoritative Kanban registry and boards live on the board home host chosen
 by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
@@ -140,20 +121,23 @@ file as a fallback. If SSH or the installed binary is unavailable, stop and repo
 Outside the board home host, do not call `kb` directly.
 
 - Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
-  board-owned one-shot command. It injects exactly one project selector, rejects
+  board-owned one-shot command. It injects exactly one board selector (the
+  project, or for `--session-board` reads the file instead), rejects
   caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
   `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
-  `contrib` and `plugin` verbs so registry operations cannot be routed through a
-  board helper. `sprint`, `batch`, `incident` and `worktree` are board-owned
-  and route here.
-  On `checkpoint` and `handoff create` it also forwards your checkout as
-  `--repo` / `--branch` / `--head` / `--dirty`, because the binary would
-  otherwise capture the board host's cwd (see Provenance).
+  `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
+  board helper. `board`, `sprint`, `batch`, `incident`, `worktree`, `message`,
+  `milestone`, `cleanup`, `overlap`, `trunk`, `test` and `stats` are board-owned
+  and route here; `kb-host` refuses each of them with this remedy.
+  On `checkpoint`, `handoff create` and `sitrep post` it also forwards your
+  checkout as `--repo` / `--branch` / `--head` / `--dirty`, because the binary
+  would otherwise capture the board host's cwd, and adds `--git-captured` when
+  it filled all four itself (see Provenance).
 - Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
   registry-owned or non-board operations only. It resolves the host identity
   from the consumer table, verifies the routed SSH target and remote hostname,
   and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
-  `scope`, `contrib` and `plugin` verbs stay on the raw registry routing path
+  `scope`, `contrib`, `model` and `plugin` verbs stay on the raw registry routing path
   rather than `kb-board`.
 
 ```bash
@@ -167,7 +151,7 @@ the board home host, so three or more related reads — a resume (`ctx`, `r ls`,
 instead:
 
 1. **The persistent MCP channel, when the harness has it registered** (`ssh
-   "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`, **As an MCP server**). One connection
+   "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`, `references/mcp-server.md`). One connection
    for the session; each read is then about one round trip plus the query, and
    registry reads (`rule_list`, `dashboard`) ride the same channel as board
    reads.
@@ -207,71 +191,6 @@ live once in the registry and select boards through `ALL`, `ONLY:<board>`, and
 `EXCEPT:<board>` tags. Registry watch helpers also reject board selectors and
 `--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --board kanban --json`
 (the rule verb's own board scope), never `kb-host BOARD_HOME_HOST r ls --project kanban`.
-
-## Workspace adoption and rule transfer
-
-`workspace adopt` copies an existing board into registry-owned storage. Use it
-when the source board already exists and you want the registry to own the copy;
-it is not a rename, and it does not mutate the source board file.
-
-```bash
-kb workspace adopt --from-board PATH --name NAME (--workspace ROOT | --rootless) --as ACTOR
-```
-
-Rule transfer stays on the registry side. `rule export` produces a bundle for a
-named source board, and `rule import` consumes that bundle into the destination
-registry with fresh destination rule IDs. These are registry rule verbs, so use
-`kb-host` or the raw registry routing path rather than `kb-board`.
-
-```bash
-kb rule export --board NAME ... --as ACTOR [--output PATH]
-kb rule import PATH --as ACTOR
-```
-
-## Aliases
-
-Aliases resolve by **exact match**. Prefix inference is refused in both
-directions — `task li` is not `task list`, and `--proj` is not `--project`. A
-near-miss flag is *suggested* in the error, never accepted.
-
-| Short | Full |
-|---|---|
-| `t` | `task` |
-| `s` | `story` |
-| `h` | `handoff` |
-| `att`, `attn` | `attention` |
-| `sr` | `sitrep` |
-| `w`, `ws` | `workspace` |
-| `cp` | `checkpoint` |
-| `hb` | `heartbeat` |
-| `rel` | `release` |
-| `ctx` | `context` |
-| `ev` | `events` |
-| `dash` | `dashboard` |
-| `n` | `note` |
-| `r` | `rule` |
-| `v` | `version` |
-
-Scoped to their group:
-
-| Group | Short forms |
-|---|---|
-| `task` | `ls`=list `mv`=move `rm`=remove `new`=add `up`=update `meta`=metadata `cat`=show |
-| `story` | `adv`=advance |
-| `handoff` | `ls`=list `new`=create `acc`=accept |
-| `message` | `cat`=show |
-| `workspace` | `ls`=list `att`=attach `det`=detach |
-| `attention` | `ls`=list `up`=update `new`=raise |
-| `tag` | `ls`=list `rm`=remove `new`=add |
-| `rule` | `ls`=list `new`=add `up`=update `cat`=show |
-| `sitrep` | `ls`=list `new`=post |
-| `deploy` | `ls`=list `cat`=show |
-| `sprint` | `ls`=list `cat`=show |
-| `subscription` | `ls`=list `new`=add `cat`=show |
-
-⚠ `att` means **attach** inside `workspace` and **attention** at the top level.
-Both are exact-match and scoped, so they never collide — but read
-`kb ws att` as attach and `kb att` as attention.
 
 ## Addressing a board
 
@@ -383,6 +302,15 @@ until release, handoff or terminal checkpoint settles the first (the refusal
 names the recover recovery for a record whose board claim has ended).
 The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
 tmux without a session ID it refuses rather than sharing the legacy file.
+Every helper failure prints one line, `kb-session-lease: <what> failed
+[cause=<class>]: <reason>`, with the token masked and, for board calls, a
+`next:` step. Classes: `usage`, `session_busy`, `session_unsafe`,
+`no_session_file`, `persist_failed`, `claim_active`, `claim_ended` (the board
+holds no lease: recover), `lease_mismatch` (another lease holds the row: do
+not write), `transport` (the call never reached the board, or its answer was
+lost and the outcome is unknown: read the row first) and `refused` (kb dotfiles
+t-8ccffdeb). A caller's own `--json` is dropped; the helper adds it where it
+parses the reply (t-75164807).
 Ordinary `kb-board` commands and transaction/MCP surfaces retain their
 existing contract; never allowlist real lease tokens in the OMP filter.
 **Write the heartbeat session file right after every claim** (George,
@@ -433,605 +361,6 @@ The ledger checks that the two agree on the six self-lane writes: `--as
 "@:geoyws/px/driver-3/executor" --lane driver-2` on a `claim` is refused, naming
 both lanes (the `--as` and `--lane` rule under the refusal list below).
 
-## Lease heartbeats are read, never masked
-**Trigger:** Running `kb-session-lease BOARD hb TASK`.
-**Required:**
-1. Never mask a heartbeat with `|| true`, `>/dev/null`, or any status-hiding wrapper.
-2. Read the reply JSON and require `"ok": true` before the next board write.
-3. On any failure run `recover`, then `claim`, before the next write.
-**Forbidden:** Working on past a failed or unread heartbeat; treating the last successful write as proof the lease is still alive.
-**Evidence:** The `hb` reply JSON in the transcript; a `recover` then `claim` pair after any failure.
-**Why:** The px superdriver ran 165 minutes past a 15-minute lease, unnoticed, until claim-guard refused a write (px t-5cf7d567 notes; kb dotfiles t-195dd728 L1).
-
-## Tag-scoped rules — what frames work
-
-Put short, non-secret operating constraints in the one registry-owned rules
-document. A board owns work; it is a selector tag on a rule, not a rule scope.
-Before project work, read that board's chaptered index. Bare `kb r ls` stays
-registry-wide and is for registry work only — never the project-work read.
-
-```bash
-kb r ls --board kanban --json
-# wrappers: kb-host <home> r ls --board kanban
-
-kb r new "Universal rule." --title "Universal rule" --as "$AGENT" --json   # tags: ALL; --load defaults to lazy
-kb r new --title "From a file" --body-file /tmp/non-secret-rule.md --load always --as "$AGENT" --json
-kb r cat r-12345678 --json             # rule show: one lazy or long body
-kb r up r-12345678 --title "Revised title" --body "Revised rule" --as "$AGENT" --json
-kb r up r-12345678 --title "Named legacy" --load lazy --as "$AGENT" --json
-kb rule retire r-12345678 --as "$AGENT" --json
-kb r ls --all --full --json            # retired rows gain archived; --full adds bodies
-kb ev --rule r-12345678 --json          # audited history
-
-# ALL is the default; includes/exclusions are repeatable selector tags.
-kb r new "Kanban only." --title "Kanban only" --board kanban --as "$AGENT" --json
-kb r new "All except project-a." --title "Except project-a" --except-board project-a --as "$AGENT" --json
-kb r up r-12345678 --board kanban --as "$AGENT" --json
-
-# Namespaced subsystem tags intersect the board selector.
-kb r new "Queuer only." --title "Queuer only" --tag acme/queuer --as "$AGENT" --json
-kb r up r-12345678 --clear-tags --as "$AGENT" --json
-```
-
-`kb r ls --board NAME ... [--task ID] [--chapter NAME] [--all] [--full] --json`
-reads the board-scoped chaptered index. A chapter is the first namespaced
-subsystem tag on the rule, or `general` when there is none. Each entry is
-`id`, `title`, `titleMissing`, `bytes`, `hasMore`, `load`, and `tags`.
-`--all` adds retired rows with `archived` true. `--full` adds each body.
-
-Always-tier bodies already arrive inline on claim, `kb ctx`, and handoff
-packets (`rulesIndex` and `alwaysRules`). Do not re-fetch those. Fetch a page
-lazily only when needed: `kb r cat ID` for a lazy or long body. Flat claim
-entries keep `headline` and also carry `title`, `titleMissing`, `load`, and
-`chapter`. Other commands do not repeat rules—the injection boundary is
-claim/resume, which saves tokens. A stored claim deliberately does not pretend
-it re-read current rules.
-
-An untitled legacy rule projects a first-sentence fallback as `title` with
-`titleMissing` true. Name that honestly. A coordinator titles it with
-`kb r up ID --title T [--load always|lazy]`. `kb r new` requires `--title`;
-add refuses without it. `--load` is `always` or `lazy` and defaults to lazy.
-One board's always tier is at most 6144 bytes. The refusal names the board and
-the bytes already applicable:
-`rule cannot load always on board {board}: {used} of 6144 always-tier bytes already applicable`.
-
-Rules live once in `registry.db` and are **audited and retire-only**. Updates
-retain the previous body; retirement removes a rule from active injection
-without deleting history. There is no `rm` alias. `--global` is retired and
-explicitly refused; `g-*` remains valid only as a historical ID.
-
-This is not the secret or long-form memory store. Keep credentials, secrets,
-long explanations and cross-machine knowledge in the versioned/git-crypt'd
-dotfiles, and let a short rule point there when needed. **Never put a secret
-value in the plaintext board database.**
-
-Every rule carries one `tags` array. `ALL` is explicit and default,
-`ONLY:<name>` is a named include, and `EXCEPT:<name>` subtracts from `ALL`.
-Repeatable `--board`/`--except-board` flags validate exact board names.
-Namespaced `--tag` selectors must exist on an active board; several are an OR
-set intersected with the board selector. Task claim/context/handoff injection
-requires a matching task tag. Taskless session handoffs omit
-subsystem-scoped rules. See ADR-027.
-
-## Attention — anything that needs the owner
-
-**Raise it the moment you find it, every time.** A reply, a report and a commit
-message are channels that scroll away: an item raised at 03:00 and never acted
-on leaves no trace it was ever raised, so the same question gets asked again
-three sessions later — or worse, quietly answered by an agent that had no
-business deciding it.
-
-**Raising an item is writing a decision card.** A card is a question, the
-context needed to answer it, and two to four authored choices, exactly one of
-them marked as your recommendation. The old convention — write the options into
-the body as prose and let the owner reconstruct them — is over: options in
-prose have to be parsed back out of English by whoever reads them, and the
-free-text answer they get back carries no verdict a lane can branch on. Author
-the choices as flags and the answer comes back machine-readable. The body is
-untouched by all of this and stays the long form — receipts, SHA256s, absolute
-paths and the `RESOLVE-WHEN` line — read through `/kb-att`, which re-measures
-current state before asking George (ADR-042).
-
-```bash
-kb att raise "<verdict-first body — receipts, paths, the concrete next action>" \
-  --as "<your callsign>" --lane <lane> --kind blocking --task <ID if it is about one> \
-  --question "<the decision, one sentence, ending in ?>" \
-  --context "<what is true now, what is blocked, what waiting costs>" \
-  --choice "<key>=<verb-phrase label>|approve" \
-  --consequence "<key>=<what happens if it is picked, and what it costs>" \
-  --choice "<key>=<verb-phrase label>|reject" \
-  --consequence "<key>=<what happens if it is picked, and what it costs>" \
-  --recommend <key> \
-  --check "<the fact this decision turns on, as one question ending in ?>" \
-  --check-choice "<key>=<plain statement>" \
-  --check-choice "<key>=<plain statement>" \
-  --check-answer <key> \
-  --check-explain "<why the answer is true, and what changes under the others>" \
-  --check-about <subject> --json
-```
-
-| flag | what goes in it |
-|---|---|
-| `--question` | One sentence, present tense, ending in `?`, at most 160 characters, in his terms. It names the thing being decided, never the row: "Will you unlock the hal recovery key, defer the drill, or cancel it?", not "please decide on a-347ff24c". A question only one choice answers is an approval request wearing a question mark. |
-| `--context` | Two to five plain sentences, at most 800 characters, in this order: what is true now, what is blocked and how much waits on it, what waiting costs. If waiting costs nothing, say so — that is a legitimate answer and it changes the decision. |
-| `--choice KEY=LABEL\|OUTCOME` | Two to four, repeatable, one token so the three parts cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the item, and never shown to him. The label is the button text: a verb phrase starting with the verb, at most 60 characters, carrying no `|`. The outcome is one of `approve`, `reject`, `defer`, `other` — the machine-readable verdict a lane acts on, where the label is for the human. |
-| `--consequence KEY=TEXT` | One per choice, required on every one: a single sentence, at most 200 characters, saying what happens and what it costs, in that order. "Approved" is not a consequence; "the receipt is retried the same day, about ten minutes of your time plus the seat's monthly cost" is. |
-| `--recommend KEY` | Exactly one choice, and always one. It is your opinion. An agent that cannot pick one has not finished thinking about the question and should raise a smaller one. |
-
-`--question` and `--context` are one card: give both or neither.
-
-**Write about the world, not about the board.** "The lane", "the row", "the
-executor", "the driver", "the item" and every other word for the machinery are
-banned from the question and the context — he is deciding about the world, not
-about the ledger. Typed ids (`a-*`, `t-*`, `e-*`, `d-*`) belong in a trailing
-`References:` clause and never mid-sentence. Required instead: numbers with
-units (`ten minutes`, `43 items`, `HTTP 401`), absolute dates (`2026-09-05`,
-never "last week"), full nouns wherever a pronoun could drift, and second
-person for anything only he can do — "only you can unlock the recovery key".
-
-A `defer` consequence must name **what brings the question back**: a date, an
-event, or a task that will be filed. "Later" with no trigger is how an item is
-deferred into oblivion. And never put a credential value in a card; name the
-store entry.
-
-**Do not invent choices.** If the honest answer set really is "do it / do not
-do it", author none — pass `--question` and `--context` alone and let the
-default pair below serve. Two choices that are approve and reject wearing new
-labels are worse than the pair nobody claimed to have authored.
-
-**The free-text answer is always offered, and it carries a verdict.** `custom`
-is reserved for it: it is never one of your choices (`--choice custom=…` is
-refused) and it never has to be declared. Taking it costs him both an
-`--outcome` and a `--note`, which is the whole point — nothing closes an
-attention item without a verdict, so no lane inherits `Comment: do it after the
-pin lands` and has to guess whether that was a yes.
-
-**Every carded row carries an Active Comprehension Check (ACC) on its card**
-(George, 2026-09-17: "I find myself not understanding the codebase
-enough"). You are the one with the file open, so you write the check; a
-walkthrough clerk never drafts one (George, 2026-09-19 — a clerk can only
-quiz the row's own diagnosis, which "isn't helping my understanding of the
-codebase but asking me to diagnose issues"; a row with no `check` field gets
-its card with no check). Author it as flags, all or none — never as prose in
-the body, where `/kb-att` would reveal the answer before asking the check:
-
-| flag | what goes in it |
-|---|---|
-| `--check` | One question, present tense, ending in `?`: the fact this decision turns on, in his terms. |
-| `--check-choice KEY=LABEL` | Two to four, repeatable, one token so key and label cannot arrive mismatched. The key is a slug `[a-z0-9][a-z0-9-]{0,31}`, unique within the check, and never shown to him; the label is a plain statement, at most 60 characters, carrying no `\|`. |
-| `--check-answer KEY` | Exactly one, naming a declared choice key. It is the fact, not your opinion. |
-| `--check-explain TEXT` | At most 400 characters, two sentences: why the answer is true, naming the component, file, host or tier; what changes if he believed the others. |
-| `--check-about SUBJECT` | The durable subject this teaches: a file path (with `/` or an extension), an `@@host` or `@_tier` sigil, an `UPPER_SNAKE` setting, or a `--flag`. |
-
-Two to four `--check-choice` entries, exactly one `--check-answer` naming a
-declared key, `--check-explain` under 400 characters. Ask about **how the system works** — which component owns the
-behaviour and where it lives, which host or tier a thing runs on and why, what
-a flag or default controls — a fact he could reuse on the next row. Never ask
-about the row: not what you measured today, not what your sweep proved, not
-what the leaked thing signs. Test: if the answer is only knowable by having
-read this row, it is your diagnosis read back as a quiz — drop it. The answer
-is a fact you verified in the code or on the host, cited in the body's
-receipts, not your opinion; the recommendation is what the card's
-`--recommend` is for.
-
-**George's bar, 2026-09-24 ("ACC is asking stupid questions"; "how would I
-know what 00164 is? don't expect me to know!"):** a check is asked of someone
-who has NOT read the ADR, the Acies card, the gap register or this row. So:
-
-- Never name a document by number or id in the question (`ADR-GLOBAL-00164`,
-  `D-05`, `HR-GAP-06`, `PAY-GAP-07`, `business.md:4329`). If the question needs
-  the reference to make sense, it is about the document, not the system.
-- Never ask what a proposal, card or register *says* ("Under the acies-hr
-  card, where does X live?", "Does this ADR set the numbers itself?"). Those are
-  reading-comprehension questions about text he has not read. Ask instead
-  what the running system does today, in the code or on the host, which he
-  can reason about from how the product works.
-- The subject is Unum or Acies as George uses it: a behaviour he can see, a
-  place data lives, a host or tier, a flag. Good: "Who fills in an employee's
-  gross, deductions and net pay in Unum HR today?" (`a-user`/`the-system`).
-  Bad: "What happens if acies-hr tries to lock payroll inputs with no provider
-  adapter?" — that is the card's rule, invisible until you read the card.
-- Both wrong answers must be plausible to someone who knows the product; a
-  question whose wrong option is absurd teaches nothing.
-- If no such question exists for the decision, raise the card **with no
-  check**. A missing check is reported as debt; a document-trivia check is a
-  defect the clerk skips at read time and names in the report.
-
-A clerk walking cards (`/kb-att`, `/kb-acc`) applies the same test at read
-time: a check that names a document id or asks what a card says is not asked,
-the card goes up without it, and the row is counted under "trivia checks
-skipped" in the report.
-Only the raiser may author or update the check (`t-1227a592`: an update carrying any
-`--check*` flag from another actor is refused naming the raiser, and `geoyws` gets no
-exception), and once an answer is recorded
-the definition is closed to edits. Every pre-answer read carries the check
-redacted — question, choices and about, never the answer or the explanation —
-whether the row is open or resolved; only the raise receipt echoes the full
-definition.
-The `ACC:` body block this replaces is retired: never write one, and never
-parse one back out.
-
-**The check is asked by `/kb-acc`, not `/kb-att`** (George, 2026-09-24: "when
-i'm in a hurry to clear atts i don't want to do accs"). A resolve no longer
-needs it: `att resolve` on a row whose check is unanswered succeeds and leaves
-the check pending — still redacted, still answerable (kanban t-1aa9f553).
-`/kb-acc` later asks it blind and records the key he picked on its own:
-
-```bash
-kb att check <id> --as geoyws --key <key> --json   # geoyws or the raiser; open or resolved row
-```
-
-It goes through the same answer law as the `/kb-att` check: a check is answered
-exactly once, on an open or a resolved row, and a second answer is refused;
-the row's status does not change, and `att reopen` clears the result. The
-`--json` receipt is the row in its post-answer projection, whose `check` now
-carries `answer` (the right key), `explanation`, `answered` (the key he
-picked), `correct` and `answeredAt` beside `question`, `choices` and `about`.
-Without `--json` it prints three lines: `ACC: pass` or `ACC: miss on <key>`,
-then `answer: <key> — <label>`, then `why: <explanation>`. A pending check reads as
-`.check != null and .check.answered == null`.
-
-```bash
-kb att list --status open --limit 200 --json              # what is waiting on the owner
-kb att list --status open --fields id,priority,question,choices --limit 200 --json   # the cards, without the bodies
-kb att list --status open --lane driver-2 --limit 200 --json   # stored lane, raiser suffix, or task lane
-kb att list --status resolved --fields id,decision,resolution --limit 200 --json     # what he decided, and how
-
-kb att resolve <id> --as geoyws --choice keep-parked --json                        # an authored choice
-kb att resolve <id> --as geoyws --choice custom --outcome defer --note "…" --json  # the free-text answer
-kb att check <id> --as geoyws --key sign-server --json                            # answer the row's comprehension check
-```
-
-`--choice` is required on `resolve`. `--note` is optional for an authored
-choice, because the label and its consequence are already the record, and
-required for `custom`; `--outcome` applies to `custom` alone. `/kb-att`
-re-measures the current card before asking George; a lane reading `decision.note`
-beside an authored `choice` reads what he added to the verdict and should
-act on it before the consequence text. A `--choice` naming a key the row no
-longer carries is refused naming its current keys, not silently mapped onto
-the old card's position.
-
-**`decision` is what a lane reads back**, not the prose:
-`{"choice": "keep-parked", "outcome": "defer", "note": null, "by": "geoyws",
-"at": 1788805112431}`. Branch on `outcome`, quote the `choice` when you report,
-and treat `resolution` as derived — the writer composes it as
-`Decision: <label>. <consequence>`, plus a second `Note: <note>` line when a
-note was given, so no caller can leave a different trail. `Comment: ` is the
-pre-2026-09-08 spelling and now appears only on rows settled before then. Every
-choice settles the item, `defer` included: a deferral is a verdict, and
-`kb att reopen` is the way back.
-
-**An item with no card reads as the default pair.** A row that authored no
-choices is served — CLI, MCP and `/kb-att` alike — as `approve` ("Approve - proceed")
-and `reject` ("Reject - do not proceed") with **no recommendation**, because
-nobody authored that pair and nothing may claim it was recommended, and its
-body serves as both question and context. That is the only shape in the model
-with zero recommendations. `kb att update <id> --as "<your callsign>"` takes the
-same five card flags, so an item still open can be given a card later, and
-`--clear-card` returns it to the default pair. A resolved item's card is
-history and is refused.
-
-**A card, written out (illustrative, not a live incident).** Suppose the
-ledger backup restore drill on hal needs George to unlock the recovery key.
-The row records the receipt path and its resolve condition; the card gives
-three actual decisions with a trigger on deferral:
-
-```bash
-kb att raise "BLOCKED — The hal ledger backup at /root/.local/share/kanban cannot complete a restore drill until George unlocks the recovery key in the approved vault. Resolve only after a restore on hal is verified; do not copy the ledger to another host." \
-  --as "@:geoyws/infra/driver/executor" --lane driver --kind blocking --priority 0 --task t-12345678 --tag geoyws/infra \
-  --question "Will you unlock the recovery key for the hal ledger restore drill, defer it until the next maintenance window, or cancel the drill?" \
-  --context "The backup is present on hal, but the recovery key is locked and the restore drill cannot proceed. Only you can unlock it; one backup verification is waiting. Deferral delays proof of recovery, but no board reads or writes depend on the drill. References: t-12345678." \
-  --choice "unlock-key=Unlock the recovery key for the restore drill|approve" \
-  --consequence "unlock-key=You unlock the key in the approved vault; the restore drill runs on hal and takes about ten minutes of your time." \
-  --choice "defer-window=Defer the drill to the next maintenance window|defer" \
-  --consequence "defer-window=Recovery remains unverified until the next maintenance window, when a task re-raises this decision." \
-  --choice "cancel-drill=Cancel this restore drill|reject" \
-  --consequence "cancel-drill=The restore drill is cancelled and recovery remains unverified; the task closes without a restore receipt." \
-  --recommend unlock-key --json
-```
-
-The question is in the operator's terms, the context names what waits, each
-choice has a consequence, and exactly one is recommended. `defer-window`
-settles this decision as `defer`; the next maintenance window explicitly
-triggers the new task instead of leaving a parked row with no return path.
-
-**An explicit `--limit` that cuts is named, not hidden.** `kb ev --limit N`
-keeps stdout at exactly N rows and writes one line to stderr - `events: showing
-N of more than N; pass --limit above N for the rest (ceiling 1000000)` - so a
-page of history that stops at the limit never reads as the whole history.
-Exit status stays 0; the rows you asked for are the rows you get.
-
-**Say how many you want.** Without `--limit` the listing is capped at 100, and
-a board holding more than that **refuses** rather than handing back a page that
-reads as the whole; the refusal names `--limit N`. On a busy board
-`kb att list` with no `--limit` fails, and that is the right answer — pass a
-bound above the count you expect and check the length came back under it
-(ADR-037).
-
-`--lane LANE` on raise stores its routing lane. On list, `--lane LANE` keeps rows
-whose stored lane is `LANE`, whose raiser is a legacy `…@LANE` actor or a typed
-callsign of any length whose third segment is `LANE` (seats and deeper segments
-included; kb kanban `t-2b8ab9f7`), or whose linked task has lane `LANE`.
-`--fields k,k,…` keeps only those keys on each row; a key the rows do not carry
-is refused naming the ones they do. `--no-body` drops the body alone, which is
-the cheap way to read cards in bulk.
-
-`--kind` is a closed set:
-
-| kind | use for |
-|---|---|
-| `blocking` | work cannot resume until he calls it |
-| `decision` | a design or scope call that is his |
-| `approval` | production-tier action, `master`/`main` or production-ref push (`prod`, `production`, `*-prod`, `*-production`), destructive op, scope expansion, spend |
-| `review` | a deployed tier waiting on his eyes — put the URL in the text |
-| `risk` | failed gate, flaky tier, expired credential, half-written file |
-
-There is deliberately no `info`: something that needs nobody is a note, and
-`kb n` already holds those.
-
-**Raise, do not resolve.** Agents raise and read; only the owner resolves. The
-owner's actor is `geoyws` in the current binary (written `$OWNER` in examples):
-the binary gates `resolve` and `reopen` on that identity; it is not configurable. The
-refusal names it. `geo` is the pre-2026-09-05 spelling — rows settled then keep
-`resolvedBy: geo` as a record, and `--as geo` today is refused like any other
-non-raiser. The one exception is an item this same session raised and has since
-made moot — retire that with `--choice custom --outcome other --note` saying
-why, so the record shows it was withdrawn rather than answered. Check
-`kb att list --status open --limit N` before raising and add to an existing item
-rather than duplicating one already waiting.
-
-Items are **resolved, never deleted**, and resolving twice is refused: that
-would overwrite who settled it and when, which is the part worth keeping. Open
-items list **oldest first** — an unanswered question does not get less urgent by
-being ignored.
-
-A reference that arrives **after** an item is resolved — an external issue key,
-a receipt, a later commit — is not written onto the card, and `att resolve` on
-a resolved item is refused rather than reopened for it. Record it as a note on
-the task the item was raised for (or on the task the receipt belongs to),
-citing the item by id: `kb note <task-id> "PAI-246 is the verified receipt for
-a-9ae089d1" --as "$AGENT" --kind evidence --json`. The note is searchable by
-the id, the card keeps its decision, actor and timestamps untouched, and
-`kb att list --status resolved` still reads as what was decided when. There is
-no annotation verb on resolved attention, on purpose (decided by George,
-2026-09-14).
-
-Still surface the item in your reply as well. The board makes it survive; the
-reply makes the owner see it now. In one and not the other is a bug.
-
-## Incidents — what broke, how bad, what happened next
-
-An incident is a typed `i-` row with a severity (`SEV1`–`SEV4`) and a
-four-state lifecycle, `open` → `mitigated` → `resolved` → `reviewed`, one step
-at a time. The timeline is append-only (`time`/`actor`/`text`); there is no edit
-and no delete. Incidents are never claimed and never hold a lease — no claim,
-handoff-accept, or scheduler verb takes an `i-` id. The forms below follow the
-`kanban incident` usage text in `rust/lib.rs`, which is the grammar authority:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID incident open "DB failover stalled" --severity SEV1 --as "$AGENT" --json
-<skill-dir>/scripts/kb-board BOARD_ID incident note i-XXXXXXXX "Replica picked up the failover" --as "$AGENT" --json
-<skill-dir>/scripts/kb-board BOARD_ID incident link i-XXXXXXXX --task t-XXXXXXXX --as "$AGENT" --json
-<skill-dir>/scripts/kb-board BOARD_ID incident mitigate i-XXXXXXXX --as "$AGENT" --json
-<skill-dir>/scripts/kb-board BOARD_ID incident resolve i-XXXXXXXX --as "$AGENT" --json
-<skill-dir>/scripts/kb-board BOARD_ID incident list --status open --json
-<skill-dir>/scripts/kb-board BOARD_ID incident show i-XXXXXXXX --json
-```
-
-One line per verb:
-
-- `open` — open a typed incident at status `open` with a severity.
-- `mitigate` — move `open` → `mitigated`, stamping `mitigatedAt` once (the
-  `incident show --json` field; the column is `mitigated_at`).
-- `resolve` — move `mitigated` → `resolved`, stamping `resolvedAt` once (the
-  `incident show --json` field; the column is `resolved_at`).
-- `review` — the close: move `resolved` → `reviewed` with the four-part review
-  and the follow-up, geoyws only (below). There is no separate `close` verb.
-- `note` (timeline add) — append one `time`/`actor`/`text` entry; history is
-  never rewritten.
-- `link` / `unlink` — attach or detach task, attention, deployment, sitrep, or
-  host targets; a removal is itself recorded on the timeline.
-- `evidence` (update) — record the evidence pointer verbatim; it is stored,
-  never fetched or expanded, so keep secrets out of every incident field.
-- `list` — read incidents, optionally filtered by status and severity.
-- `show` — read one incident: identity, severity, status, timestamps, timeline
-  in append order, links, evidence pointer as given, and — once closed — the
-  review and the follow-up.
-
-**The reviewed close belongs to the owner.** Only `--as geoyws` with
-`--attest-reviewed` moves a row to `reviewed`, carrying the four-part review
-(cause, impact, what worked, what did not) and either a follow-up task on the
-same board or a recorded reason for none (decision `a-26347425`). Lane agents
-author the review text and file or propose the follow-up through `note` and
-ordinary task creation; geoyws alone effects the transition. The byte-exact
-refusal sentences live in the kanban spec (`docs/specs/incident.md`,
-`INCIDENT-09`/`INCIDENT-10`/`INCIDENT-15`) — cite that file and pass any
-refusal on verbatim rather than paraphrasing it.
-
-`incident list` and `incident show` are read-only: their generated MCP tools
-carry `readOnlyHint` true (ADR-010), like every read. The lane's open incidents
-additionally surface on the `/kb-att` digest, `SEV1` first, then oldest first.
-An unknown or unreadable `i-` id answers `denied or not found` without
-distinguishing unknown from unreadable.
-
-## Search and bounded RAG context
-
-Search before opening many cards speculatively. Results cover board tasks,
-notes, checkpoints, handoffs, attention, sitreps and selected audit events,
-plus the one registry rules document. Each result has a stable
-`kanban://BOARD/KIND/ID` or `kanban://rules/rule/ID` citation.
-
-```bash
-kb search "resume the release handoff" --project kanban --json
-kb search t-12345678 --source task --limit 5 --max-chars 4000 --json
-kb search "authentication recovery" --tag acme/auth --all-boards --json
-kb search "retired decision" --all --json       # include archived history
-```
-
-Use the returned snippets to choose sources, then read the cited task, rule, or
-trail through the ordinary narrow commands. Do not treat a similarity score as
-proof and do not cite a snippet without its source URI. `--limit` is 1–100 and
-`--max-chars` is 256–100000; use the smallest useful bounds. Filters are
-`--source`, `--status`, `--tag`, `--lane`, `--after`, and `--before`.
-
-`search` is read-only. It can calculate a missing deterministic local vector in
-memory, but it never writes the cache as a side effect. Cache refresh is an
-explicit audited maintenance operation:
-
-```bash
-kb search-rebuild --project kanban --as system@search-index --json
-kb search-rebuild --all-boards --as system@search-index --json
-```
-
-MCP exposes these as `search` (read-only) and `search_rebuild` (write). `kb doctor --json` reports
-`searchIndex` parity and cache freshness for every board.
-
-## Sitreps — where a lane stands, cheaply
-
-```bash
-kb sr new "Retry path is the culprit; fix is in the queuer, tests still red." \
-  --as "$AGENT" --lane driver-2 --json          # --task <ID> optional
-kb sr ls --lane driver-2 --json                 # the current view, newest first; capped at 20 without --limit
-kb sr ls --lane driver-2 --all --limit 100 --json   # including what it superseded
-```
-
-**No task, no lease, no ceremony** — that is the whole point. A note needs a
-task; a checkpoint needs a task *and* a live lease. Work done across tasks,
-between them, or before anything is claimed had nowhere to go, so it went into a
-reply that scrolls away.
-
-**Post often.** This is the one record here cheap enough to write twenty times a
-day, and it is what a successor reads when there was no time to write a handoff.
-`kb ctx <id>` carries the sitreps that mention a task, so they reach a resuming
-agent without anyone going looking.
-
-**Old entries archive themselves.** Posting retires everything past the newest
-ten in that lane. Archived sitreps are hidden from the default read and returned
-by `--all` — **nothing is ever deleted**, and archiving is per lane, so another
-driver's chatter cannot push yours out of view.
-
-Provenance rides along: worktree, branch, HEAD, root HEAD, dirty count are
-captured from where the **binary** ran. "Tests green" that does not say which
-checkout is a claim nobody can check. Over `kb-board` the binary runs on the
-board host, so the wrapper reads your checkout first and forwards it as
-`--repo` / `--branch` / `--head` / `--dirty`, exactly as it does for
-checkpoints and handoffs (see Handoffs). A sitrep with blank provenance is
-refused, not stored.
-
-**A sitrep is not a handoff, and not a task status.**
-
-| | what it is | costs |
-|---|---|---|
-| `kb sr new` | where this lane stands right now | one command |
-| `kb cp` | a resumable point on a task you hold | a lease |
-| `kb h new` | *I am leaving, here is everything* | releases the lease, names a successor |
-
-A task's **status** is a workflow state (`todo`, `in_progress`) and is always the
-`--status` flag. A **sitrep** is prose about a lane and is always the `sitrep`
-command. The old `status` command has no deprecated alias and fails closed.
-
-## Handoffs
-
-TRIGGER: write a handoff whenever you stop with work unfinished. Token
-pressure, `/clear`, rotation, lane renumbering, or any boundary where a
-successor must pick the work up. A checkpoint alone never hands work over.
-It keeps your lease, so nobody else can take the row.
-
-REQUIRED ACTION, task handoff. A claimed task returns to the queue with its
-lease released in the same transaction:
-
-1. Run `kb h new <task-id> --lease "$TOKEN" --as "$ACTOR" --summary "…" --intent "…" --next-action "…" --reason token_pressure --json` in the board home host shell. `$ACTOR` is your callsign from `/whoami` (`@:<group>/<team>/<lane>/<seat>`), never a bare lane and never harness-qualified.
-2. The task id and `--lease` travel together. Each half alone is refused, because a lease exists only over a task and a task cannot be handed over without one.
-
-REQUIRED ACTION, session handoff. The lane's position as a whole: no task,
-no lease. Through `kb-board`, run from inside the checkout so `--repo`,
-`--branch`, `--head` and `--dirty` are captured from it:
-
-1. Run `<skill-dir>/scripts/kb-board BOARD_ID h new --as "$ACTOR" --to "$ACTOR" --reason session_end --summary "…" --intent "…" --next-action "…" --json` from inside the checkout, and omit all four provenance flags there: they are auto-captured from the cwd and stored as `repoPath`, `branch`, `headSha`, `dirtySummary`. `--to` takes the full canonical lane actor, not the short lane name.
-2. In an interactive board-host shell your checkout is not there, so pass all four provenance flags yourself: `--repo "$REPO" --branch "$BRANCH" --head "$HEAD_SHA" --dirty "$DIRTY"`.
-3. `--dirty` is measured, never guessed: `clean`, `1 file changed`, or `N files changed`. An explicit flag always wins over capture.
-
-REQUIRED ACTION, list and accept:
-
-1. List every pending handoff with no `--to` filter: `kb-board <board> h ls --status pending --limit 25 --json`. Lanes get renumbered and recreated, so `--to driver-2` hides a brief left for `driver-3`, which is exactly the brief you need after a renumber. List them all and read the addressees.
-2. Read the brief before accepting it. A task handoff's full text rides on `kb t cat <task>`. Reconcile the record with the tree: `git rev-parse HEAD` against `headSha`, `git status --short` against `dirtySummary`. A mismatch outranks everything else in the brief.
-3. Accept with `kb h acc <handoff-id> --as "$ACTOR" --lease-minutes 180 --json`, only after the content is absorbed. The reply carries top-level `claim`, `handoff` and `rules`; the new lease token is at `.claim.leaseToken`. A task handoff mints the lease and sets `in_progress` in one transaction, so never `claim --next` after it. A session handoff mints no lease by design.
-4. More than one matching brief is a stop, not a pick.
-
-FORBIDDEN SHORTCUTS. A pane message as the only record: the board row is
-the record, the message is only the notification. A handoff without the
-worktree facts: a handoff without a head is one nobody can verify against a
-tree. A task id without its lease, or a lease without its task id.
-
-COMPLETION EVIDENCE. The create reply carries no top-level id (the record is
-wrapped), so read the id back with `kb h ls --task <task> --limit 5 --json | jq '.[0].id'`, and check `kb t cat <task>` shows the handoff on the task. A session handoff has no task to list by: read its id back with `kb h ls --status pending --limit 25 --json | jq -r --arg a "$ACTOR" 'map(select(.taskID == null and .fromAgent == $a)) | .[0].id'` (record fields `taskID` and `fromAgent`, measured 2026-10-01). Report the id either way.
-
-CONTENT CONTRACT. Every handoff carries these, short enough to act on:
-
-- Worktree host: the board home host the record was written from.
-- Worktree absolute realpath, branch, and base or candidate SHA (the `--repo`, `--branch`, `--head` facts).
-- Dirty state, measured never guessed (`clean`, `1 file changed`, `N files changed`).
-- The exact next action: the one concrete first move.
-- Open leases (task handoffs only): which task the lease belonged to. It is released by the handoff itself. A session handoff carries no task and no lease, so it writes `none (session handoff)`.
-- Evidence paths: commits, files, or receipts the successor can check.
-- What was NOT verified: the layer you did not run, the tree you did not compare.
-
-Example:
-
-```bash
-kb h new t-48c302f0 --lease "$TOKEN" --as "@:geoyws/px/driver-3" \
-  --summary "Second aix-root exit done in writer tree; lane integration not run." \
-  --intent "Land the writer branch on pai-geoyws-driver-3, then re-measure." \
-  --next-action "Merge writer branch wt-px-t48c302f0-w1 into pai-geoyws-driver-3 in an isolated integration tree and run the gates." \
-  --reason token_pressure --json
-# Historical worktree example (pre-cutover): hax /srv/work/px-driver-3, branch pai-geoyws-driver-3, base 9f2c1ab; never a current board target.
-# Evidence: commit 4d5e6f7 on wt-px-t48c302f0-w1. NOT verified: e2e on the merged lane.
-```
-
-Handoffs are history: removing a task drops the link and keeps the account.
-A task can be restricted to models: `kb h acc --model NAME` is checked
-against the task's list the same way a claim is.
-
-## Messages — addressed lane correspondence, never a handoff
-
-A message is one addressed row (`m-` id) from a lane actor to a named
-recipient: a question, request, report, or blocker the recipient pulls from
-its inbox. The row lives on the sender's board and nowhere else — queues,
-wakes, and notices are views over it, never second stores. Messages never
-carry leases and never move claims: no claim, lease, handoff-create, or
-handoff-accept verb takes an `m-` id, and a handoff still carries the work,
-the lease, and the tree facts. A message reply is correspondence, never an
-owner verdict: attention stays the owner's channel, and pointing an
-attention resolve path at an `m-` id is refused.
-
-Board-owned: route every verb below through `kb-board BOARD`. The same
-surface is generated as MCP tools (`message_send`, `message_inbox`,
-`message_show`, `message_ack`, `message_answer`, `message_close`) under the
-same actor, authz, and refusal rules. `message cat` reads as `message show`.
-
-- Send: `kb message send --to NAME --kind question|request|report|blocker --as ACTOR --body TEXT [--task ID] [--in-reply-to m-ID] [--id m-ID] --json`. The recipient is a lane, the lead, or a registered role; anything else is refused naming the fix. The kind is written once and never edited. The body is bounded text (16 KiB); there is no edit verb, so a correction is a reply. `--task` links one task on the sender board. A reply is its own `m-` row carrying the original's id, addressed to the original's sender, landing in that sender's inbox.
-- Pull: `kb message inbox --as ACTOR [--unanswered N] [--limit N] --json`. An array of `{id, from, kind, status, headline, board}` rows, open first, gathered across every board the caller may read — never the body. `board` names the project that holds the row: every later verb on that row (`show`, `ack`, `answer`, `close`) must run against that board (`kb-board <board> …`); the same verb on another board is refused as denied or not found. The headline is the body's first line truncated to 160 characters, so fetch bodies per id. `--unanswered N` keeps only rows still unanswered after N minutes.
-- Read one: `kb message show m-ID --as ACTOR --json`. Inbox rows and the mail notice never carry a body; every single-row receipt does — `send`, `show`, `ack`, `answer` and `close` all print the whole row, body included, so treat those receipts as message content, never as headline-only logs.
-- Move it: `kb message ack m-ID --as ACTOR --json` takes `open` to `acked`, recipient only; `kb message answer m-ID --as ACTOR --body TEXT --json` takes `acked` to `answered`, recipient only, the only move that takes `--body`; `kb message close m-ID --as ACTOR --json` takes `open`, `acked`, or `answered` to `closed`, sender or recipient. Any other move is refused quoting the id and both statuses, and the row keeps its status. Unread means not-yet-acked: every carrier below repeats a message until its recipient acks it.
-
-Two views ride along with calls that know their caller (`--as`, else
-`KANBAN_ACTOR`; a call with no identity carries neither):
-
-- The unread-mail notice: object outputs gain a top-level
-  `mail: {unread: [{id, from, kind, headline}, …], remaining: N}` — at most
-  five entries, never bodies. Array listings pass through byte-identical, failures carry
-  no notice, and a lookup that fails leaves no notice rather than failing
-  the call. `watch --follow` heartbeat frames do not carry it yet (spec
-  OB-15 is still planned), so a lane that only holds a watch stream must
-  pull `message inbox` itself.
-- The wake: an idle lane may be woken with a pointer — the `m-` id only,
-  never the body, the headline, the kind, or any metadata beyond routing.
-  A wake that reaches a pane follows the pane-agent discipline:
-  capture-before-send, idle panes only unless the owner says otherwise in
-  the thread or on the board. Content arrives only when the woken lane
-  pulls its inbox under its own read authority; a denied row stays denied
-  and wakes nothing.
-
 ## Working a task
 
 **A unit of work is two write round trips**, one at each boundary, with a single
@@ -1039,7 +368,7 @@ read before them — on the measured link that is two round trips where there we
 six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
 in one request, answered by one process with one board open — `kb batch
 --items-file items.json --json` from the CLI, or the MCP `batch` tool
-(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx` and
+(`readOnlyHint: true`, in `references/mcp-server.md`) — so `t cat`, `ctx` and
 `att ls` for the task you are about to pick up all arrive together; `ctx`
 already carries the task's rules index and always-tier bodies, so the batch
 takes no `r ls`. This is the default for any run of three or more related
@@ -1073,7 +402,7 @@ decides what may follow it:
 
 | the unit | items |
 |---|---|
-| finished | `checkpoint` `state: done` + `note` |
+| finished | not a `transact`: `kb-board BOARD cp ID --state done` from the trunk checkout, then `note` (see below) |
 | continues later | `checkpoint` `state: continue` + `note` + `release` |
 | continues in another lane | `note` + `handoff_create` |
 
@@ -1090,7 +419,7 @@ strictly earlier items **of its own batch**, never back into an earlier one.
 
 Definition of Done includes cleanup — the `finished` shape moves the row
 done only when every manifest entry is removed or held with a live expiry;
-see **Cleanup ledger — what you allocated, you remove**.
+see `references/cleanup-ledger.md`.
 
 The worked JSON is **The loop's write half, in one batch**, below — a claim, a
 checkpoint that takes the lease from item 0 by `$ref`, and the note: three
@@ -1098,22 +427,7 @@ writes, one round trip, a token the agent never handles. Read it there for the
 item shapes and the threading, which both boundaries use; the tables above say
 which items each boundary carries. It is deliberately not repeated here.
 
-**A replayed START batch lands nothing** — by `claim`'s semantics, not by
-`transact`'s. There is no idempotency key (ADR-041 §9): the replayed claim is
-refused by name at index 0, every later item is `skipped`, and because the batch
-is atomic nothing at all lands. An END batch has no such protection, and neither
-has any batch whose first item is additive: two replayed `note` items are two
-notes.
-
-**An agent that cannot tell whether a `transact` was received reads the board.**
-`kb t cat <id> --limit 200 --json` settles it — the claim is there or it is not,
-the checkpoint is there or it is not — and that is what to act on, rather than
-retrying blindly.
-
-One thing a rollback leaves standing: the expired-claim sweep every board open
-commits before any batch scope exists, so a rolled-back batch may still have
-retired somebody else's lapsed lease (**Batched writes — `transact`**, "What a
-rollback does not undo").
+The worked batches are in **Batched writes — `transact`**, below.
 
 ### Single commands — interactive, and the fallback
 
@@ -1133,82 +447,12 @@ kb claim --next --as "$AGENT" --json               # or: kb claim <id> --as "$AG
 kb hb <id> --lease "$TOKEN" --lease-minutes 30     # renew
 kb cp <id> --lease "$TOKEN" --as "$AGENT" --state continue \
   --summary "…" --intent "…" --next-action "…" --json
+# author model from KB_MODEL or --model; a subagent writer adds --writer-model (below)
 kb rel <id> --lease "$TOKEN"
 kb transact --items-file items.json --json         # those writes as one atomic batch, below
 ```
 
-A task can be **restricted to models** (ADR-049): a task that needs a
-capability only one model has must force the harness to run that model, so
-the restriction lives on the task row and the declaration lives on the claim.
-Model names are a free token validated by a regex, not a registry, so a typo
-restricts a task to a model nobody runs.
-
-```bash
-kb t new "Title" --allowed-model Astra --allowed-model Kimi --json  # repeatable; empty list is unrestricted
-kb t up <id> --allowed-model claude-fable-5-1 --as "$ACTOR" --json    # REPLACES the whole list
-kb t up <id> --clear-allowed-models --as "$ACTOR" --json              # together with --allowed-model, refused
-kb t ls --allowed-model Astra --json                    # filter
-kb claim <id> --as "$AGENT" --model Astra --json        # declares which model is claiming
-```
-
-**Who holds a task.** Every `t ls` row carries `claimed: true|false`. The
-holder is `claim.agentID`, on `t cat` and on `t ls --with-claims`; there is no
-`claim.actor`, and `--fields actor` is refused naming the keys that exist.
-`assignee` is intent, never the lease: an assigned task can be free, a held one
-assigned to someone else. `--fields claim` needs `--with-claims` and
-`--fields dependencies` needs `--with-relations` — each refusal says so.
-`--lane LANE` filters on the server, so a big board answers small. `t cat`
-caps notes and handoffs at 100 and checkpoints at 20 unless `--limit N` says
-otherwise, and refuses past a cap rather than trimming.
-
-**Read dependency gates before taking work.** `kb t cat ID --json`,
-`kb t ls --with-relations --json`, and `kb ctx ID --json` expose
-`blockingGates` for unmet prerequisites declared by the task or an ancestor.
-Each entry names `sourceTaskID` (the declaring row), `prerequisiteID`,
-`prerequisiteTitle`, and `prerequisiteStatus`. A foreign blocker additionally
-names `prerequisiteBoardID`, the source board's registered UUID; use that UUID
-and the exact opaque item ID together, not the ID alone, to identify it. If
-source state cannot be read, `prerequisiteStatus` and `unavailable` are both
-`"unavailable"` and `prerequisiteTitle` is `null`: the source's existence and
-state are not confirmed, and the gate remains unmet. Full/compact context
-also spells out the foreign board UUID beside the item ID; local blocker prose
-and fields stay unqualified. `dependencies` still describes only the row's
-own readable local edges, not inherited or foreign blockers. For list field
-selection, `--fields blockingGates` requires `--with-relations`, just like
-`--fields dependencies`. An empty `blockingGates` array says only that no
-dependency gate is unmet, not that the task is otherwise claimable.
-
-**Parked rows and parked gates refuse with their own sentences.** Named claim
-refuses — and `claim --next` / `claim --candidates` exclude — a row whose own
-status **or any ancestor's** is `kiv` or `abandoned`, however urgent it is.
-Only `done` satisfies a prerequisite: a `kiv` or `abandoned` prerequisite
-stays unmet and its edge is never silently cleared. Pass these on verbatim:
-
-| gate | refusal |
-|---|---|
-| own status parked | `task {id} is {kiv\|abandoned}, not claimable: resume/reopen it with \`task move {id} todo\` before claiming` |
-| parked ancestor | `task {id} sits under {ancestor} ({kiv\|abandoned}), not claimable: resume/reopen with \`task move {ancestor} todo\` or reparent the task` |
-| draft ancestor | `task {id} sits under {ancestor}, which is still a draft: open it with \`task move {ancestor} todo\` before this can be worked` |
-| unmet prerequisite | `{kind} {id} is gated on work that is not done: {details}. A prerequisite satisfies a gate only at status done: finish it, or drop the edge with \`task update <owner> --depends-on ...\` or \`--clear-dependencies\`.` — plus ` Re-plan the dependency before claiming.` when the blocking prerequisite itself is `kiv` or `abandoned` |
-
-Explicit resumption of a `kiv` ancestor (or an authorized reopen of an
-`abandoned` one) restores its descendants under the normal gates; otherwise
-reparent or replan — never an automatic release.
-
-A checkpoint takes `--repo`, `--branch`, `--head` and `--dirty` like a handoff
-does; `kb-board` fills them from your checkout, and a flag you pass wins.
-
-To inspect the same scheduler queue without taking a lease:
-
-```bash
-kb claim --candidates --as "$AGENT" --project NAME \
-  [--lane LANE] [--role ROLE] [--caller-scope driver] \
-  [--no-cross-lane] [--allow-reassign] [--tag ESTATE/SUBSYSTEM] [--limit N] --json
-```
-
-Candidate inspection is strictly read-only and never returns lease tokens.
-It shares eligibility and ordering with `claim --next`; claim the selected ID
-atomically before starting work because inspection does not reserve it.
+Model-restricted tasks, task holders, dependency and parked gates, `claim --candidates`: read `references/task-queue-and-gates.md`. The done move's head proof: `references/trunk.md`.
 
 ### The lease is 15 minutes, and only `kb hb` extends it
 
@@ -1250,152 +494,7 @@ boundary is recorded or nothing is.
 `kb note` needs no lease, so a progress line still lands after a lease lapsed —
 which is exactly when you most want it to.
 
-### `orphanedFrom` — what the previous holder left behind
-
-When you claim or read a task whose previous holder died, the claim receipt and
-`kb ctx` carry an `orphanedFrom` block:
-
-```json
-{ "agent": "@:example/example/driver-2", "sessionID": "…", "expiredAt": 1788600000000,
-  "lastCheckpointAt": 1788599100000, "worktree": "/home/operator/work/src/example",
-  "branch": "kanban-example-driver", "headSha": "e87c5a6" }
-```
-
-It is **absent**, not null, when there is nothing to report, and it describes
-only the current `todo` spell: a task that was orphaned, reclaimed and finished
-does not hand a later holder that old orphan. `lastCheckpointAt` is `null` when
-the dead holder wrote no checkpoint after claiming, which is the case where the
-tree may be further along than anything the ledger knows — `cd` to `worktree`
-and compare `git rev-parse HEAD` against `headSha` before trusting either.
-
-### Resuming, in order
-
-1. `kb h ls --project P --status pending --json` — **no `--to`**. Every session
-   handoff has an addressee (`h new` refuses one without `--to`), but the
-   addressee is a lane name, and lanes get renumbered and recreated. Filtering
-   with `--to driver-2` hides a brief left for `driver-3`, which is precisely
-   the brief you need after a renumber. List them all and read the addressees.
-   More than one match is a stop, not a pick.
-2. `kb h acc <id> --as "$LANE" --json`. On a task-form handoff this mints the
-   lease and sets `in_progress` in one transaction, so when it succeeds you do
-   not also run `claim --next`. A session handoff mints no lease by design.
-3. `claim --next` **ignores pending handoffs**, and a task a handoff returned to
-   `todo` keeps its assignee — so a different lane needs `--allow-reassign` to
-   take it.
-4. `kb ctx <id> --json` — newest handoff and checkpoint first, then sitreps,
-   then `orphanedFrom` if it is there.
-5. `cd` to the record's `repoPath` and check the tree: `git rev-parse HEAD`
-   against `headSha`, `git status --short` against `dirtySummary`. A mismatch
-   outranks everything else in the brief.
-6. `kb note <id> "…" --kind plan --as "$ACTOR"` before touching code.
-
-### `--validation` says which layer, by convention
-
-`--validation` is free text and nothing refuses a malformed value, so the
-convention is carried here: start every one with `unit:`, `integration:`,
-`e2e:` or `substitute:`. Naming the layer is the whole point — "tests pass" on
-a row whose only coverage is a unit test reads as end-to-end to the next
-person. A fail-closed check was considered and rejected as disproportionate for
-an optional flag.
-
-Plan steps are child rows or one `--kind plan` note. There is no checklist
-field, and adding one would put the same truth in two places.
-
-## Cleanup ledger — what you allocated, you remove
-
-**A done row holds no host resources.** Every worktree, container, volume,
-scratch dir or hal clone a unit of work allocates leaks past the row unless
-something records it — so the moment you create one, register it on the
-task, and before the row moves done every entry is either removed with a
-measured receipt or held with a live expiry. Kanban records the attestation
-and never deletes anything itself: removal happens on the host, the ledger
-holds the receipt.
-
-```bash
-kb task cleanup add t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --run run-7 --as "$AGENT" --json
-kb task cleanup list t-1a2b3c4d --json
-kb task cleanup remove t-1a2b3c4d --host hal --kind worktree --path /tmp/wt-1 --proof-kind tree-merged-published --proof "rev-list empty, status clean, ls-remote merged" --bytes 412000 --as "$AGENT" --json
-kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --owner "@:geoyws/acies/driver" --expiry "$(( ($(date +%s) + 7*86400) * 1000 ))" --reason "kept for the next lane's repro" --as "$AGENT" --json   # expiry: epoch ms, a week out
-kb task cleanup hold t-1a2b3c4d --host hal --kind e2e-database --ref e2e-9 --release --as "$AGENT" --json
-kb cleanup report --json
-```
-
-The manifest is per task: `task cleanup add ID --host HOST --kind KIND
-(--path ABSPATH | --ref ID) --run RUN --as ACTOR` registers one `allocated`
-entry the moment the resource is created, carrying host, kind, path-or-id,
-the creating run id, and state. Filesystem kinds (`worktree`,
-`hal-cargo-dir`, `gate-dir`, `tmp-log`) take an absolute `--path`; runtime
-kinds (`container`, `image`, `volume`, `network`, `e2e-database`) take a
-non-empty `--ref`. `kind` is exactly one of `worktree hal-cargo-dir gate-dir
-container image volume network e2e-database tmp-log`. Entries survive
-restarts, retags and metadata patches; removing the task deletes its
-manifest rows in the same transaction. A duplicate non-removed `(host, kind,
-path_or_id)` on the same task is refused as already registered. `--as` is
-mandatory on every write verb, and each write appends one hash-chained board
-event (`cleanup_registered`, `cleanup_removed`, `cleanup_held`,
-`cleanup_released`).
-
-Remove when torn down: `task cleanup remove ID --host HOST --kind KIND
-(--path ABSPATH | --ref ID) --proof-kind KIND --proof TEXT --bytes N --as
-ACTOR` marks the entry `removed`, storing the receipt — a validated
-`--proof-kind` from the entry kind's allowed set, inline `--proof` text of
-1..2000 characters naming the measurement run on the host, and `--bytes` of
-0 or more reclaimed. `worktree` takes `tree-merged-published` only (fresh
-`git ls-remote` showing the branch merged/published, `git rev-list HEAD
---not --remotes` empty, `git status --porcelain` empty); `hal-cargo-dir`
-takes `build-dir-removed`; `gate-dir` takes `gate-dir-removed`;
-`container`, `image` and `volume` take `runtime-gone`; `network` takes
-`network-gone`; `e2e-database` takes `database-gone`; `tmp-log` takes
-`log-gone`. Whether the named checks actually ran is attested, not checked:
-a false attestation is attributable to the `--as` writer in the chained
-event, never to a host check.
-
-Hold what must outlive the row: `task cleanup hold ID --host HOST --kind
-KIND (--path ABSPATH | --ref ID) --owner OWNER --expiry MS --reason TEXT --as
-ACTOR` holds one entry with a non-empty owner, an expiry in epoch
-milliseconds strictly after the write time, and a reason of 1..500
-characters; `--release` returns it to `allocated`, and holding an
-already-held entry refreshes owner, expiry and reason in place. An expired
-hold — `held` with expiry at or before now — counts as outstanding: it
-refuses the done-write and renders with the `(held by {owner} until
-{expiry}, expired)` suffix. Nothing auto-releases it; refreshing the hold or
-removing the entry opens the gate again. Removing a held entry is allowed;
-holding or re-holding a removed one is refused.
-
-Read it back with `task cleanup list ID [--include-removed]`, which answers
-`allocated` and `held` first in registration order and `removed` only with
-the flag. `task show` and `task ctx` include the task's open entries.
-`cleanup report [--board-tag group/NAME [--group-snapshot TOKEN]]` answers
-per board which task rows reached `done` with nothing outstanding
-(`cleanupDone`), every outstanding entry with its age, and every live hold
-in its own held section — or one section per member board across a named
-group, with the same membership and read-only snapshot rules as the other
-group reads. There is no `--all` flag.
-
-MCP mirrors the five verbs as generated tools with the same fields and
-refusals: `task_cleanup_add`, `task_cleanup_remove` and `task_cleanup_hold`
-are write tools, while `task_cleanup_list` and `cleanup_report` are read
-tools.
-
-The done refusal: every write whose resulting status is `done` on a
-task-type row — `task move ID done` (including done-to-done), `checkpoint
---state done` (refused inside the one transaction, so the checkpoint row
-rolls back too), an import upsert that flips an existing entry-carrying row
-to `done` (the whole import rolls back), and the same dispatch through
-`transact` items — is refused while any entry is `allocated` or
-held-expired, landing nothing. (`task add --status done` carries no manifest
-and always passes this gate; story and epic rows check none.) It applies to
-every actor including `geoyws`, and there is no `--force` past it — the way
-past is removal or hold, both audited. The sentence, verbatim with only the
-bracketed values varying:
-
-```
-task {id} cannot reach done: {n} cleanup resource(s) still allocated — {entry}, {entry} — remove each with task cleanup remove {id} --host HOST --kind KIND --path PATH|--ref ID --proof-kind KIND --proof PROOF --bytes N --as ACTOR or hold it with task cleanup hold {id} --host HOST --kind KIND --path PATH|--ref ID --owner OWNER --expiry MS --reason TEXT --as ACTOR
-```
-
-Each entry renders as `{host}/{kind}/{path_or_id}` in registration order,
-oldest first, joined with `, `; pass that sentence on rather than
-paraphrasing it.
+Session end, `staleClaims`, `orphanedFrom`, resuming in order: `references/session-end-and-resume.md`. `--validation` and review verdicts: `references/review-verdicts.md`.
 
 ## Batched writes — `transact`
 
@@ -1437,7 +536,7 @@ board's rows.
 **The selector goes to `transact`, never to an item.** A batch addresses the one
 board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
 is refused rather than having it silently discarded, and `kb-board` already
-injects exactly one selector. There is no batch-level `--as` either: each item
+injects exactly one board selector. There is no batch-level `--as` either: each item
 carries its own actor and is authorized exactly as if it had arrived alone, so a
 batch cannot elevate.
 
@@ -1577,31 +676,33 @@ the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
 `ctx` is `context`); argument keys are the flag names without `--`
 (`"with-relations": true`).
 
-**3. END** — `end.json`, one `transact`: the done checkpoint and the closing
-note. `state: done` releases the lease in the same transaction, so no
-`release` follows it.
+**3. END** — a finished unit closes **outside** `transact`. A done write needs
+a full head read from a checkout (Trunk, below), and `kb-board` reads it only
+for a direct `checkpoint`, never for a `transact` item; a typed `head` such as
+`da9a794` is refused and takes the whole batch, closing note included, down
+with it. So land the work on trunk first, then run the done checkpoint from
+that checkout and send the closing note after it. `--state done` releases the
+lease in the same write, so no `release` follows it. Leave `--repo`,
+`--branch`, `--head` and `--dirty` off: the wrapper fills all four from one git
+read and attests them, and any one typed by hand voids the attestation.
 
-```json
-[
-  { "name": "checkpoint",
-    "arguments": { "id": "t-1a2b3c4d", "lease": "TOKEN",
-                   "as": "@:geoyws/kanban/driver/executor", "state": "done",
-                   "summary": "wrapper change merged and gated",
-                   "intent": "close the unit",
-                   "next-action": "none; the train carries it",
-                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
-                   "head": "da9a794", "dirty": "clean" } },
-  { "name": "note",
-    "arguments": { "id": "t-1a2b3c4d", "kind": "evidence",
-                   "as": "@:geoyws/kanban/driver/executor",
-                   "text": "gate green at da9a794" } }
-]
+```bash
+cd /root/work/src/kanban            # the trunk checkout, at the landed commit
+<skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d --lease TOKEN \
+  --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
+<skill-dir>/scripts/kb-board BOARD_ID note t-1a2b3c4d "gate green at <full head>" \
+  --as "@:geoyws/kanban/driver/executor" --kind evidence --json
 ```
+
+A unit that continues later still ends in one `transact` — `checkpoint`
+`state: continue` + `note` + `release` — because nothing in it reaches done.
 
 ```bash
 kb transact --items-file start.json --json
 kb batch    --items-file read.json  --json
-kb transact --items-file end.json   --json
+kb transact --items-file end.json   --json   # a continue-later END only
 # through the wrapper, each file travels on the one ssh's stdin:
 <skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
 ```
@@ -1609,730 +710,22 @@ kb transact --items-file end.json   --json
 Replace `TOKEN` with the real token before sending: `$ref` reaches earlier
 items of its own batch only, never back into the START batch.
 
-## Plans
-
-**A plan is an epic.** Its body is the plan, its children are the work it became,
-and `draft` is a plan saved up but not ready to act on. There is no separate plan
-object: the container already exists, and `--parent` answers "what did this plan
-produce" better than any link would.
-
-```bash
-kb t new "Q4 migration" --type epic --status draft --body-file plan.md --json
-kb t new "Phase 1" --type epic --parent e-q4 --status draft --json   # a sub-plan
-kb t new "Enumerate consumers" --parent e-q4-p1 --json               # the work
-kb t mv e-q4 todo --as "$OWNER"                                       # ready to act on
-```
-
-**Use this tree for durable todo lists.** For a multi-item roadmap, make the
-roadmap an epic and every top-level todo item a direct child epic. Put the
-actionable stories and tasks beneath that child, and use dependencies between
-child epics for ordering. The roadmap body records scope and success criteria;
-do not maintain a duplicate Markdown checkbox list. Any rendered checklist or
-progress count is a projection of the board.
-
-The child epic is the roadmap item's checkbox. The current CLI does not
-generically derive epic completion from all descendants, so move a child epic
-to `done` only after every non-cancelled, non-abandoned descendant is settled
-and its evidence is durable (`abandoned` is terminal dropped work, settled like
-`cancelled`; a `kiv` descendant is still parked work and keeps the epic open).
-A single standalone action stays a task; do not wrap it in
-ornamental epics.
-
-`--body-file` reads the body from disk, because a plan is markdown measured in
-kilobytes. Passing `--body` and `--body-file` together is refused — two answers
-to one question.
-
-**The path is yours, not the board host's.** `kb-board` and `kb-host` read the
-file on the machine you typed the command on and transfer its bytes, so
-`--body-file plan.md` means the `plan.md` next to you. Until 2026-09-05 the
-flag was forwarded literally and the remote read a path that did not exist
-there (`Error: read body from /tmp/plan.md: No such file or directory`), which
-made it unusable from anywhere but the board home host. An unreadable path now
-fails on your machine before any connection, and giving the flag twice is
-refused rather than last-wins. It applies to every command that takes it:
-`task add`, `task update`, `rule add`, `rule update`, `attention update`.
-
-**A plan has no size limit.** The body travels over the connection's stdin, not
-inside the command line, so an epic body is bounded by disk rather than by
-`ARG_MAX`. The first version of the fix carried it as an argument and a 128KB
-plan died with the remote shell's own `Argument list too long` -- Linux caps a
-single argument at 131072 bytes whatever `ARG_MAX` says -- which is a shell
-error, not a refusal this wrapper could explain.
-
-**An explicit session context travels the same way.** `kb-board
---session-context ctx.json` reads the context file on your machine (at most
-64 KiB), recreates it in a private temp file on the board host for that one
-call, and removes it afterwards. Because ssh carries no environment, a set
-`KB_SESSION_ID` is passed to the board host explicitly, an empty one
-included, so the core's agreement check sees exactly what you exported.
-Unreadable, oversized or repeated `--session-context` refuses on your machine
-before any connection.
-
-**Revising a plan keeps the old one.** `task update --body-file` records the
-previous body on the event trail, so the plan's history is
-`kb ev --task <epic-id> --json` and needs nobody to have kept a copy:
-
-```json
-{ "kind": "task_updated",
-  "payload": { "changed": ["body"], "previousBody": "# Q4 migration\n…" } }
-```
-
-An epic holds epics, stories and tasks; a story holds tasks; a task holds
-nothing. So plans nest and work hangs off them, while a story inside a story is
-still refused.
-
-A plan is not an ADR. An ADR records a decision and why it was taken; a plan
-records intended work. Keep ADRs in the repo.
-
-**A `draft` is not work yet, and neither is anything under it.** It is the state
-before `backlog`: a row still being written, whose title, body or scope may still
-be wrong. `claim --next` skips it however urgent its priority, and naming it
-explicitly is refused.
-
-**Below `draft` sit two parked states, neither ever claimable** (kanban 0.3.1):
-`kiv` (kept in view) is a parked idea awaiting explicit
-resumption — never claimable, `completed_at` stays NULL, and age-archive never
-takes it; `abandoned` is terminal dropped work — never claimable,
-`completed_at` is set, and it archives like `done`/`cancelled`. Neither is
-`cancelled` (stopped committed work) nor `done` (completed work). Default
-`t ls` and the working `ctx` omit both; address them explicitly with
-`t ls --status kiv` / `--status abandoned --json` or `t cat <id>`. Park with
-`kb t mv <id> kiv --as "$ACTOR"`, drop with `kb t mv <id> abandoned --as
-"$ACTOR"`; resume a parked idea only with an explicit move to `draft`,
-`backlog` or `todo`, and reopen dropped work like a cancelled row. The
-adjacency refusals, verbatim:
-
-| move | refusal |
-|---|---|
-| terminal row to `kiv` | `task {id} is {done|cancelled|abandoned}, not parkable: reopen it to draft, backlog or todo before moving to kiv` |
-| `kiv` anywhere but home | `task {id} is kiv: resume it explicitly to draft, backlog or todo before moving to {to}` |
-| `done` to `abandoned` | `task {id} is done: completed work cannot be abandoned; use cancelled for stopped committed work` |
-
-Because a plan is an epic, a drafted plan holds back its whole tree: no task
-beneath it is offered or granted until the plan is opened, however deep it sits.
-Drafts stay **visible to every driver** — a draft is hidden from the queue, not
-from the reader — so anyone can read a plan being written and nobody can start
-on it by accident.
-Promote it with `kb t mv <id> todo --as "$ACTOR"` when it is ready to be acted
-on. Use it for anything you are still specifying — an agent reads every row on
-the board as a specification, and an unfinished one gets decomposed and worked
-as though it were settled.
-
-**Only a task is claimable.** An epic and a story are containers;
-`claim --next` skips them, and naming one explicitly is refused pointing at
-`story advance` or at the children. Story gates project story status, while
-generic epic completion is still an explicit, agent-verified transition.
-
-**A story's status is projected from its gate.** `kb t mv <story> done` is
-refused — use `kb s adv <id> --as "$ACTOR"`. `blocked` and `cancelled` stay
-directly writable, since the gate cannot express either.
-
-**The tree is enforced**: an epic contains stories, a story contains tasks, a
-task contains nothing.
-
-## Sprints — a versioned, proof-gated boundary
-
-A sprint is a board-owned delivery boundary: one goal, an explicit set of task
-rows, and one target version. It is not an estimate bucket, and there is no
-sprint `draft` state or automatic rollover. The only states are `planned`,
-`current`, `closed`, and `abandoned`; at most one sprint is current. The
-scheduled `--start` and `--end` values are epoch **milliseconds** and remain
-separate from the actual start/end lifecycle stamps.
-
-First verify the routed host's installed binary, not a checkout or local copy:
-
-```bash
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST v
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST schema --json
-```
-
-Inspect the reported command surface for `sprint`. An older installed binary
-may not have it. If the installed version/surface lacks sprint support, stop
-and report that capability boundary; never improvise with a locally built
-binary, open a local board copy, or attempt a schema migration yourself.
-
-### Sprint-scoped rules and sprint search
-
-These forms are newer parts of the sprint schema. Confirm that the installed
-`v` and `schema --json` output above includes them before use; an older
-installed binary may support sprints without these rule and search additions.
-
-Add a rule for one board and one of its sprints through the registry-owned
-`kb-host` path, never `kb-board`:
-
-```bash
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule add "..." --title "..." \
-  --board BOARD --sprint sp-ID [--tag slug] [--load always|lazy] --as ACTOR
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
-  --sprint sp-ID --as ACTOR
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST rule update RULE_ID \
-  --clear-sprint --as ACTOR
-```
-
-The sprint must exist on that board, including historical closed sprints. The
-optional tag further intersects that scope. On update, `--sprint` and
-`--clear-sprint` are mutually exclusive. The rule applies only when the task
-is attached to that sprint during claim, handoff acceptance, and context
-assembly; unattached tasks and tasks in another sprint do not receive it.
-
-Sprint cards are also searchable by title, body, and target version:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD search QUERY --source sprint --json
-```
-
-Sprint results cite `kanban://BOARD/sprint/ID`.
-
-Create a planned card, then give planning a required goal body and deliberate
-scope:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID sprint new "Release boundary" \
-  --target-version 2.4.0 --start 1799702400000 --end 1800307200000 \
-  --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID sprint plan sp-ID \
-  --body "Ship the agreed acceptance criteria." --parent-epic EPIC_ID \
-  --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID sprint start sp-ID --as ACTOR --json
-```
-
-Repeated `--candidate TASK_ID` values and `--parent-epic EPIC_ID` may be
-combined; planning attaches their union and retains rows already explicitly
-attached to this sprint. If that existing scope is itself the deliberate
-scope, the body alone is sufficient. Use `--empty-scope` only for an
-intentionally empty boundary: it is exclusive of candidates, a parent epic,
-and existing scope. `sprint plan` always refuses a missing body, and refuses
-an absent scope only when there is neither new nor existing explicit scope.
-`sprint start` refuses while another sprint is current.
-
-Task scope is explicit and audited:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID task add "Work item" \
-  --sprint sp-ID --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID task update TASK_ID \
-  --sprint sp-ID --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID task update TASK_ID \
-  --clear-sprint --as ACTOR --json
-```
-
-Attaching an epic or other container carries its subtree except descendants
-already explicitly attached to another sprint. The named row itself moves when
-explicitly reattached; `--clear-sprint` deliberately detaches only that row.
-
-While a sprint is current, every claim path and task-handoff acceptance defaults
-to its attached rows; unattached work is outside the boundary. With no current
-sprint this filter is a no-op, preserving the ordinary claim behavior and
-payload. Cross a boundary only explicitly:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID claim --next --as AGENT --sprint sp-ID --json
-<skill-dir>/scripts/kb-board BOARD_ID claim --next --as AGENT --any-sprint --json
-<skill-dir>/scripts/kb-board BOARD_ID handoff accept HANDOFF_ID \
-  --as AGENT --sprint sp-ID --json
-```
-
-`--sprint sp-ID` names the boundary; `--any-sprint` deliberately removes the
-filter. They are mutually exclusive, and the override is recorded in the
-claim/handoff audit event rather than becoming an invisible exception.
-
-Closing requires served proof for the same sprint and target version. These
-ledger commands only record evidence: they do not deploy, inspect, or verify
-the actual target. Bind the deployment at start and keep the returned
-capability token only in private ephemeral state—never put it in task or sprint
-notes, checkpoints, handoffs, receipts, chat, or logs. Independently observe
-the served target's exact commit and version, and only then record a successful
-verification finish with the matching `--served-version`:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID deploy start --repo OWNER/REPO \
-  --commit FULL_40_CHAR_SHA --tier TIER --environment ENVIRONMENT \
-  --host DEPLOY_HOST --url SERVICE_URL --sprint sp-ID --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID deploy finish DEPLOYMENT_ID --token TOKEN \
-  --result succeeded --phase verification --served-commit FULL_40_CHAR_SHA \
-  --served-version 2.4.0 --receipt "Observed the served release" \
-  --as ACTOR --json
-<skill-dir>/scripts/kb-board BOARD_ID sprint close sp-ID \
-  --deployment DEPLOYMENT_ID --as ACTOR --json
-```
-
-The close proof must be a succeeded verification deployment bound to that
-sprint, and its served version must equal the sprint's target version. If any
-attached rows remain unfinished, close refuses unless they are deliberately
-moved in the same operation to one named planned/current sprint:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID sprint close sp-ID \
-  --deployment DEPLOYMENT_ID --carry-to sp-NEXT \
-  --carry-note "Deferred after the verified release" --as ACTOR --json
-```
-
-There is no implicit rollover. Abandoning is also deliberate and requires a
-reason:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID sprint abandon sp-ID \
-  --note "The delivery boundary changed" --as ACTOR --json
-```
-
-Read the boundary without inventing a `sprint current` command:
-
-```bash
-<skill-dir>/scripts/kb-board BOARD_ID sprint list --json
-<skill-dir>/scripts/kb-board BOARD_ID sprint list --all --json
-<skill-dir>/scripts/kb-board BOARD_ID sprint show sp-ID --json
-<skill-dir>/scripts/kb-host BOARD_HOME_HOST dash --json
-<skill-dir>/scripts/kb-board BOARD_ID ctx TASK_ID --json
-```
-
-`sprint list` hides closed/abandoned history unless `--all` (or an explicit
-status) is requested; `sprint show` returns the sprint, its attached tasks,
-and its deployment proof. The registry-wide `dash` projects each board's
-current sprint summary. A task's `ctx` includes its attached sprint.
-See ADR-045.
-
-## Tags — which part of the system this is about
-
-**Tag your rows.** A board that cannot say whether a task is `acme/infra`,
-`acme/queuer` or `acme/askie` makes you read titles to find out, and you are
-the one who knows.
-
-Tags are namespaced `<estate>/<subsystem>` in storage and CLI
-(`--tag estate/subsystem`) — slash spelling only, per map rule r-98ff7ad2. The
-hyphen form (`acme-orchestration`) is superseded; never use it. Estate-neutral
-examples below use `acme/`: the package ships estate-neutral, so examples need
-a concrete estate, and `acme` is a placeholder illustration — not a
-default the consumer inherits; substitute your own estate. Prose renders a registered tag as
-`:estate/subsystem` (e.g. `:acme/infra`); the colon is only presentation
-notation, do not create another sigil namespace inside KB tags. A tag already in
-use moves to its namespaced name with `kb tag rename`.
-
-```bash
-kb tag ls --json                                   # the vocabulary, with use counts
-kb tag new acme/infra --description "hosts, containers, deploys" --as "$AGENT" --json
-kb t new "Retry backoff" --tag acme/queuer --tag acme/infra --json
-kb t up <id> --tag acme/queuer --as "$AGENT" --json     # replaces, does not append
-kb t up <id> --clear-tags --as "$AGENT" --json     # the only way to say "none"
-kb t ls --status todo --tag acme/queuer --json          # open work in one subsystem
-```
-
-**Read `kb tag ls` before you tag.** The vocabulary is a per-board **master
-file**: only a registered tag can be attached, and attaching an unregistered one
-is refused naming the nearest match. That refusal is the feature — it is what
-stops `acme/infra`, `acme/Infra` and `acme/infrastructure` becoming three
-answers to one question.
-
-**If nothing fits, register it** with a description, then use it. Do not leave
-the row unfiled and do not smuggle the subject into the title. Registering is one
-command and it is paid once per concept, by whoever names it first.
-
-Names are `<estate>/<subsystem>`: each segment is lowercase letters, digits and
-inner hyphens, joined by one `/`. `acme/Infra` is refused rather than folded
-— folding would decide for you which spelling you meant.
-
-Tags go on **every row type**, drafts and epics included: a plan belongs to a
-subsystem as much as the task it produces does.
-
-**Tags are not lanes.** `lane` is *who picks this up* and `claim --next` routes
-on it; a tag is *what part of the system this touches*. Putting a subsystem in
-`lane` silently changes which driver receives the work.
-
-`@:team` is atmux routing identity, not a tag. Do not encode board, lane, team,
-host, tier, actor, priority, or typed row IDs as tags. In particular,
-`:acme/module` means the registered KB tag `acme/module`, while `@:team`
-names an atmux team; they are different types and must never be normalized into
-one another.
-
-Retiring a tag rows still carry is refused and says how many; `--force` strips it
-from them and records the count in the trail.
-
-## Provenance — where and when work happened
-
-Recorded automatically. You do not pass it, and you should not have to:
-
-- **A claim** records the worktree it was taken in, whether that worktree is a
-  lane (`linked`) or an ordinary checkout (`main`), the branch, the HEAD sha,
-  and — for a checkout nested inside a superproject — the **root** commit of the
-  outermost repository. That last one is what says which revision of the whole
-  tree was checked out; a submodule's own sha does not.
-- **Checkpoints and handoffs** fill `repoPath`, `branch`, `headSha`,
-  `dirtySummary` and `rootHead` the same way. An explicit `--repo` / `--branch` /
-  `--head` / `--dirty` still wins: capture is a default, not an override.
-- **Captured where the binary runs.** Over `kb-board` that is the board host,
-  whose cwd is no checkout, so the wrapper reads yours before the hop and passes
-  `--repo` / `--branch` / `--head` / `--dirty` on `checkpoint`,
-  `handoff create` and `sitrep post` — `--branch DETACHED` when HEAD is
-  detached, `--dirty` as `clean`, `1 file changed` or `N files changed`. A flag
-  you pass is left alone. All three refuse a row whose provenance would be
-  blank, so in an interactive board-host shell, pass the four yourself.
-- **Cross-board overlap uses a separate repository key.** Routed `kb-board`
-  claim and task handoff acceptance derive it on the caller from the canonical
-  Git common-dir and stable local machine ID. Linked worktrees of one repository
-  share the same key; another repository or machine does not. `--repo-key KEY`
-  explicitly asserts identity and wins over `--repo PATH`; the wrapper
-  consumes that path locally rather than forwarding it. `--no-repo-capture`
-  suppresses implicit capture, and the wrapper always forwards it to keep the
-  board host cwd out of routed writes. Heartbeat never derives from cwd: absent
-  an explicit key or repo move, it preserves the saved key. A caller outside a
-  repository forwards no inferred key. This is not the checkpoint/handoff/sitrep
-  provenance above. Routed `transact` applies these rules inside only
-  `claim`, `heartbeat` and `handoff_accept` items (both `--items`
-  and `--items-file`); `kb-host` refuses these board-owned writes.
-- **Timestamps** are on every row already — `createdAt`, `updatedAt`,
-  `completedAt`, `claimedAt`, `heartbeatAt`, `expiresAt`, `acceptedAt`,
-  `resolvedAt`.
-- **`kb ev`** is the audit trail: every mutation, its actor, and what changed.
-  Pass `--as` to `kb t new`; compatibility calls that omit it are explicitly
-  attributed to `system@cli`, never stored with a blank post-migration actor.
-- **`kb audit verify --json`** verifies every board and registry hash chain.
-  Keep a snapshot `manifest.json` outside the board data root when rollback
-  evidence matters, then run `kb audit verify --against manifest.json --json`.
-  A chain proves continuity; the retained manifest is what proves freshness.
-
-Run outside a git repository and provenance is recorded as absent rather than
-invented, and the command works exactly the same.
-
-## Reading
-
-```bash
-kb ctx <id> --json              # the bounded cold-start packet for a resuming agent
-kb dash --json                  # per-board counts, incl. openAttention + pendingHandoffs
-kb ev --task <id> --json        # the durable audit trail
-kb ev --task <id> --after START_MS --before END_MS --json
-kb ev --task <id> --all --after START_MS --before END_MS --json
-kb ev --registry --json         # registry rules and workspace lifecycle
-kb stale --json                 # work that overran its stale budget
-kb doctor --json                # integrity plus advisory unreachable-root hints
-kb audit verify --json          # all hash chains, including archived history
-kb archive --older-than-days 90 --as system@archive --json
-kb w repoint --json             # after moving a repo: point its registered roots at it
-```
-
-`ev` is machine-written and append-only — `task_created`, `task_moved`,
-`lease_seized`, `handoff_created`, `attention_raised`, `attention_resolved` and
-so on. It records **what happened**; `att` records **what needs the owner**. Use
-`ev` to reconstruct history, `att` to find open questions.
-
-`ev` time windows are board-only and half-open in milliseconds:
-`[after,before)`. SQL filters are applied before `--limit`, `--all` includes
-archived history, and registry/rule scopes reject `--after` and `--before`.
-
-`ctx` is bounded and says so: `truncated` is computed, never assumed, and the
-marker survives the truncation it describes.
-
-`doctor.unreachableRoots` is advisory discovery maintenance. Non-empty root
-hints do not make `healthy` false; missing board files, failed integrity/audit,
-schema defects, orphaned rows, future-dated tasks, and search-index drift still
-do. Repoint or retire a hint when useful, but never treat a disposable checkout
-as the board's identity.
-
-`--limit` must be zero or more. A negative one reads as *no limit* in SQL, so it
-is refused rather than silently handing back everything you asked to bound.
-
-**A capped listing refuses a default it would exceed** (ADR-037). Without
-`--limit`, `ev` returns up to 50, `sr ls` 20, `search` 10, `att ls`,
-`h ls`, `deploy list`, `sprint list` and `claim --candidates` 100, and
-`t cat` 100 notes, 20 checkpoints and 100 handoffs. When more rows exist than
-command fails and names `--limit N` instead of passing the first page off as
-the whole; a board holding exactly the default lists all of it. An explicit
-`--limit N` is honoured as-is with no marker — ask for one more than you need
-if you want to know whether your own bound was hit.
-
-## Watch — cursor-native live subscription
-
-`kb watch` is the canonical long-running process over the append-only ledgers.
-It is `longRunning` and `readOnly`, so generated MCP tool schemas exclude it.
-`kb events` stays the newest-first snapshot reader.
-
-`kb watch` emits protocol-v1 NDJSON envelopes. The payload is additive:
-`board {id,name?}` for board scope or `board: null` for registry scope,
-`eventID`, `eventHash`, `seq`, `timestamp`, `actor`, `kind`, `subject`, typed
-`parent`/`ancestor`/`depends-on` relations,
-`priorStatus`, `currentStatus`, sorted registered tags, bounded recursively
-redacted metadata, and explicit `null` semantic fields on legacy events. Board
-event payloads also store private `_semanticV1`; it is hash-covered in the
-ledger but never emitted.
-
-```bash
-kb watch --project NAME --task t-12345678 --cursor 0 --follow --json
-kb watch --project NAME --relation-json '[{"relation":"depends-on","boardID":"00000000-0000-4000-8000-000000000001","id":"t-prerequisite"}]' --cursor 0 --json
-kb watch --registry --cursor CURSOR --limit 100 --json
-```
-
-Rules:
-
-- Exactly one scope is active at a time: a board via `--project`, a task via
-  `--task`, a registry rule via `--rule`, or the registry via `--registry`.
-  There is no cross-board fan-in.
-- `--task` is the subject selector. `--kind`, `--relation`, `--prior-status`,
-  `--current-status`, and `--tag` are repeatable predicates. `--relation`
-  accepts typed forms `parent:ID`, `ancestor:ID`, and `depends-on:ID`; all
-  these scalar relations, including `depends-on:ID`, remain local to the
-  watched board even if the opaque ID contains `:` or `/`.
-- For an existing foreign dependency edge, pass `--relation-json` with a JSON
-  array of exact `{"relation":"depends-on","boardID":"UUID","id":"ID"}`
-  objects. `boardID` is the canonical lowercase hyphenated registered source
-  UUID, and `id` is a nonempty exact opaque item ID; no other relation kind or
-  extra object fields are accepted. A target-board UUID normalizes to the
-  local relation. A scratch `--db` target without a registered UUID refuses
-  `--relation-json`; keep scalar `--relation` for local filters there.
-- Values within one predicate family are ORed. Families are ANDed together.
-  Thus scalar local and JSON-qualified relations match either edge, not both.
-  The filter still reads events on the selected target board only: it never
-  subscribes to source-board events or enables cross-board fan-in.
-- The command normalizes the full predicate set before binding it to the
-  cursor. Reusing a cursor with any different normalized predicate set fails
-  closed.
-- Unknown tasks, relation targets, kinds, statuses, or tags fail closed.
-- Removed subjects and historical relation targets remain replayable because
-  replay uses stored rows, not live lookups.
-- Registry scope supports `--kind` only and rejects board semantic predicates,
-  including `--relation-json`.
-- `--cursor` is opaque. Literal `0` bootstraps from the start, and a persisted
-  cursor is bound to the exact source, selector, normalized predicate set,
-  archive state, and last consumed ledger `seq`.
-- Malformed, mismatched, or future cursors fail closed.
-- `--follow` reopens read-only transactions between polls and emits rows
-  synchronously, with no intermediate queue. It requires `--limit` to be at
-  least `1`, so `--follow --limit 0` fails.
-- `--limit` is constrained to `0..1000000` in every mode, the one ceiling every
-  `--limit` on this ledger shares (kanban 8991e9f, 2026-09-08 - effectively
-  unbounded for any board this tool holds; a batch is a SQL LIMIT, never a
-  preallocated buffer); follow mode additionally rejects `0`. Sparse filtering happens before `--limit`, so the limit slices
-  the filtered result set rather than the raw rows.
-- `--db PATH` opens that exact database file.
-- NDJSON envelopes carry `version`, `scope`, `cursor`, `type`, and `payload`
-  on stdout only; errors and diagnostics go to stderr.
-- Idle heartbeats do not advance the durable cursor. If predicates skip a
-  committed unmatched tail, an `advanced` heartbeat moves the opaque cursor to
-  the last scanned row so follow mode does not loop over the same rows.
-- Secrets are redacted recursively before emission.
-- `payload` stays the existing event JSON, including `seq` as the ledger row
-  number.
-
-## Subscription records and dispatcher delivery
-
-Use `kb subscription add|list|show|pause|resume` to manage one board's durable
-delivery intent. The addressed board is the tenancy predicate; do not put a
-board path or root in the record.
-
-```bash
-kb subscription add --project NAME --id sub-codex-queue \
-  --subject task:t-12345678 --kind checkpoint_added --tag acme/orchestration \
-  --consumer codex.queue --action enqueue-turn \
-  --timeout-ms 30000 --max-retries 3 --rate-per-minute 60 \
-  --max-concurrency 1 --secret-ref codex_queue_token --as "$OWNER" --json
-kb subscription list --project NAME --json
-kb subscription show sub-codex-queue --project NAME --json
-kb subscription pause sub-codex-queue --project NAME --as "$OWNER" --json
-kb subscription resume sub-codex-queue --project NAME --as "$OWNER" --json
-```
-
-Rules:
-
-- IDs are immutable `sub-*` identities. There is no update or delete command.
-- `--subject` accepts only `task:ID`. `--relation`, `--kind`,
-  `--prior-status`, `--current-status`, and `--tag` are repeatable, normalized
-  predicates; unknown values fail closed. `--relation-json` accepts the same
-  board-qualified array as `watch` above; scalar `--relation` stays local,
-  delivers only events on its target board, never source-board events.
-  Generated MCP `subscription_add` accepts `relation-json` as a string with
-  the same array shape; `watch` is long-running and has no MCP tool.
-- `--consumer` and `--action` are strict names, not executable commands.
-- Timeout, retries, rate, and concurrency are required and bounded.
-- `--secret-ref` is an optional opaque identifier containing only ASCII
-  letters, digits, dot, underscore, and hyphen. Never pass a credential or raw
-  token value.
-- Subscription rows contain no root, board path, shell text, adapter arguments,
-  credentials, delivery acknowledgement, cursor, or dead-letter state.
-- Add/pause/resume append audited board events; their payloads omit the secret
-  reference. List/show are read-only request-response operations.
-- Delivery identity is `(subscriptionID,eventID)`.
-
-The first queue bridge is the Codex consumer `codex.queue` with action
-`enqueue-turn`. The subscription row still stores only the normalized
-predicates, the named consumer/action, and bounded policy. It does not store
-an executable path, shell text, or arbitrary args. Host-local
-`dispatchers.json` binds that consumer/action to the checked-in
-`kanban-codex-queue-adapter`, the installed Codex executable, the exact
-thread/session target, the required installed version, and the fixed host-local
-Codex state directory argument `--codex-home /root/.codex` with matching
-`CODEX_HOME=/root/.codex`. Every invocation must direct-exec the installed
-Codex binary to verify the exact version and the `codex queue --help`
-surface, and it must fail closed on drift. The adapter passes only that fixed
-`CODEX_HOME` to child Codex processes. On the board home host, direct ingress is
-`/root/.local/bin/codex queue --thread UUID_OR_EXACT_SESSION_NAME --message
-TEXT` when `codex-cli 0.150.1` is installed. The separately named live
-smoke receipt is the distinct runtime check for installed Codex support.
-
-The optional Claude print bridge is consumer `claude.print`, action
-`start-readonly-turn`, with capability `start`. Host-local `dispatchers.json`
-binds those exact names to `kanban-claude-print-adapter` and fixed arguments
-`--claude ABSOLUTE_PATH --home ABSOLUTE_PATH --cwd ABSOLUTE_PATH
---required-version VERSION`; keep executable, home, working-directory, and
-version choices outside subscription rows and portable skill text. The
-dispatcher serializes this consumer so one fresh worker owns each delivery.
-The adapter starts Claude in safe-mode print operation with no tools and no
-session persistence; it never resumes or drives an active TUI. Its child
-environment contains exactly `HOME` and `PATH=/usr/bin:/bin`, and its configured
-working directory is fixed.
-
-Executable, home, working-directory, version/help-surface, authentication, or
-response-contract drift fails closed; an invalid Claude response also fails
-closed. Treat the compiled-process adapter-contract check and the separately
-named installed-version live smoke as distinct evidence: the former proves
-protocol and process containment, while the latter proves the pinned installed
-Claude can authenticate and complete the real print turn. This bridge is
-optional and ships with no active subscription
-by default; an operator must deliberately add or resume a matching
-subscription after both checks pass.
-
-Run delivery through the separate compiled worker with exactly one explicit
-board selector:
-
-```bash
-kanban-dispatcher --project NAME [--consumer consumer.name] [--once] [--json]
-kanban-dispatcher --workspace /registered/root [--once] [--json]
-kanban-dispatcher --db /exact/board.db [--once] [--json]
-```
-
-On the board home host use the fixed installed path `/root/.local/bin/kanban-dispatcher` after
-the same host-boundary verification used for `$KB_EXEC`. The worker
-is not a `kb-board` subcommand. `--consumer` restricts execution to one consumer
-identity; `--once` performs one scheduler step; without `--once` it polls until
-SIGINT/SIGTERM. Help and version do not open board or registry state.
-
-The allow-list is the private host-local
-`$KANBAN_DATA_DIR/dispatchers.json`, protocol version `1`. It maps strict
-consumer/action names to a declared capability, an absolute executable, fixed
-arguments, and optional secret-reference mappings from `sourceEnv` to one safe
-adapter `targetEnv`. Put environment-variable names there, never credential
-values. Keep the data root and config inaccessible to group/other users; the
-executable must be a regular non-symlink with an execute bit and no group/other
-write bit. The adapter starts with an empty environment and receives only the
-configured target secret and fixed `CODEX_HOME` when the subscription names
-that reference.
-
-Startup validates configuration before the first materialization or claim. Each
-scheduler step materializes and recovers work, resolves the candidate, then
-serializes per consumer, reloads configuration under the lock, and claims for
-`timeoutMs + 30 seconds`. It runs the adapter outside SQLite and finalizes only
-the exact lease token. Failures retry deterministically then dead-letter;
-pause/resume is rechecked before claim. A crash after adapter success but before
-acknowledgement is retried after lease expiry, so adapters must treat
-`(subscriptionID,eventID)` as an idempotency key: delivery is at-least-once,
-never exactly-once.
-
-## Archival — bounded hot indexes, intact history
-
-```bash
-kb archive --older-than-days 90 --as system@archive --dry-run --json
-kb archive --older-than-days 90 --as system@archive --json
-kb t ls --all --json             # active plus cold tasks
-kb ev --task <id> --all --json   # cold audit history for one task
-```
-
-The sweep archives only settled rows older than the cutoff:
-`done`/`cancelled`/`abandoned` tasks without a lease, their
-notes/checkpoints/tags/events, settled handoffs,
-resolved attention and linked sitreps. Old taskless settled records are included.
-`kiv` rows are never archived for age: parking is not settling, and only an
-explicit resume or abandon moves them.
-It also archives terminal deployment attempts that are no longer the current
-verified success for their `(repo, tier, environment)`. Started attempts and
-each target's latest verified success always remain hot.
-Rows remain in the same backed-up SQLite board and `--all` reads them; nothing is
-deleted. Operational secondary indexes contain only `archived=0` rows, so their
-size follows current work rather than the board's lifetime.
-
-Reads never run retention implicitly. The nightly backup timer explicitly sweeps
-every present registered board at 90 days before snapshotting it. `--dry-run`
-executes the real transaction, reports its counts, and rolls it back. See ADR-021.
-
-## Deployment attempts — exact release receipts
-
-```bash
-kb deploy start --repo OWNER/REPO --commit FULL_40_CHAR_SHA --tier @_p \
-  --environment production --host "$BOARD_HOME_HOST" --url "$SERVICE_URL" \
-  --task TASK_ID --operation-id OPERATION_ID --as "$AGENT" --json
-
-kb deploy finish DEPLOYMENT_ID --token CAPABILITY_TOKEN --result succeeded \
-  --phase verification --served-commit FULL_40_CHAR_SHA \
-  --receipt "what was checked live" --as "$AGENT" --json
-
-kb deploy current --json
-kb deploy list --status failed --json
-kb deploy list --all --json
-```
-
-Canonical tiers are `@_bdt`, `@_bd`, `@_bst`, `@_bs`, `@_s`, `@_uat`, and
-`@_p`. Deployment commands only record attempts and evidence; they neither
-perform a deployment nor inspect its target. Deploy through the real release
-path, independently observe the live target, then record the full pushed
-commit and what was actually served. `succeeded` is refused unless the served
-commit matches exactly and the phase is `verification` with a non-empty live
-receipt. Keep the start receipt's capability token only in private ephemeral
-state until finishing; never put it in task or sprint notes, checkpoints,
-handoffs, receipts, chat, or logs. A retry starts a new row with `--retry-of`;
-never rewrite the old attempt. Use `deploy abandon --token … --note …` when no
-failure was observed; `--force` is an explicit audited recovery override. See
-ADR-030.
-
-## As an MCP server
-
-```bash
-kb mcp     # newline-delimited JSON-RPC over stdio
-```
-
-One tool per operation, generated from the command surface, so the tool list
-cannot describe something the CLI does not have. Each call runs the real binary,
-so validation and refusals are identical to the terminal. Every tool carries
-`readOnlyHint`, true only when the operation writes nothing anywhere.
-
-Two tools carry lists of other calls instead of arguments of their own.
-`batch` collapses up to 32 **reads** into one request and keeps
-`readOnlyHint: true`, so it refuses a writing entry by name and performs none
-of them. `transact` is the writing counterpart described above: `{ "items":
-[ {"name", "arguments"} ] }`, `readOnlyHint: false`, the binary run **once**
-with the whole list, and the envelope returned as the result — marked
-`isError` exactly when `ok` is `false`, because a rolled-back batch that read
-as success would be a lie.
-
-Updating is `install` over the binary — running servers pick it up without any
-client reconnecting.
-
-### From another machine: one persistent SSH channel
-
-The board home host boundary applies to the MCP server exactly as it does to
-the CLI, so the server runs *there* and the harness talks to it over stdio
-through SSH. That gives an interactive harness a connection it holds for the
-whole session instead of one handshake per read:
-
-```bash
-ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp     # the whole server command
-```
-
-Register that command as a stdio MCP server in the harness. For Claude Code,
-run `claude mcp add --scope user --transport stdio kb -- ssh "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`.
-For Codex, use an `[mcp_servers.kb]` block with `command = "ssh"` and
-`args = ["BOARD_SSH_TARGET", "/absolute/path/to/kb", "mcp"]`. Replace both
-placeholders with the routing table values: TOML argument strings do not expand
-shell variables. Measured 2026-09-05 from a Mac to the home host over a 210 ms link:
-connect 578 ms once, then `task_show` 249-253 ms and a `note` write 285 ms per
-call — about one round trip plus the query — against 2.5 s per CLI one-shot
-without a ControlMaster. Re-measured 2026-10-13 from @@mbp to @@hal with a
-ControlMaster: connect 0.65 s once, then about 0.20 s per small read on the
-channel against about 0.5 s per wrapper one-shot (table under **Runs of reads
-do not go one-shot**). This is the agent API; there is no HTTP service.
-
-What does not change: every tool still takes its own `project`, because the
-server resolves a board per call and refuses `--project` on `kb mcp` itself
-rather than let one session silently answer about a board it was not asked
-about. The same rules, the same refusals, the same `readOnlyHint` — a tool
-call is the real binary on the real ledger, with the installed identity, on the
-board home host. If the host is unreachable the server fails to start and the harness
-says so; that is the correct outcome. Never point the registration at a local
-`kb` or a local board file to make the error go away.
+**A replayed START batch lands nothing** — by `claim`'s semantics, not by
+`transact`'s. There is no idempotency key (ADR-041 §9): the replayed claim is
+refused by name at index 0, every later item is `skipped`, and because the batch
+is atomic nothing at all lands. An END batch has no such protection, and neither
+has any batch whose first item is additive: two replayed `note` items are two
+notes.
+
+**An agent that cannot tell whether a `transact` was received reads the board.**
+`kb t cat <id> --limit 200 --json` settles it — the claim is there or it is not,
+the checkpoint is there or it is not — and that is what to act on, rather than
+retrying blindly.
+
+One thing a rollback leaves standing: the expired-claim sweep every board open
+commits before any batch scope exists, so a rolled-back batch may still have
+retired somebody else's lapsed lease (**Batched writes — `transact`**, "What a
+rollback does not undo").
 
 ## Refusals worth knowing
 
@@ -2394,27 +787,32 @@ once a silent wrong answer.
   {model} may not claim it` with a `--model` outside the list. `claim --next`
   and `--candidates` never produce these refusals — they skip restricted rows
   silently unless `--model` matches one.
-- A routed wrapper prints refusals as plain text, never JSON. `kb-board does
-  not route registry or cross-board scope flag '--all-boards'` means the
-  query never ran; piped into jq it yields an empty result that reads like
-  "not found". Never conclude "not found" from an empty jq result: check the
-  command's exit status and its unstripped text first, then search the owning
-  board directly (kb dotfiles t-195dd728 L3).
 
-## Reference
+## References
 
-`docs/adr/` in the kanban repo carries the reasoning. Most load-bearing:
-ADR-008 (fail closed), ADR-010 (adapters generated from the surface),
-ADR-011 (MCP server + in-place reload), ADR-012 (session handoffs and
-attention), ADR-013 (plans are epics), ADR-015 (tags are a master file),
-ADR-016 (historical retired web view), ADR-017 (sitreps), ADR-018 (the original board-local
-rules). ADR-027 supersedes the scoped rule decisions with one registry-owned,
-tag-scoped rules document using `ALL`, `ONLY:<board>`, `EXCEPT:<board>` and
-namespaced `<estate>/<subsystem>` tags.
-ADR-021 keeps settled history while removing it from operational indexes.
-ADR-037 makes a capped listing refuse a default it would exceed.
-ADR-041 makes `transact` one atomic ordered write batch and leaves the
-read-only `batch` untouched.
-ADR-042 makes an attention item a decision card: an authored question, its
-context, two to four choices with one recommendation, and a free-text answer
-that still carries a verdict.
+- `references/board-group-routing.md` — read when coordinating a registered board group (`kb-group`).
+- `references/rules.md` — read when reading or changing registry rules, adopting a board, or moving rules.
+- `references/aliases.md` — read when a short command form is unclear.
+- `references/attention.md` — read when raising, answering or resolving an attention item.
+- `references/incidents.md` — read when working an incident (`i-` row).
+- `references/search.md` — read when searching the ledger or building RAG context.
+- `references/sitreps.md` — read when posting or reading a sitrep.
+- `references/handoffs.md` — read when stopping with work unfinished, or any handoff.
+- `references/messages.md` — read when sending or reading a lane message (`m-` row).
+- `references/task-queue-and-gates.md` — read when a task is model-restricted, you need its holder, a gate refuses, or you run `claim --candidates`.
+- `references/session-end-and-resume.md` — read when ending a session, `staleClaims`, `orphanedFrom`, or resuming.
+- `references/review-verdicts.md` — read when filling `--validation` or recording a review verdict.
+- `references/model-attribution.md` — read when recording `--model`/`--writer-model`, bugs, test runs, or `kb stats models`.
+- `references/cleanup-ledger.md` — read when allocating host resources for a task, or a cleanup refusal.
+- `references/plans.md` — read when writing or reading a plan or epic.
+- `references/sprints.md` — read when working with a sprint.
+- `references/tags.md` — read when tagging rows or a tag refusal.
+- `references/provenance.md` — read when checking recorded repo, branch, head or dirty state.
+- `references/trunk.md` — read when taking a code row to `done`.
+- `references/reading.md` — read when doing context, dashboard, events, doctor or review-visibility reads.
+- `references/watch.md` — read when running `kb watch`.
+- `references/subscriptions.md` — read when managing subscriptions or dispatcher delivery.
+- `references/archival.md` — read when archiving rows or reading cold history.
+- `references/deployments.md` — read when recording a deployment (`kb deploy`).
+- `references/mcp-server.md` — read when using `kb mcp`.
+- `references/adr-index.md` — read when you need the reasoning behind a ledger rule.

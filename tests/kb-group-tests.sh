@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# A harness exports KB_MODEL; every case that needs one sets it itself.
+unset KB_MODEL
 here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 t=$(mktemp -d "${TMPDIR:-/tmp}/kb-group-tests.XXXXXX")
 trap 'rm -rf "$t"' EXIT
@@ -7,6 +9,13 @@ mkdir -p "$t/bin"
 cat >"$t/bin/ssh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+[[ -z "${SSH_ARGS:-}" ]] || printf '%s\0' "$@" >"$SSH_ARGS"
+if [[ "${1-}" = -G ]]; then
+  printf 'config\n' >>"$CALLS"
+  [[ -z "${SSH_USER:-}" ]] || printf 'user %s\n' "$SSH_USER"
+  exit 0
+fi
+[[ "${1-}" != -l ]] || shift 2
 printf 'ssh\n' >>"$CALLS"
 [[ ${OUTAGE:-0} = 0 ]] || { echo 'ssh: connection refused' >&2; exit 255; }
 [[ ${TIMEOUT:-0} = 0 ]] || { echo 'ssh: timed out' >&2; exit 124; }
@@ -14,7 +23,9 @@ printf 'ssh\n' >>"$CALLS"
 [[ $1 = home-target ]] || exit 98
 shift
 cmd=${1//\/bin\/hostname/$REMOTE_HOSTNAME_BIN}
-/bin/sh -c "$cmd"
+# Real ssh carries no environment: only what kb-group puts on the command
+# line reaches the registry home.
+env -u KB_MODEL /bin/sh -c "$cmd"
 SH
 cat >"$t/bin/hostname" <<'SH'
 #!/bin/bash
@@ -45,6 +56,9 @@ if [[ "${1-} ${2-} ${3-}" = 'workspace tag show' ]]; then
 else
   printf 'operation\n' >>"$CALLS"
   printf '%s\0' "$@" >"$ARGS"
+  if [[ -n "${MODEL_OUT:-}" ]]; then
+    if [[ -n "${KB_MODEL+set}" ]]; then printf 'set:%s' "$KB_MODEL" >"$MODEL_OUT"; else printf unset >"$MODEL_OUT"; fi
+  fi
   if [[ ${RACE_MEMBER:-0} = 1 || ${RACE_RECREATE:-0} = 1 ]]; then
     # The compiled resolver sees either a new cross-home member or a new
     # group UUID under the same name and revision after wrapper verification.
@@ -221,7 +235,7 @@ refuse 'claim requires exactly one of --next or --candidates' group/test claim -
 check_calls ''
 refuse 'claim requires exactly one of --next or --candidates' group/test claim --next --as worker --candidates
 check_calls ''
-python3 - "$here/SKILL.md" <<'PY'
+python3 - "$here/references/board-group-routing.md" <<'PY'
 from pathlib import Path
 import sys
 recipe = Path(sys.argv[1]).read_text().split('## Explicit board-group routing (coordinator only)', 1)[1].split('## Board home host', 1)[0]
@@ -295,4 +309,105 @@ import sys
 assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'--project', b'px', b'task', b'list', b'--json']
 PY
 ok
+
+# KB_MODEL (kanban MODELSTATS-10, the default author model) crosses ssh to
+# the one compiled operation as itself, quoting intact and empty included;
+# an unset one stays unset, so the binary warns and counts `unknown`.
+model_case() {
+  local want=$1; shift
+  : >"$CALLS"
+  MODEL_OUT="$t/model" "$@" "$here/scripts/kb-group" group/test attention list --json >/dev/null
+  check_calls $'ssh\nshow\noperation'
+  [[ "$(cat "$t/model")" = "$want" ]] || fail "KB_MODEL crossed as [$(cat "$t/model")], want [$want]"
+  ok
+}
+model_case "set:kimi-k3 'x' \$(y)" env "KB_MODEL=kimi-k3 'x' \$(y)"
+model_case 'set:' env KB_MODEL=
+model_case unset env -u KB_MODEL
+
+# IDENT-44 fake-transport contract, not a real Unix-principal proof.
+test_own_group_login_policy() (
+  export SSH_ARGS="$t/ssh-args" KB_SSH_LOGIN='' SSH_USER=root
+  own_group_table() {
+    printf 'kanban\thome-local\thome-target\thome-remote\t%s\t%s\npx\thome-local\thome-target\thome-remote\t%s%s\n' "$kb" "$1" "$kb" "$2" >"$KB_HOSTS_TABLE"
+  }
+  exact_refuse() {
+    local expected=$1 status=0 output
+    : >"$CALLS"; rm -f "$ARGS" "$SSH_ARGS"
+    output=$("$here/scripts/kb-group" group/test task list 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "kb-group: $expected" ]] || fail "own group exit $status: $output"
+    [[ ! -e "$ARGS" ]] || fail 'own refusal ran operation'
+  }
+  own_group_table own $'\town'
+  exact_refuse 'board kanban routes as your own login, but ssh would log in to home-target as root; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls config
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:-1] == [b'-G', b'home-target']
+PY
+  export SSH_USER=''
+  exact_refuse 'board kanban routes as your own login, but ssh -G home-target named no user; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls config
+  export KB_SSH_LOGIN=root
+  exact_refuse 'board kanban routes as your own login, but ssh would log in to home-target as root; set User for home-target in your ssh config or export KB_SSH_LOGIN'
+  check_calls ''
+  export KB_SSH_LOGIN=alice SSH_USER=root
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'ssh\nshow\noperation'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:4] == [b'-l', b'alice', b'--', b'home-target']
+PY
+  own_group_table own ''
+  exact_refuse 'cross-home group member: px'
+  check_calls $'ssh\nshow'
+  own_group_table own $'\town'
+  export KB_SSH_LOGIN='' SSH_USER=bob
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'config\nssh\nshow\noperation'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:2] == [b'--', b'home-target']
+PY
+  export KB_SSH_LOGIN=alice
+  make_table
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  cp "$SSH_ARGS" "$t/legacy-group-argv"
+  # Explicit ssh and absent policy normalize identically, ignoring override.
+  own_group_table ssh ''
+  : >"$CALLS"
+  "$here/scripts/kb-group" group/test task list
+  check_calls $'ssh\nshow\noperation'
+  cmp -s "$SSH_ARGS" "$t/legacy-group-argv" || fail 'normalized legacy group SSH argv changed'
+  python3 - "$SSH_ARGS" <<'PY'
+import sys
+from pathlib import Path
+assert Path(sys.argv[1]).read_bytes().split(b'\0')[:2] == [b'--', b'home-target']
+PY
+  own_group_table self ''
+  exact_refuse 'login must be ssh or own: self'
+  check_calls ''
+  printf 'kanban\thome-local\thome-target\thome-remote\t/root/.local/bin/kb\town\n' >"$KB_HOSTS_TABLE"
+  exact_refuse 'board kanban routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb'
+  check_calls ''
+  printf 'kanban\t%s\thome-target\thome-remote\t%s\town\npx\t%s\thome-target\thome-remote\t%s\town\n' "$(/bin/hostname)" "$kb" "$(/bin/hostname)" "$kb" >"$KB_HOSTS_TABLE"
+  if [[ "$EUID" = 0 ]]; then
+    exact_refuse 'board kanban routes as your own login, but this shell is root; run kb-group from your own account'
+    check_calls ''
+  else
+    : >"$CALLS"
+    "$here/scripts/kb-group" group/test task list
+    check_calls $'show\noperation'
+  fi
+)
+test_own_group_login_policy
+ok
+make_table
+
 printf 'kb-group: %d tests passed\n' "$pass"

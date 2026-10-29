@@ -9,8 +9,37 @@ cat >"$t/scripts/kb-board" <<'SH'
 #!/bin/bash
 set -eu
 printf '%s\n' "$*" >>"$TEST_ROOT/calls"
+# Like kb: a flag given twice is refused before anything else (t-75164807).
+if [ "$(printf '%s\n' "$@" | grep -cx -- '--json')" -gt 1 ]; then
+  printf '{"error":"--json (true, true) given more than once; it takes a single value"}\n'
+  echo 'Error: --json (true, true) given more than once; it takes a single value' >&2
+  exit 1
+fi
+# Real board and transport failures for one call, chosen by FAKE_FAIL (t-8ccffdeb).
+case "${FAKE_FAIL:-}" in
+  ended) echo 'Error: task t-fake has no active lease: it was never claimed, or the lease expired and was retired; claim the task to write to it' >&2; exit 1 ;;
+  mismatch) echo 'Error: task t-fake is leased by @:x/y/z/executor until 1793182679357, and that is not the lease you presented: it was superseded, so reacquire the task before writing to it' >&2; exit 1 ;;
+  ssh) exit 255 ;;
+  silent) exit 1 ;;
+  routing) echo 'kb-board: unknown board: nosuch' >&2; exit 64 ;;
+  gated) echo 'Error: task t-fake is gated on work that is not done' >&2; exit 1 ;;
+  exec127) echo 'bash: line 1: kb: command not found' >&2; exit 127 ;;
+  # The router's remote staging fails before kb runs (kb-board exit 70).
+  staging) echo 'mktemp: failed to create file via template /tmp/kb-ctx.XXXXXX: No space left on device' >&2; exit 70 ;;
+  # Exit 1 with stderr that is not kb's: still not a board answer.
+  shell1) echo 'bash: line 1: syntax error near unexpected token' >&2; exit 1 ;;
+  exec126) echo 'bash: line 1: /usr/local/bin/kb: Permission denied' >&2; exit 126 ;;
+esac
 case "$2 $3" in
   'claim t-fake') printf '{"taskID":"t-fake","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # A LINKED scope binding made without a session refuses a sessioned triple.
+  'claim t-bound')
+    case " $* " in
+      *' --session '*) printf '{"error":"task t-bound is not claimable under selected set ss-1: test matches no live binding; the actor holds lane driver, session (none) on that set. Present the bound triple, or rebind with an audited `scope bind` revision"}\n'; exit 1 ;;
+    esac
+    printf '{"taskID":"t-bound","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # Any other refusal must not trigger the sessionless retry.
+  'claim t-refused') printf '{"error":"task t-refused is gated"}\n'; exit 1 ;;
   'h acc')
     if [ "$4" = h-session ]; then
       printf '{"claim":null,"handoff":{"id":"h-session","taskID":null}}\n'
@@ -19,11 +48,38 @@ case "$2 $3" in
     fi ;;
   'cp t-fake')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    # A refusal that quotes the lease must reach the caller masked.
+    case " $* " in *' --summary quote-lease '*) printf '{"error":"lease 12345678-1234-1234-1234-123456789012 refused: blocker required"}\n'; exit 1 ;; esac
     case " $* " in
       *' --state done '*) printf '{"state":"done"}\n' ;;
       *' --state blocked '*) printf '{"state":"blocked"}\n' ;;
       *) printf '{"state":"continue"}\n' ;;
     esac ;;
+  # The lease is granted, but the session path fills before the wrapper stores it.
+  'claim t-race')
+    printf 'other\n' >"$LEASE_SESSION_PATH"
+    printf '{"taskID":"t-race","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  # The lease is granted, then the session directory stops taking new files.
+  'claim t-nowrite')
+    chmod 500 "$(dirname "$LEASE_SESSION_PATH")"
+    printf '{"taskID":"t-nowrite","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' ;;
+  'release t-nowrite')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    printf '{"ok":true}\n' ;;
+  # Granted and unstorable, and the first give-back release fails.
+  'claim t-relfail'|'claim t-nwrf'|'claim t-norec')
+    case "$3" in
+      t-relfail) printf 'other\n' >"$LEASE_SESSION_PATH" ;;
+      *) chmod 500 "$(dirname "$LEASE_SESSION_PATH")" ;;
+    esac
+    printf '{"taskID":"%s","leaseToken":"12345678-1234-1234-1234-123456789012","agentID":"test"}\n' "$3" ;;
+  'release t-relfail'|'release t-nwrf'|'release t-norec')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    if [ ! -e "$TEST_ROOT/released-$3" ]; then : >"$TEST_ROOT/released-$3"; exit 1; fi
+    printf '{"ok":true}\n' ;;
+  'release t-race')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    printf '{"ok":true}\n' ;;
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
@@ -52,6 +108,8 @@ out=$("$lease" dotfiles claim t-fake --as test)
 case "$out" in *12345678*) exit 1 ;; esac
 [ "$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")" = 600 ] || exit 1
 [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
+# The claim is recorded under KB_SESSION_ID, so `release --session` can end it.
+[ "$(sed -n '1p' "$t/calls")" = 'dotfiles claim t-fake --as test --session lease-test-session --json' ] || exit 1
 # An unrelated second claim must not silently overwrite this session's token.
 if "$lease" dotfiles claim t-other --as test >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = 1 ] || exit 1
@@ -68,6 +126,10 @@ out=$("$lease" dotfiles claim t-fake --as test)
 out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done --intent done --next-action next)
 [ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
 [ ! -e "$session" ] || exit 1
+# An explicit --session is passed through once and wins over KB_SESSION_ID.
+out=$("$lease" dotfiles claim t-fake --as test --session explicit-session)
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session explicit-session --json' ] || exit 1
+out=$("$lease" dotfiles release t-fake)
 # A blocked checkpoint parks the row: the lease leaves the session, so a lane
 # waiting on a long job can claim its next row from the same pane.
 out=$("$lease" dotfiles claim t-fake --as test)
@@ -81,6 +143,23 @@ out=$("$lease" dotfiles checkpoint t-fake --as test --state done --summary done 
 [ ! -e "$session" ] || exit 1
 out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
+[ "$(grep -c '^dotfiles h acc h-test --as test --session lease-test-session --json$' "$t/calls")" = 1 ] || exit 1
+out=$("$lease" dotfiles release t-fake)
+[ ! -e "$session" ] || exit 1
+# Sessionless scope binding: one sessioned try, one sessionless retry, a warning, and the lease stored.
+n=$(wc -l < "$t/calls" | tr -d ' ')
+out=$("$lease" dotfiles claim t-bound --as test 2>"$t/warn")
+[ "$out" = '{"taskID":"t-bound","leaseStored":true}' ] || exit 1
+grep -qF 'release --session will not free this lease' "$t/warn" || exit 1
+[ "$(tail -n 2 "$t/calls" | head -n 1)" = 'dotfiles claim t-bound --as test --session lease-test-session --json' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-bound --as test --json' ] || exit 1
+[ "$(wc -l < "$t/calls" | tr -d ' ')" = $((n + 2)) ] || exit 1
+rm -f "$session"
+# Any other refusal fails once, with no retry.
+n=$(wc -l < "$t/calls" | tr -d ' ')
+if "$lease" dotfiles claim t-refused --as test >"$t/refusal" 2>&1; then exit 1; fi
+[ "$(wc -l < "$t/calls" | tr -d ' ')" = $((n + 1)) ] || exit 1
+out=$("$lease" dotfiles handoff-accept h-test --as test)
 out=$("$lease" dotfiles handoff-create t-fake --as test --summary done --intent done --next-action done)
 [ "$out" = '{"taskID":"t-fake","operation":"handoff-create","ok":true}' ] || exit 1
 [ ! -e "$session" ] || exit 1
@@ -94,6 +173,161 @@ if "$lease" dotfiles claim t-fake --lease forged >"$t/refusal" 2>&1; then exit 1
 ln -s "$t/target" "$session"
 if "$lease" dotfiles claim t-fake >"$t/refusal" 2>&1; then exit 1; fi
 [ "$(wc -l < "$t/calls" | tr -d ' ')" = "$n" ] || exit 1
+rm -f "$session"
+# A caller's own --json reaches the board once (t-75164807: px driver-4 claims
+# failed 6/6 on "--json given more than once"), for claim and checkpoint.
+out=$("$lease" dotfiles claim t-fake --as test --json)
+[ "$out" = '{"taskID":"t-fake","leaseStored":true}' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles claim t-fake --as test --session lease-test-session --json' ] || exit 1
+out=$("$lease" dotfiles checkpoint t-fake --as test --state continue --json --summary s --intent i --next-action n)
+[ "$out" = '{"taskID":"t-fake","operation":"checkpoint","ok":true}' ] || exit 1
+[ "$(tail -n 1 "$t/calls" | grep -o -- '--json' | wc -l | tr -d ' ')" = 1 ] || exit 1
+# A refusal reaches the caller readable, with the lease masked.
+if "$lease" dotfiles checkpoint t-fake --as test --state blocked --summary quote-lease >"$t/out-q" 2>"$t/err-q"; then exit 1; fi
+grep -qF 'lease operation (checkpoint) failed [cause=refused]: lease <lease> refused: blocker required' "$t/err-q" || exit 1
+out=$("$lease" dotfiles release t-fake)
+[ ! -e "$session" ] || exit 1
+if "$lease" dotfiles claim t-refused --as test >"$t/out-r" 2>"$t/err-r"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed [cause=refused]: task t-refused is gated' "$t/err-r" || exit 1
+# Every failure names a stable cause class and the next step; the session
+# record stays put on a board or transport failure.
+out=$("$lease" dotfiles claim t-fake --as test)
+for mode in ended:claim_ended mismatch:lease_mismatch ssh:transport silent:transport routing:transport gated:refused exec127:transport exec126:transport staging:transport shell1:transport; do
+  if FAKE_FAIL=${mode%%:*} "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+  grep -qF "lease operation (hb) failed [cause=${mode#*:}]:" "$t/err-c" || exit 1
+  grep -qF '; next: ' "$t/err-c" || exit 1
+  [ "$(sed -n '1p' "$session")" = t-fake ] || exit 1
+  if grep -qF 12345678-1234 "$t/out-c" "$t/err-c"; then exit 1; fi
+done
+if FAKE_FAIL=ssh "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'may or may not have taken effect' "$t/err-c" || exit 1
+if FAKE_FAIL=routing "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'never reached the board' "$t/err-c" || exit 1
+if FAKE_FAIL=ended "$lease" dotfiles checkpoint t-fake --as test --state continue --summary s --intent i --next-action n >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF "kb-session-lease dotfiles recover t-fake" "$t/err-c" || exit 1
+if FAKE_FAIL=ssh "$lease" dotfiles claim t-other --as test >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF 'session already has a lease' "$t/err-c" || exit 1
+if "$lease" dotfiles hb t-other >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'lease operation failed [cause=no_session_file]: task does not match session lease: this session holds t-fake' "$t/err-c" || exit 1
+out=$("$lease" dotfiles release t-fake)
+if "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'lease operation failed [cause=no_session_file]: no session lease for t-fake' "$t/err-c" || exit 1
+if FAKE_FAIL=ssh "$lease" dotfiles claim t-fake --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
+[ ! -e "$session" ] || exit 1
+[ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
+# A handoff names a handoff lookup, and cleanup prints nothing more.
+if FAKE_FAIL=ssh "$lease" dotfiles handoff-accept h-test --as test >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF 'claim or handoff acceptance failed [cause=transport]:' "$t/err-c" || exit 1
+grep -qF 'kb-board dotfiles h ls --all --json (find h-test' "$t/err-c" || exit 1
+if grep -qF 't cat h-test' "$t/err-c"; then exit 1; fi
+[ "$(wc -l <"$t/err-c" | tr -d ' ')" = 1 ] || exit 1
+[ ! -e "$session" ] || exit 1
+# Local refusals name a cause too: usage, a busy session (claim and handoff
+# accept), and each recover refusal.
+cause_of() { "$@" >/dev/null 2>"$t/err-c" && return 1; sed -n 's/.*failed \[cause=\([a-z_]*\)\].*/\1/p' "$t/err-c" | head -n 1; }
+[ "$(cause_of "$lease" dotfiles)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles claim x-1)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles hb t-fake --lease forged)" = usage ] || exit 1
+[ "$(cause_of "$lease" dotfiles recover t-fake)" = no_session_file ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+[ "$(cause_of "$lease" dotfiles claim t-other --as test)" = session_busy ] || exit 1
+[ "$(cause_of "$lease" dotfiles handoff-accept h-test --as test)" = session_busy ] || exit 1
+[ "$(cause_of "$lease" dotfiles recover t-other)" = no_session_file ] || exit 1
+out=$("$lease" dotfiles release t-fake)
+# A story or an epic is refused here, before the board, with the remedy:
+# only task and bug rows are claimable (kb dotfiles t-10502c21).
+calls_before=$(wc -l <"$t/calls" | tr -d ' ')
+for call in 'claim s-30067fed --as test' 'hb s-1' 'checkpoint s-1 --as test' 'handoff-create s-1 --as test' 'release s-1' 'recover s-1'; do
+  # shellcheck disable=SC2086 # split the fixed argument list on purpose
+  [ "$(cause_of "$lease" dotfiles $call)" = usage ] || exit 1
+  grep -qF 'is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board dotfiles s adv' "$t/err-c" || exit 1
+done
+for call in 'claim e-1 --as test' 'release e-1'; do
+  # shellcheck disable=SC2086 # split the fixed argument list on purpose
+  [ "$(cause_of "$lease" dotfiles $call)" = usage ] || exit 1
+  grep -qF 'e-1 is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks' "$t/err-c" || exit 1
+  if grep -qF 's adv' "$t/err-c"; then exit 1; fi
+done
+[ "$(wc -l <"$t/calls" | tr -d ' ')" = "$calls_before" ] || exit 1
+# A handoff id is no task id, and a task or story id is no handoff id.
+[ "$(cause_of "$lease" dotfiles claim h-test --as test)" = usage ] || exit 1
+grep -qF 'invalid task id h-test: claim takes a t- task or bug id' "$t/err-c" || exit 1
+[ "$(cause_of "$lease" dotfiles handoff-accept s-1 --as test)" = usage ] || exit 1
+grep -qF 'invalid handoff id s-1: handoff-accept takes an h- handoff id' "$t/err-c" || exit 1
+printf 't-active\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
+[ "$(cause_of "$lease" dotfiles recover t-active)" = claim_active ] || exit 1
+printf 't-boardfail\n12345678-1234-1234-1234-123456789012\n' >"$session"; chmod 600 "$session"
+[ "$(cause_of "$lease" dotfiles recover t-boardfail)" = transport ] || exit 1
+rm -f "$session"
+# A damaged record with the token on its first line is never quoted.
+printf '12345678-1234-1234-1234-123456789012\nt-fake\n' >"$session"; chmod 600 "$session"
+if "$lease" dotfiles hb t-fake >"$t/out-c" 2>"$t/err-c"; then exit 1; fi
+grep -qF '[cause=no_session_file]: malformed session record for t-fake' "$t/err-c" || exit 1
+if grep -qF 12345678 "$t/out-c" "$t/err-c"; then exit 1; fi
+rm -f "$session"
+# A malformed record names a path that works: recover refuses it, mv frees it.
+printf 't-fake\n' >"$session"; chmod 600 "$session"
+if "$lease" dotfiles hb t-fake >/dev/null 2>"$t/err-c"; then exit 1; fi
+grep -qF '[cause=no_session_file]: malformed session record for t-fake' "$t/err-c" || exit 1
+if "$lease" dotfiles recover t-fake >/dev/null 2>&1; then exit 1; fi
+aside=$(sed -n "s/.*move it aside with \(mv '[^']*' '[^']*'\).*/\1/p" "$t/err-c")
+[ -n "$aside" ] || exit 1
+eval "$aside"
+[ ! -e "$session" ] || exit 1
+out=$("$lease" dotfiles claim t-fake --as test)
+out=$("$lease" dotfiles release t-fake)
+# A granted lease that cannot be stored is released again: no orphaned lease.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-race --as test >"$t/out-race" 2>"$t/err-race"; then exit 1; fi
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-race --lease 12345678-1234-1234-1234-123456789012' ] || exit 1
+grep -qF 'released the board lease on t-race again, nothing is held' "$t/err-race" || exit 1
+[ "$(cat "$session")" = other ] || exit 1
+rm -f "$session"
+# A failure before the link (no new file in the session directory) also gives the lease back.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-nowrite --as test >"$t/out-nw" 2>"$t/err-nw"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-*
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles release t-nowrite --lease 12345678-1234-1234-1234-123456789012' ] || exit 1
+grep -qF 'released the board lease on t-nowrite again, nothing is held' "$t/err-nw" || exit 1
+[ ! -e "$session" ] || exit 1
+fmode0() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+# A failed give-back keeps a private record the lane can still release with.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-relfail --as test >"$t/out-rf" 2>"$t/err-rf"; then exit 1; fi
+rec=$(ls "$(dirname "$session")"/unreleased-t-relfail.* 2>/dev/null)
+[ -n "$rec" ] && [ "$(fmode0 "$rec")" = 600 ] || exit 1
+[ "$(sed -n '1p' "$rec")" = t-relfail ] && [ "$(sed -n '2p' "$rec")" = 12345678-1234-1234-1234-123456789012 ] || exit 1
+grep -qF "lease record is kept at $rec" "$t/err-rf" || exit 1
+[ "$(cat "$session")" = other ] || exit 1
+rm -f "$session"
+mv "$rec" "$session"
+out=$("$lease" dotfiles release t-relfail)
+[ "$out" = '{"taskID":"t-relfail","operation":"release","ok":true}' ] || exit 1
+[ ! -e "$session" ] || exit 1
+# With the session directory unwritable, the record goes to ~/.kb-session-unreleased.
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-nwrf --as test >"$t/out-nwrf" 2>"$t/err-nwrf"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-*
+rec=$(ls "$HOME/.kb-session-unreleased"/unreleased-t-nwrf.* 2>/dev/null)
+[ -n "$rec" ] && [ "$(fmode0 "$rec")" = 600 ] && [ "$(fmode0 "$HOME/.kb-session-unreleased")" = 700 ] || exit 1
+grep -qF "lease record is kept at $rec" "$t/err-nwrf" || exit 1
+rm -f -- "$rec"
+# No new record possible anywhere: the private grant reply survives, and the
+# printed recovery command releases the lease through the wrapper.
+rm -rf -- "$HOME/.kb-session-unreleased"
+mkdir -p "$t/elsewhere"
+ln -s "$t/elsewhere" "$HOME/.kb-session-unreleased"
+if LEASE_SESSION_PATH="$session" "$lease" dotfiles claim t-norec --as test >"$t/out-nr" 2>"$t/err-nr"; then chmod 700 "$(dirname "$session")"; exit 1; fi
+chmod 700 "$(dirname "$session")"
+rm -f -- "$(dirname "$session")"/.lease-error.* "$(dirname "$session")"/.lease-next.*
+kept=$(sed -n 's/.*The board reply holding the lease is kept at \(.*\) (mode 0600).*/\1/p' "$t/err-nr")
+[ -n "$kept" ] && [ -f "$kept" ] && [ "$(fmode0 "$kept")" = 600 ] || exit 1
+[ -z "$(ls -A "$t/elsewhere")" ] || exit 1
+recovery=$(sed -n 's/.*run: //p' "$t/err-nr")
+out=$(PATH="$t/scripts:$PATH" eval "$recovery")
+[ "$out" = '{"taskID":"t-norec","operation":"release","ok":true}' ] || exit 1
+[ ! -e "$session" ] && [ ! -e "$kept" ] || exit 1
+rm -f -- "$HOME/.kb-session-unreleased"
+if grep -qF 12345678-1234 "$t/out-q" "$t/err-q" "$t/out-r" "$t/err-r" "$t/out-race" "$t/err-race" "$t/out-nw" "$t/err-nw" "$t/out-rf" "$t/err-rf" "$t/out-nwrf" "$t/err-nwrf" "$t/out-nr" "$t/err-nr"; then exit 1; fi
 printf '%s\n' 'kb-session-lease: claim, heartbeat, release, accept, handoff, and refusal PASS'
 # Stale-record recover coverage: fresh fake tokens and separate session ids per scenario.
 fmode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }

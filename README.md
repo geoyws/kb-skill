@@ -5,7 +5,12 @@ installation.
 
 ## What is here
 
-- `SKILL.md` documents the public skill surface.
+- `SKILL.md` documents the public skill surface; rarer areas live in
+  `references/*.md`. Its Reading reference (`references/reading.md`) carries the DG-28..DG-30 review-visibility consumer
+  contract: diagnostic task age, original evidence-note provenance and owner
+  reconciliation without a second review. The existing watcher lives in
+  skills-root `kb/kb-watch` (`scripts/kb-watch.py`), not in this package; the
+  `kb watch` CLI remains the separate ledger subscription.
 - `scripts/kb-board` routes board-owned commands. For claim, heartbeat and
   task handoff acceptance it derives caller-side repository identity and prevents
   remote-cwd capture; for checkpoint, handoff creation and sitrep posting it
@@ -46,10 +51,29 @@ The installed package expects either `KB_HOSTS_TABLE` or an adjacent
 3. SSH target
 4. expected remote hostname
 5. absolute KB executable path
+6. optional login policy: `ssh` or `own` (absent means `ssh`)
+
+Five-field and explicit `ssh` rows retain existing SSH argv and ignore
+`KB_SSH_LOGIN`. For `own` rows, `kb-board` and `kb-group` use nonempty
+`KB_SSH_LOGIN` as `ssh -l LOGIN -- TARGET`; otherwise they query
+`ssh -G TARGET` for the configured user. Root or a missing user is refused
+before command transport (exit 64). On the home host, effective UID 0 is
+refused before the binary runs. An `own` executable under `/root/` or an
+unknown policy is refused at table load. No principal metadata is forwarded:
+the remote kernel UID identifies the login to the compiled application.
+
+`kb-group` uses its registry board route (`KB_GROUP_REGISTRY_PROJECT`,
+default `kanban`) and requires every member's normalized login policy and
+other route fields to match. `kb-host` accepts the shared table format but
+keeps its registry-only transport and command authority; it does not apply
+own-login policy. `kb-board` refuses `broker` before transport. These wrappers
+do not provision accounts, install binaries or activate enforcement. Fake-SSH
+suites test routing only, not real SSH authentication or broker identity.
 
 The parser rejects missing, duplicate, unknown, or malformed board mappings.
-The KB executable path must be absolute. `kb-board` injects the project
-selector for board-owned commands; `kb-host` preserves registry commands
+The KB executable path must be absolute. `kb-board` injects the board
+selector for board-owned commands (the project, or the `--session-board`
+file for those reads); `kb-host` preserves registry commands
 without a board selector. Remote execution uses the board home host identity,
 the SSH target, and the remote hostname check is fail-closed.
 
@@ -71,7 +95,10 @@ and `handoff_accept` items; unrelated item arguments remain unchanged.
 The local file or stdin is read once, rewritten locally, and remote batches
 still use one SSH connection. This identity is distinct from the historical
 `--repo`/`--branch`/`--head`/`--dirty` provenance
-recorded by checkpoint, handoff create and sitrep.
+recorded by checkpoint, handoff create and sitrep. When `kb-board` fills all
+four of those from its own git read and the caller passed none, it appends
+`--git-captured`, which kanban records as `headSource: kb-wrapper`; the flag
+is the wrapper's attestation and is never typed by hand.
 
 ## Workspace adoption and rule transfer
 

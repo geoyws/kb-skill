@@ -5,6 +5,7 @@ audit
 backup
 batch
 board
+broker
 checkpoint
 claim
 cleanup
@@ -23,6 +24,7 @@ link
 mcp
 message
 milestone
+model
 note
 overlap
 plugin
@@ -36,13 +38,17 @@ search-rebuild
 sitrep
 sprint
 stale
+stats
 story
 subscription
 tag
 task
+test
 todo
 transact
+trunk
 watch
+whoami
 worker
 workspace
 worktree

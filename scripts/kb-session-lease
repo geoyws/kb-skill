@@ -3,64 +3,239 @@
 # The session file is the existing kb-session-file contract (task id, token).
 set -euo pipefail
 here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-usage() { echo 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|recover ID [KB OPTIONS...]' >&2; exit 64; }
+# die <cause> <message> [status]: every wrapper failure names a stable cause
+# class (kb dotfiles t-8ccffdeb). Board calls use fail_board below; the
+# classes are usage, session_busy, session_unsafe, no_session_file,
+# persist_failed, claim_active, claim_ended, lease_mismatch, transport and
+# refused. Messages never carry a lease token.
+die() {
+  echo "kb-session-lease: ${op:-call} failed [cause=$1]: $2" >&2
+  exit "${3:-64}"
+}
+usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|recover ID [KB OPTIONS...]'; }
 [[ $# -ge 3 ]] || usage
 board=$1 op=$2 id=$3
 shift 3
 case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|recover) ;; *) usage ;; esac
-case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;; *) echo 'kb-session-lease: invalid task or handoff id' >&2; exit 64 ;; esac
+# Only task and bug rows (both t-) are claimable; the board refuses a story
+# or an epic. Say so here, with the remedy, instead of a bare "invalid id"
+# (kb dotfiles t-10502c21).
+case "$op:$id" in
+  handoff-accept:h-*) ;;
+  claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;;
+  handoff-accept:*) die usage "invalid handoff id $id: handoff-accept takes an h- handoff id" ;;
+  *:s-*) die usage "$id is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
+  *:e-*) die usage "$id is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks" ;;
+  *) die usage "invalid task id $id: $op takes a t- task or bug id" ;;
+esac
 for arg in "$@"; do
-  case "$arg" in --lease|--lease=*) echo 'kb-session-lease: lease comes from the private session file' >&2; exit 64 ;; esac
+  case "$arg" in --lease|--lease=*) die usage 'lease comes from the private session file' ;; esac
 done
+# The wrapper always prints its own JSON receipt and adds --json itself where
+# it parses the reply (claim, handoff accept, checkpoint). kb refuses a flag
+# given twice ("--json (true, true) given more than once"), so a caller's own
+# --json used to fail every claim before the board was asked (kb dotfiles
+# t-75164807). Drop it here, once, for every operation.
+args=()
+for arg in "$@"; do
+  case "$arg" in --json|--json=*) ;; *) args+=("$arg") ;; esac
+done
+set -- ${args[@]+"${args[@]}"}
 session=$("$here/kb-session-file") || status=$?
-[[ "${status:-0}" = 0 ]] || { echo 'kb-session-lease: a tmux pane or KB_SESSION_ID is required' >&2; exit 64; }
-[[ -n "$session" ]] || exit 64
+[[ "${status:-0}" = 0 ]] || die no_session_file 'a tmux pane or KB_SESSION_ID is required'
+[[ -n "$session" ]] || die no_session_file 'kb-session-file named no session path'
 parent=${session%/*}
-[[ -d "$parent" && ! -L "$parent" ]] || { echo 'kb-session-lease: unsafe session directory' >&2; exit 64; }
+[[ -d "$parent" && ! -L "$parent" ]] || die session_unsafe 'unsafe session directory'
 mode=$(stat -c %a "$parent" 2>/dev/null || stat -f %Lp "$parent")
-[[ "$mode" = 700 ]] || { echo 'kb-session-lease: session directory must be mode 0700' >&2; exit 64; }
+[[ "$mode" = 700 ]] || die session_unsafe 'session directory must be mode 0700'
 if [[ -e "$session" || -L "$session" ]]; then
-  [[ -f "$session" && ! -L "$session" ]] || { echo 'kb-session-lease: unsafe session file' >&2; exit 64; }
+  [[ -f "$session" && ! -L "$session" ]] || die session_unsafe 'unsafe session file'
   mode=$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")
-  [[ "$mode" = 600 ]] || { echo 'kb-session-lease: session file must be mode 0600' >&2; exit 64; }
+  [[ "$mode" = 600 ]] || die session_unsafe 'session file must be mode 0600'
 fi
-private=$(mktemp "$parent/.lease-reply.XXXXXXXX")
-error=$(mktemp "$parent/.lease-error.XXXXXXXX")
+private=$(mktemp "$parent/.lease-reply.XXXXXXXX") || die persist_failed 'cannot create a private reply file in the session directory; nothing was sent to the board'
+error=$(mktemp "$parent/.lease-error.XXXXXXXX") || { rm -f -- "$private"; die persist_failed 'cannot create a private reply file in the session directory; nothing was sent to the board'; }
 next=''
 lockdir=''
 trap 'rm -f -- "$private" "$error" "$next"; if [[ -n "${lockdir:-}" ]]; then rmdir "$lockdir" 2>/dev/null || true; fi' EXIT
 umask 077
-if [[ "$op" = claim || "$op" = handoff-accept ]]; then
-  [[ ! -e "$session" ]] || { echo 'kb-session-lease: session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)' >&2; exit 64; }
-  if [[ "$op" = claim ]]; then
-    cmd=(claim "$id" "$@" --json)
-  else
-    cmd=(h acc "$id" "$@" --json)
+token=''
+# board_reason: the board's one-line refusal, readable and token-free. A reply
+# carrying a lease token is never quoted; the session's own token and anything
+# shaped like a UUID are masked.
+board_reason() {
+  local msg=''
+  if grep -qF leaseToken "$private" "$error" 2>/dev/null; then
+    printf 'details withheld: the reply carries a lease token'
+    return
   fi
-  if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
-    echo 'kb-session-lease: claim or handoff acceptance failed (details withheld to protect token)' >&2
-    exit 1
+  msg=$(jq -r 'if type == "object" then (.error // empty) else empty end' "$private" 2>/dev/null | head -n 1) || msg=''
+  [[ -n "$msg" ]] || msg=$(sed -n 's/^Error: //p' "$error" | head -n 1)
+  [[ -n "$msg" ]] || msg=$(grep -v '^[[:space:]]*$' "$error" | head -n 1) || msg=''
+  [[ -n "$msg" ]] || { printf 'no reason given by the board'; return; }
+  if [[ -n "$token" ]]; then
+    msg=${msg//"$token"/<lease>}
   fi
-  if [[ "$op" = claim ]]; then
-    jq -e '.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
-    jq -e '.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
-    task=$(jq -r .taskID "$private")
-    token=$(jq -r .leaseToken "$private")
+  printf '%s' "$msg" \
+    | sed -E 's/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/<redacted>/g' \
+    | cut -c1-600
+}
+# fail_board <what>: report a failed board call with a stable, token-free
+# cause class and the next step, then exit 1 (kb dotfiles t-8ccffdeb):
+#   transport       no board answer: routing (64), hostname mismatch (69),
+#                   ssh (255), or nothing the board would print
+#   claim_ended     the board holds no active lease on the task
+#   lease_mismatch  the board holds a different, live lease on the task
+#   refused         any other board refusal
+# board_rc holds the kb-board exit status.
+# board_answered: kb itself refused the call (exit 1 with its JSON `error` or
+# its `Error:` line). Any other failure is the route's, not the board's.
+board_answered() {
+  [[ "$board_rc" = 1 ]] || return 1
+  jq -e 'type == "object" and (.error | type == "string")' "$private" >/dev/null 2>&1 \
+    || grep -q '^Error: ' "$error" 2>/dev/null
+}
+board_rc=0
+fail_board() {
+  # Not `next`: the EXIT trap removes "$next", and a local of that name would
+  # be what the trap sees.
+  local reason cause hint lookup
+  reason=$(board_reason)
+  if [[ "$id" = h-* ]]; then
+    lookup="kb-board $board h ls --all --json (find $id: its status and taskID; for a task, then kb-board $board t cat <taskID>; a session handoff has none)"
   else
-    if jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
-      printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
-      exit 0
+    lookup="kb-board $board t cat $id"
+  fi
+  local answered=''
+  board_answered && answered=1
+  if [[ -z "$answered" ]] && [[ "$board_rc" = 64 || "$board_rc" = 69 || "$board_rc" = 70 || "$board_rc" = 126 || "$board_rc" = 127 ]]; then
+    # kb-board refuses routing (64), a hostname mismatch (69) and failed
+    # remote staging (70) before kb runs; 126/127: kb could not be run.
+    cause=transport
+    hint="the call never reached the board (exit $board_rc): fix the board name, route, remote host or kb install, then retry; the session file is unchanged"
+  elif [[ -z "$answered" ]]; then
+    cause=transport
+    hint="the board's answer was lost (exit $board_rc), so the call may or may not have taken effect; check with $lookup before retrying; the session file is unchanged"
+    if [[ "$op" = claim || "$op" = handoff-accept ]]; then
+      hint="$hint, and if the board now shows your claim, this session holds no token for it: it expires on its own"
     fi
-    jq -e '.claim.taskID | strings | startswith("t-") or startswith("e-") or startswith("s-")' "$private" >/dev/null || exit 70
-    jq -e '.claim.leaseToken | strings | length > 0' "$private" >/dev/null || exit 70
-    task=$(jq -r .claim.taskID "$private")
-    token=$(jq -r .claim.leaseToken "$private")
+  elif [[ "$reason" == *'has no active lease'* ]]; then
+    cause=claim_ended
+    hint="the board claim has ended; clear the session record with kb-session-lease $board recover $id, then claim again if the work continues"
+  elif [[ "$reason" == *'is not the lease you presented'* ]]; then
+    cause=lease_mismatch
+    hint="another lease now holds $id; do not write to it; read its holder with $lookup, and run kb-session-lease $board recover $id once that claim settles"
+  else
+    cause=refused
+    hint="the board refused this call for the reason above; fix that and retry, checking with $lookup if unsure; the session file is unchanged"
   fi
-  [[ "$token" != *$'\n'* && "$task" != *$'\n'* ]] || exit 70
-  next=$(mktemp "$parent/.lease-next.XXXXXXXX")
-  printf '%s\n%s\n' "$task" "$token" >"$next"
-  chmod 600 "$next"
-  ln "$next" "$session" || { echo 'kb-session-lease: cannot persist lease (existing or unsafe session file)' >&2; exit 70; }
+  echo "kb-session-lease: $1 failed [cause=$cause]: $reason; next: $hint" >&2
+  exit 1
+}
+# fail_local <next>: no usable session record for this operation.
+fail_local() {
+  echo "kb-session-lease: lease operation failed [cause=no_session_file]: $1" >&2
+  exit 64
+}
+if [[ "$op" = claim || "$op" = handoff-accept ]]; then
+  [[ ! -e "$session" ]] || die session_busy 'session already has a lease; settle it before claiming another (if the board claim has ended, clear the stale record with kb-session-lease BOARD recover <task-id-in-session-file>)'
+  if [[ "$op" = claim ]]; then
+    cmd=(claim "$id" "$@")
+  else
+    cmd=(h acc "$id" "$@")
+  fi
+  # Record the lease under this session, so the session-end form
+  # `release --session "$KB_SESSION_ID"` frees it. An explicit --session wins.
+  explicit_session=''
+  for arg in "$@"; do
+    case "$arg" in --session|--session=*) explicit_session=1 ;; esac
+  done
+  injected=''
+  if [[ -n "${KB_SESSION_ID:-}" && -z "$explicit_session" ]]; then
+    injected=1
+  fi
+  if [[ -n "$injected" ]]; then
+    ok=''
+    "$here/kb-board" "$board" "${cmd[@]}" --session "$KB_SESSION_ID" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
+    # A LINKED scope binding made without a session matches only a sessionless
+    # triple; keep that caller working, unreachable by the session-end form.
+    if [[ -z "$ok" ]] && grep -qF 'matches no live binding; the actor holds lane' "$private" "$error" \
+      && grep -qF ', session (none) on that set' "$private" "$error"; then
+      echo 'kb-session-lease: scope binding has no session; leasing without --session, so release --session will not free this lease (rebind with scope bind --session to fix)' >&2
+      board_rc=0
+      "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
+    fi
+  else
+    ok=''
+    "$here/kb-board" "$board" "${cmd[@]}" --json >"$private" 2>"$error" && ok=1 || board_rc=$?
+  fi
+  if [[ -z "$ok" ]]; then
+    fail_board 'claim or handoff acceptance'
+  fi
+  if [[ "$op" = handoff-accept ]] \
+    && jq -e --arg id "$id" '.claim == null and .handoff.id == $id and .handoff.taskID == null' "$private" >/dev/null; then
+    printf '{"handoffID":"%s","leaseStored":false}\n' "$id"
+    exit 0
+  fi
+  # From here the board may hold a lease for this lane. Every failure goes
+  # through give_back, which releases it with the granted token, so no lane
+  # holds a board lease it cannot heartbeat, checkpoint or release.
+  if [[ "$op" = claim ]]; then
+    task=$(jq -r '.taskID // empty | strings' "$private" 2>/dev/null) || task=''
+    token=$(jq -r '.leaseToken // empty | strings' "$private" 2>/dev/null) || token=''
+    release_id=$id
+  else
+    task=$(jq -r '.claim.taskID // empty | strings' "$private" 2>/dev/null) || task=''
+    token=$(jq -r '.claim.leaseToken // empty | strings' "$private" 2>/dev/null) || token=''
+    release_id=''
+  fi
+  # keep_record <task>: when the give-back release fails, keep the granted
+  # lease as a private 0600 record in the session directory, else in
+  # ~/.kb-session-unreleased (0700), so the lane can still release it.
+  keep_record() {
+    local dir rec
+    for dir in "$parent" "$HOME/.kb-session-unreleased"; do
+      if [[ "$dir" != "$parent" ]]; then
+        mkdir -p -m 700 "$dir" 2>/dev/null || continue
+        [[ -d "$dir" && ! -L "$dir" ]] || continue
+        chmod 700 "$dir" 2>/dev/null || continue
+      fi
+      rec=$(mktemp "$dir/unreleased-$1.XXXXXXXX" 2>/dev/null) || continue
+      if printf '%s\n%s\n' "$1" "$token" >"$rec" 2>/dev/null && chmod 600 "$rec" 2>/dev/null; then
+        printf '%s' "$rec"
+        return 0
+      fi
+      rm -f -- "$rec"
+    done
+    return 1
+  }
+  give_back() {
+    local target=$release_id rec what="$op failed [cause=persist_failed]: $1"
+    if [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]]; then target=$task; fi
+    if [[ -z "$token" || "$token" == *$'\n'* || -z "$target" ]]; then
+      echo "kb-session-lease: $what; no usable lease token or task to give back, so any board lease expires on its own" >&2
+    elif "$here/kb-board" "$board" release "$target" --lease "$token" >/dev/null 2>&1; then
+      echo "kb-session-lease: $what; released the board lease on $target again, nothing is held" >&2
+    elif rec=$(keep_record "$target"); then
+      echo "kb-session-lease: $what; the board release of $target failed too. The lease record is kept at $rec (mode 0600). Once this session holds no other lease, run: mv '$rec' '$session' && kb-session-lease $board release $target" >&2
+    else
+      # Last durable copy of the token: keep the private 0600 reply instead of
+      # letting the EXIT trap delete it.
+      local kept=$private jqpath=.leaseToken
+      [[ "$op" = claim ]] || jqpath=.claim.leaseToken
+      private=''
+      echo "kb-session-lease: $what; the board release of $target failed and no new record could be written. The board reply holding the lease is kept at $kept (mode 0600). Once there is space and this session holds no other lease, run: (umask 077; { echo $target; jq -r $jqpath '$kept'; } >'$session') && rm -f '$kept' && kb-session-lease $board release $target" >&2
+    fi
+    exit 70
+  }
+  [[ -n "$token" && "$token" != *$'\n'* ]] || give_back 'board reply carries no single-line lease token'
+  [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]] || give_back 'board reply names no task'
+  if ! { next=$(mktemp "$parent/.lease-next.XXXXXXXX") \
+    && printf '%s\n%s\n' "$task" "$token" >"$next" \
+    && chmod 600 "$next" \
+    && ln "$next" "$session"; } 2>/dev/null; then
+    give_back 'cannot persist lease (existing or unsafe session file, or an unwritable session directory)'
+  fi
   rm -f -- "$next"
   next=''
   # Construct a minimal receipt, never forward raw JSON or print the token.
@@ -69,38 +244,38 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
 fi
 if [[ "$op" = recover ]]; then
   if [[ ! -e "$session" && ! -L "$session" ]]; then
-    echo 'kb-session-lease: no session record to recover; claim a new lease with kb-session-lease BOARD claim TASK first' >&2
-    exit 64
+    die no_session_file 'no session record to recover; claim a new lease with kb-session-lease BOARD claim TASK first'
   fi
   if ! mkdir "$session.lock" 2>/dev/null; then
-    echo 'kb-session-lease: session lock held; retry shortly' >&2
-    exit 64
+    die session_busy 'session lock held; retry shortly'
   fi
   # Own the lock only after mkdir succeeds, so a loser's EXIT trap never removes the winner's lock.
   lockdir="$session.lock"
-  [[ -f "$session" && ! -L "$session" ]] || { echo 'kb-session-lease: unsafe session file' >&2; exit 64; }
+  [[ -f "$session" && ! -L "$session" ]] || die session_unsafe 'unsafe session file'
   mode=$(stat -c %a "$session" 2>/dev/null || stat -f %Lp "$session")
-  [[ "$mode" = 600 ]] || { echo 'kb-session-lease: session file must be mode 0600' >&2; exit 64; }
+  [[ "$mode" = 600 ]] || die session_unsafe 'session file must be mode 0600'
   ino=$(stat -c %i "$session" 2>/dev/null || stat -f %i "$session")
-  IFS= read -r task <"$session"
+  task=''
+  IFS= read -r task <"$session" || true
   if [[ "$task" != "$id" ]]; then
-    echo 'kb-session-lease: session record is for a different task; recover the task named in the session file' >&2
-    exit 64
+    die no_session_file 'session record is for a different task; recover the task named in the session file'
   fi
   token=$(sed -n '2p' "$session")
   if [[ -z "$token" || "$token" == *$'\n'* || -n "$(sed -n '3p' "$session")" ]]; then
-    echo 'kb-session-lease: malformed session record; refusing recover' >&2
-    exit 64
+    die no_session_file 'malformed session record; refusing recover'
   fi
   # --limit 1 caps notes/checkpoints/handoffs: a long settled row would otherwise refuse (ADR-037).
-  if ! "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error"; then
-    echo 'kb-session-lease: board read failed; session record retained, retry recover shortly' >&2
-    exit 1
+  board_rc=0
+  "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error" || board_rc=$?
+  if [[ "$board_rc" != 0 ]]; then
+    if board_answered; then
+      die refused "board read refused: $(board_reason); session record retained" 1
+    fi
+    die transport "board read failed (exit $board_rc); session record retained, retry recover shortly" 1
   fi
-  bid=$(jq -r .id "$private" 2>/dev/null) || { echo 'kb-session-lease: board read failed; session record retained, retry recover shortly' >&2; exit 1; }
+  bid=$(jq -r .id "$private" 2>/dev/null) || die transport 'board read failed; session record retained, retry recover shortly' 1
   if [[ "$bid" != "$id" ]]; then
-    echo 'kb-session-lease: board row is for a different task (wrong board or task); session record retained' >&2
-    exit 64
+    die refused 'board row is for a different task (wrong board or task); session record retained'
   fi
   if jq -e '.claim == null' "$private" >/dev/null 2>&1; then
     reason=settled
@@ -109,42 +284,40 @@ if [[ "$op" = recover ]]; then
     if jq -e --argjson now "$now" '.claim.expiresAt <= $now' "$private" >/dev/null 2>&1; then
       reason=expired
     else
-      echo 'kb-session-lease: active claim held; it must be settled by its holder (hb/checkpoint/release) or allowed to expire before recover' >&2
-      exit 64
+      die claim_active 'active claim held; it must be settled by its holder (hb/checkpoint/release) or allowed to expire before recover'
     fi
   else
-    echo 'kb-session-lease: ambiguous claim state (expiresAt missing or non-numeric); session record retained' >&2
-    exit 64
+    die refused 'ambiguous claim state (expiresAt missing or non-numeric); session record retained'
   fi
   ino2=$(stat -c %i "$session" 2>/dev/null || stat -f %i "$session")
   if [[ "$ino2" != "$ino" ]]; then
-    echo 'kb-session-lease: session record changed during recover (race lost); retry recover' >&2
-    exit 64
+    die session_busy 'session record changed during recover (race lost); retry recover'
   fi
   stale="$session.stale-$(date +%Y%m%d%H%M%S)-$$"
   if [[ -e "$stale" || -L "$stale" ]]; then
-    echo 'kb-session-lease: preserved path already exists; refusing recover' >&2
-    exit 64
+    die session_busy 'preserved path already exists; refusing recover'
   fi
   mv -- "$session" "$stale"
   printf '{"taskID":"%s","recovered":true,"reason":"%s","preserved":"%s"}\n' "$id" "$reason" "$stale"
   exit 0
 fi
-[[ -f "$session" ]] || { echo 'kb-session-lease: no session lease' >&2; exit 64; }
-IFS= read -r task <"$session"
-[[ "$task" = "$id" ]] || { echo 'kb-session-lease: task does not match session lease' >&2; exit 64; }
+[[ -f "$session" ]] || fail_local "no session lease for $id in this session; claim it first with kb-session-lease $board claim $id"
+task=''
+IFS= read -r task <"$session" || true
+malformed="malformed session record for $id (recover refuses it too); move it aside with mv '$session' '$session.malformed-$(date +%Y%m%d%H%M%S)', then read the row with kb-board $board t cat $id: any board lease it held expires on its own"
+# Quote the record's first line only once it has a task id's shape: a
+# damaged record may hold the bearer token there.
+[[ "$task" =~ ^[tes]-[0-9a-z]{1,32}$ ]] || fail_local "$malformed"
+[[ "$task" = "$id" ]] || fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
 token=$(sed -n '2p' "$session")
-[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || exit 64
+[[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || fail_local "$malformed"
 case "$op" in
   hb) cmd=(hb "$id" --lease "$token" "$@") ;;
   checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
   release) cmd=(release "$id" --lease "$token" "$@") ;;
   handoff-create) cmd=(h new "$id" --lease "$token" "$@") ;;
 esac
-if ! "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error"; then
-  echo 'kb-session-lease: lease operation failed (details withheld to protect token)' >&2
-  exit 1
-fi
+"$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error" || { board_rc=$?; fail_board "lease operation ($op)"; }
 if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
   rm -f -- "$session"
 fi

@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+# A harness exports KB_MODEL; every case that needs one sets it itself.
+unset KB_MODEL
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
@@ -277,6 +279,13 @@ printf '%s\0' "$@" >"${FAKE_SSH_LOG:?}"
 if [[ -n "${FAKE_SSH_COUNT_FILE:-}" ]]; then
   printf 'ssh\n' >>"$FAKE_SSH_COUNT_FILE"
 fi
+if [[ "${1-}" = -G ]]; then
+  [[ -z "${FAKE_SSH_QUERY_LOG:-}" ]] || printf '%s\0' "$@" >>"$FAKE_SSH_QUERY_LOG"
+  [[ -z "${FAKE_SSH_USER:-}" ]] || printf 'user %s\n' "$FAKE_SSH_USER"
+  exit 0
+fi
+[[ -z "${FAKE_SSH_COMMAND_LOG:-}" ]] || printf '%s\0' "$@" >"$FAKE_SSH_COMMAND_LOG"
+[[ "${1-}" != -l ]] || shift 2
 case "${FAKE_SSH_MODE:-execute}" in
   execute)
     if [[ "${1-}" = -- ]]; then
@@ -289,7 +298,9 @@ case "${FAKE_SSH_MODE:-execute}" in
     remote_hostname=${FAKE_REMOTE_HOSTNAME_VALUE:-${FAKE_HOSTNAME_VALUE:-}}
     remote_hostname_bin=${FAKE_REMOTE_HOSTNAME_BIN:-/bin/hostname}
     remote_cmd=${remote_cmd//\/bin\/hostname/$remote_hostname_bin}
-    FAKE_HOSTNAME_VALUE="$remote_hostname" PATH="$remote_path" /bin/sh -c "$remote_cmd"
+    # Real ssh carries no environment: what the board host sees of KB_MODEL
+    # and KB_SESSION_ID is only what the wrapper put on the command line.
+    env -u KB_MODEL -u KB_SESSION_ID FAKE_HOSTNAME_VALUE="$remote_hostname" PATH="$remote_path" /bin/sh -c "$remote_cmd"
     ;;
   fail)
     printf 'ssh unexpectedly invoked: %s\n' "$*" >&2
@@ -363,6 +374,26 @@ if [[ -n "${FAKE_KB_CTX_OUT:-}" ]]; then
   else
     printf 'unset' >"$FAKE_KB_CTX_OUT.session"
   fi
+fi
+# What the binary saw as KB_MODEL, for any command (kanban MODELSTATS-10).
+if [[ -n "${FAKE_KB_MODEL_OUT:-}" ]]; then
+  if [[ -n "${KB_MODEL+set}" ]]; then
+    printf 'set:%s' "$KB_MODEL" >"$FAKE_KB_MODEL_OUT"
+  else
+    printf 'unset' >"$FAKE_KB_MODEL_OUT"
+  fi
+fi
+# DG-31's `--session-board`: what file the binary was handed, and its bytes.
+if [[ -n "${FAKE_KB_SB_OUT:-}" ]]; then
+  prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--session-board" ]]; then
+      cat -- "$arg" >"$FAKE_KB_SB_OUT"
+      printf '%s' "$arg" >"$FAKE_KB_SB_OUT.path"
+      break
+    fi
+    prev=$arg
+  done
 fi
 EOF
 
@@ -479,6 +510,141 @@ copy_public_package() {
   # git command in the fixture dies with "not a git repository".
   rm -rf "$target_root/.git"
 }
+
+
+# Fake SSH establishes argv/preflight behavior only, never principal acceptance.
+test_own_login_policy_and_legacy_transport() (
+  fakebin="$tmp_dir/own/fakebin"
+  setup_fakebin "$fakebin"
+  export PATH="$fakebin:$PATH" KB_SSH_BIN="$fakebin/ssh"
+  export KB_HOSTS_TABLE="$tmp_dir/own/hosts.tsv"
+  export FAKE_SSH_LOG="$tmp_dir/own/ssh.argv" FAKE_KB_LOG="$tmp_dir/own/kb.argv"
+  export FAKE_SSH_QUERY_LOG="$tmp_dir/own/query" FAKE_SSH_COMMAND_LOG="$tmp_dir/own/command"
+  export FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" FAKE_REMOTE_HOSTNAME_VALUE=remote
+  export FAKE_REMOTE_PATH="$PATH" FAKE_SSH_USER=root
+  own_table() { printf 'B\thome-not-here\ttarget\tremote\t%s%s\n' "$fakebin/kb" "$1" >"$KB_HOSTS_TABLE"; }
+  own_refusal() {
+    local expected=$1 output status=0; shift
+    rm -f "$FAKE_SSH_QUERY_LOG" "$FAKE_SSH_COMMAND_LOG" "$FAKE_KB_LOG"
+    output=$("$package_dir/scripts/kb-board" B "$@" 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "$expected" ]] || fail "own refusal: exit $status: $output"
+    assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'own refused command transport'
+    assert_log_clean "$FAKE_KB_LOG" 'own refused binary'
+  }
+  own_table $'\town'
+  unset KB_SSH_LOGIN
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export KB_SSH_LOGIN=''
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export FAKE_SSH_USER=''
+  own_refusal 'kb-board: board B routes as your own login, but ssh -G target named no user; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  export KB_SSH_LOGIN=root
+  own_refusal 'kb-board: board B routes as your own login, but ssh would log in to target as root; set User for target in your ssh config or export KB_SSH_LOGIN' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'explicit login skips config query'
+  export KB_SSH_LOGIN=alice FAKE_SSH_USER=root
+  "$package_dir/scripts/kb-board" B task list "two words ' *" --as alice
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B task list "two words ' *" --as alice
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'override skips root config'
+  export KB_SSH_LOGIN='' FAKE_SSH_USER=bob
+  "$package_dir/scripts/kb-board" B task list
+  assert_argv_file "$FAKE_SSH_QUERY_LOG" -G target
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+  # Both old row spellings ignore an override, without even a config query.
+  own_table ''
+  unset KB_SSH_LOGIN
+  "$package_dir/scripts/kb-board" B task list
+  cp "$FAKE_SSH_COMMAND_LOG" "$tmp_dir/own/legacy-argv"
+
+  export KB_SSH_LOGIN=alice
+  for policy in '' $'\tssh'; do
+    own_table "$policy"
+    rm -f "$FAKE_SSH_QUERY_LOG"
+    "$package_dir/scripts/kb-board" B task list
+    assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+    assert_log_clean "$FAKE_SSH_QUERY_LOG" 'legacy query'
+    cmp -s "$FAKE_SSH_COMMAND_LOG" "$tmp_dir/own/legacy-argv" || fail 'legacy complete SSH argv changed'
+    assert_argv_file "$FAKE_KB_LOG" --project B task list
+  done
+  own_table $'\tself'
+  own_refusal 'kb-board: login must be ssh or own: self' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'invalid policy query'
+  printf 'B\thome-not-here\ttarget\tremote\t/root/.local/bin/kb\town\n' >"$KB_HOSTS_TABLE"
+  own_refusal 'kb-board: board B routes as your own login, so its KB executable must be one every login can run, not under /root: /root/.local/bin/kb' task list
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'root executable query'
+  own_table $'\town'
+  own_refusal "kb-board does not route registry-wide command 'broker'." broker serve
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'broker query'
+  printf 'B\t%s\ttarget\tremote\t%s\town\n' "$(/bin/hostname)" "$fakebin/kb" >"$KB_HOSTS_TABLE"
+  if [[ "$EUID" = 0 ]]; then
+    own_refusal 'kb-board: board B routes as your own login, but this shell is root; run kb-board from your own account' task list
+  else
+    "$package_dir/scripts/kb-board" B task list
+    assert_argv_file "$FAKE_KB_LOG" --project B task list
+  fi
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'local own query'
+  assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'local own command transport'
+  # kb-host consumes own rows without adopting board login policy or authority.
+  own_table $'\town'
+  rm -f "$FAKE_SSH_QUERY_LOG"
+  "$package_dir/scripts/kb-host" home-not-here version
+  assert_argv_prefix "$FAKE_SSH_COMMAND_LOG" -- target
+  assert_log_clean "$FAKE_SSH_QUERY_LOG" 'host parser-only compatibility'
+  for host_command in broker whoami; do
+    rm -f "$FAKE_SSH_COMMAND_LOG" "$FAKE_KB_LOG"
+    status=0
+    output=$("$package_dir/scripts/kb-host" home-not-here "$host_command" 2>&1) || status=$?
+    [[ "$status" = 64 && "$output" = "kb-host does not route unknown command '$host_command'." ]] || fail 'host command authority broadened'
+    assert_log_clean "$FAKE_SSH_COMMAND_LOG" 'host global command refusal'
+    assert_log_clean "$FAKE_SSH_QUERY_LOG" 'host global command query refusal'
+    assert_log_clean "$FAKE_KB_LOG" 'host global command executable refusal'
+  done
+)
+
+test_own_login_all_board_transfer_branches() (
+  fakebin="$tmp_dir/own-transfer/fakebin"
+  setup_fakebin "$fakebin"
+  export PATH="$fakebin:$PATH" KB_SSH_BIN="$fakebin/ssh" KB_SSH_LOGIN=alice
+  export KB_HOSTS_TABLE="$tmp_dir/own-transfer/hosts.tsv"
+  export FAKE_SSH_LOG="$tmp_dir/own-transfer/ssh" FAKE_KB_LOG="$tmp_dir/own-transfer/kb"
+  export FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" FAKE_REMOTE_HOSTNAME_VALUE=remote
+  export FAKE_REMOTE_PATH="$PATH"
+  export TMPDIR="$tmp_dir/own-transfer/staging"
+  mkdir -p "$TMPDIR"
+  printf 'B\telsewhere\ttarget\tremote\t%s\town\n' "$fakebin/kb" >"$KB_HOSTS_TABLE"
+  printf 'body with quotes '\'' and newline\n' >"$tmp_dir/own-transfer/body"
+  export FAKE_KB_BODY_OUT="$tmp_dir/own-transfer/body-seen"
+  "$package_dir/scripts/kb-board" B task add title --body-file "$tmp_dir/own-transfer/body"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_body_transferred "$FAKE_KB_LOG" "$FAKE_KB_BODY_OUT" "$tmp_dir/own-transfer/body"
+  [[ ! -e "$(cat "$FAKE_KB_BODY_OUT.path")" ]] || fail 'own remote body leaked'
+  unset FAKE_KB_BODY_OUT
+  printf '[]' >"$tmp_dir/own-transfer/items"
+  export FAKE_KB_ITEMS_OUT="$tmp_dir/own-transfer/items-seen"
+  # Non-transact items-file branch forwards stdin without staging.
+  "$package_dir/scripts/kb-board" B task list --items-file "$tmp_dir/own-transfer/items"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B task list --items-file /dev/stdin
+  cmp -s "$FAKE_KB_ITEMS_OUT" "$tmp_dir/own-transfer/items" || fail 'own unstaged stdin changed'
+  "$package_dir/scripts/kb-board" B transact --items-file "$tmp_dir/own-transfer/items"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B transact --items-file /dev/stdin
+  cmp -s "$FAKE_KB_ITEMS_OUT" "$tmp_dir/own-transfer/items" || fail 'own staged stdin changed'
+  "$package_dir/scripts/kb-board" B transact --items '[]'
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  assert_argv_file "$FAKE_KB_LOG" --project B transact --items '[]'
+  printf '{}' >"$tmp_dir/own-transfer/context"
+  export FAKE_KB_CTX_OUT="$tmp_dir/own-transfer/context-seen" KB_SESSION_ID='own session'
+  "$package_dir/scripts/kb-board" B task list --session-context "$tmp_dir/own-transfer/context"
+  assert_argv_prefix "$FAKE_SSH_LOG" -l alice -- target
+  cmp -s "$FAKE_KB_CTX_OUT" "$tmp_dir/own-transfer/context" || fail 'own context bytes changed'
+  [[ "$(cat "$FAKE_KB_CTX_OUT.session")" = 'set:own session' ]] || fail 'own session id changed'
+  [[ ! -e "$(cat "$FAKE_KB_CTX_OUT.path")" ]] || fail 'own remote context leaked'
+  [[ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]] || fail 'own transfer staging leaked'
+)
 
 test_local_exec_injects_project_and_preserves_argv() {
   local fakebin="$tmp_dir/local/fakebin"
@@ -763,6 +929,103 @@ test_board_session_context_and_session_id_are_transferred() {
   assert_log_clean "$kb_log.empty" 'empty session context'
 }
 
+# KB_MODEL is the harness's declaration of the model it runs, the default
+# author model on every `--as` write (kanban MODELSTATS-10). ssh carries no
+# environment, so kb-board and kb-host cross it to the board-host binary as
+# itself, quoting intact and empty included; an unset one stays unset, so the
+# binary warns and counts `unknown`. It never becomes a `--model` flag, which
+# on claim and handoff accept is also the MODEL allow-list declaration.
+test_kb_model_crosses_to_the_board_host() {
+  local dir="$tmp_dir/kbmodel"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id remote_host table local_table want
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  # The remote PATH holds only the fakebin, as on a minimal board host: the
+  # crossing must not depend on finding `env` there.
+  run_model() {
+    local wrapper=$1 seen=$2
+    shift 2
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin" \
+    FAKE_SSH_LOG="$dir/ssh.argv" \
+    FAKE_KB_LOG="$dir/kb.argv" \
+    FAKE_KB_MODEL_OUT="$seen" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/$wrapper" "$@"
+  }
+
+  want="kimi-k3 'x' \$(y)"
+  KB_MODEL="$want" run_model kb-board "$dir/board-set" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-set")" == "set:$want" ]] || fail "kb-board: KB_MODEL crossed as $(cat "$dir/board-set")"
+  assert_argv_file "$dir/kb.argv" --project "$board_id" note t-1 progress --as a
+  KB_MODEL= run_model kb-board "$dir/board-empty" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-empty")" == "set:" ]] || fail "kb-board: an empty KB_MODEL crossed as $(cat "$dir/board-empty")"
+  run_model kb-board "$dir/board-unset" "$board_id" note t-1 progress --as a
+  [[ "$(cat "$dir/board-unset")" == unset ]] || fail 'kb-board: an unset KB_MODEL arrived set'
+  # Beside a crossing KB_SESSION_ID, both arrive.
+  KB_SESSION_ID=s-m KB_MODEL=kimi-k3 FAKE_KB_CTX_OUT="$dir/board-both" \
+    run_model kb-board "$dir/board-both.model" "$board_id" task show t-1
+  [[ "$(cat "$dir/board-both.model")" == set:kimi-k3 ]] || fail 'kb-board: KB_MODEL lost beside KB_SESSION_ID'
+  [[ "$(cat "$dir/board-both.session")" == set:s-m ]] || fail 'kb-board: KB_SESSION_ID lost beside KB_MODEL'
+
+  # kb-host routes by host, so give it its own table row.
+  local host_home
+  host_home=$(make_id hosthome)
+  make_table "$table" "$host_home" "$host_home" "$(make_id target)" "$remote_host" "$fakebin/kb"
+  KB_MODEL="$want" run_model kb-host "$dir/host-set" "$host_home" r ls --json
+  [[ "$(cat "$dir/host-set")" == "set:$want" ]] || fail "kb-host: KB_MODEL crossed as $(cat "$dir/host-set")"
+  assert_argv_file "$dir/kb.argv" r ls --json
+  run_model kb-host "$dir/host-unset" "$host_home" r ls --json
+  [[ "$(cat "$dir/host-unset")" == unset ]] || fail 'kb-host: an unset KB_MODEL arrived set'
+
+  # At the boundary no ssh runs: the binary inherits the caller's value.
+  local_table="$dir/local.tsv"
+  make_table "$local_table" "$board_id" "$(/bin/hostname)" "$(make_id target)" "$(/bin/hostname)" "$fakebin/kb"
+  FAKE_SSH_LOG="$dir/ssh-local.argv" FAKE_SSH_MODE=fail FAKE_KB_LOG="$dir/kb-local.argv" \
+    FAKE_KB_MODEL_OUT="$dir/local" KB_MODEL=kimi-k3 KB_HOSTS_TABLE="$local_table" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" note t-1 progress --as a
+  assert_log_clean "$dir/ssh-local.argv" 'KB_MODEL at the boundary'
+  [[ "$(cat "$dir/local")" == set:kimi-k3 ]] || fail 'kb-board: local KB_MODEL not inherited'
+}
+
+# The session-end hook (kanban SESSION-02) runs `release --session ID --as A
+# --force` through kb-board: the verb and every flag reach the board host
+# verbatim, quoting intact.
+test_board_session_end_release_is_forwarded() {
+  local dir="$tmp_dir/sessionend"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  setup_fakebin "$fakebin"
+
+  local board_id remote_host table
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  KB_SESSION_ID="end 1'\$(x)" \
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_CTX_OUT="$dir/seen" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
+  assert_argv_prefix "$kb_log" --project "$board_id" release --session "end 1'\$(x)" --as '@:g/k/driver/executor' --force --json
+}
+
 test_session_context_at_the_boundary_needs_no_transfer() {
   local dir="$tmp_dir/sessionlocal"
   local fakebin="$dir/fakebin"
@@ -781,6 +1044,121 @@ test_session_context_at_the_boundary_needs_no_transfer() {
   assert_log_clean "$dir/ssh.argv" 'session context at the boundary'
   assert_argv_file "$dir/kb.argv" --project "$board_id" task show t-1 --session-context "$context"
   [[ "$(cat "$dir/seen.session")" == set:s-local ]] || fail 'local KB_SESSION_ID not inherited'
+}
+
+# kanban done-gate DG-31: `--session-board FILE` crosses like
+# `--session-context`, and the call then carries no `--project`; one file under
+# both flags crosses once, so the board host sees one path for both.
+test_board_session_board_is_transferred_and_sends_no_project() {
+  local dir="$tmp_dir/sessionboard"
+  local fakebin="$dir/fakebin"
+  local ssh_log="$dir/ssh.argv"
+  local kb_log="$dir/kb.argv"
+  setup_fakebin "$fakebin"
+  local board_id remote_host table file
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '{"version":1,"board":"%s","lane":"driver","actor":"r","role":"executor","sessionId":"s-b","operatorIntent":[]}\n' "$board_id" >"$file"
+
+  run_sb() {
+    local seen=$1
+    shift
+    FAKE_HOSTNAME_VALUE=$(make_id current) \
+    FAKE_REMOTE_HOSTNAME_VALUE="$remote_host" \
+    FAKE_REMOTE_HOSTNAME_BIN="$fakebin/hostname" \
+    FAKE_REMOTE_PATH="$fakebin:$PATH" \
+    FAKE_SSH_LOG="$ssh_log" \
+    FAKE_KB_LOG="$kb_log" \
+    FAKE_KB_SB_OUT="$seen" \
+    FAKE_KB_CTX_OUT="$seen.ctx" \
+    KB_HOSTS_TABLE="$table" \
+    PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$@"
+  }
+
+  KB_SESSION_ID=s-b run_sb "$dir/seen1" "$board_id" task list --json --session-board "$file"
+  assert_argv_prefix "$kb_log" task list --json --session-board
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--project'; then fail 'a session-board call still sent --project'; fi
+  cmp -s "$dir/seen1" "$file" || fail 'the session board file did not arrive byte for byte'
+  [[ "$(cat "$dir/seen1.path")" != "$file" ]] || fail 'the remote was handed the caller path'
+  [[ ! -e "$(cat "$dir/seen1.path")" ]] || fail 'the decoded session board file was left behind'
+  [[ "$(cat "$dir/seen1.ctx.session")" == set:s-b ]] || fail 'KB_SESSION_ID did not cross'
+
+  # The same file under both flags: one transfer, one board-host path.
+  KB_SESSION_ID=s-b run_sb "$dir/seen2" "$board_id" task list --session-context "$file" "--session-board=$file"
+  [[ "$(cat "$dir/seen2.path")" == "$(cat "$dir/seen2.ctx.path")" ]] ||
+    fail 'one file under both flags crossed twice'
+  cmp -s "$dir/seen2" "$file" || fail 'shared session file lost'
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--project'; then fail 'a session-board call still sent --project'; fi
+
+  # At the boundary the caller's path is the board host's: no transfer, no --project.
+  local home_host local_table
+  home_host=$(/bin/hostname)
+  local_table="$dir/local-hosts.tsv"
+  make_table "$local_table" "$board_id" "$home_host" "$(make_id target)" "$home_host" "$fakebin/kb"
+  FAKE_SSH_LOG="$dir/ssh-local.argv" FAKE_SSH_MODE=fail FAKE_KB_LOG="$dir/kb-local.argv" \
+    KB_SESSION_ID=s-b KB_HOSTS_TABLE="$local_table" PATH="$fakebin:$PATH" \
+    "$package_dir/scripts/kb-board" "$board_id" task list --session-board "$file"
+  assert_log_clean "$dir/ssh-local.argv" 'session board at the boundary'
+  assert_argv_file "$dir/kb-local.argv" task list --session-board "$file"
+}
+
+test_board_refuses_session_board_whose_file_names_another_board() {
+  local dir="$tmp_dir/sessionboardother"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id table file output
+  board_id=$(make_id board)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '%s\n' '{"version":1,"board":"B"}' >"$file"
+  output=$(FAKE_SSH_MODE=fail FAKE_SSH_LOG="$dir/ssh.argv" FAKE_KB_LOG="$dir/kb.argv" \
+    KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+    run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task list --session-board "$file")
+  [[ "$output" == *"kb-board: --session-board $file names board B, not $board_id; refusing before routing"* ]] ||
+    fail "wrong board refusal: $output"
+  assert_log_clean "$dir/ssh.argv" 'session board for another board'
+  assert_log_clean "$dir/kb.argv" 'session board for another board'
+}
+
+test_board_session_board_refusals_invoke_nothing() {
+  local dir="$tmp_dir/sessionboardbad"
+  local fakebin="$dir/fakebin"
+  setup_fakebin "$fakebin"
+  local board_id table file big malformed boardless output
+  board_id=$(make_id board)
+  table="$dir/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$(make_id remote)" "$fakebin/kb"
+  file="$dir/session.json"
+  printf '{"board":"%s"}\n' "$board_id" >"$file"
+  big="$dir/big.json"
+  head -c 65537 /dev/zero | tr '\0' 'x' >"$big"
+  malformed="$dir/malformed.json"
+  printf '%s\n' '{not json' >"$malformed"
+  boardless="$dir/boardless.json"
+  printf '%s\n' '{"board":7}' >"$boardless"
+  refuse() {
+    local expected=$1
+    shift
+    output=$(FAKE_SSH_MODE=fail FAKE_SSH_LOG="$dir/ssh.argv" FAKE_KB_LOG="$dir/kb.argv" \
+      KB_HOSTS_TABLE="$table" PATH="$fakebin:$PATH" FAKE_HOSTNAME_VALUE=$(make_id current) \
+      run_expect_failure "$package_dir/scripts/kb-board" "$board_id" task list "$@")
+    [[ "$output" == *"$expected"* ]] || fail "expected '$expected', got: $output"
+  }
+  refuse 'kb-board: --session-board requires a path' --session-board
+  refuse 'kb-board: --session-board requires a path' --session-board ''
+  refuse 'kb-board: --session-board requires a path' --session-board=
+  refuse 'kb-board: --session-board given twice' --session-board "$file" --session-board "$file"
+  refuse "kb-board: cannot read --session-board $dir/missing.json" --session-board "$dir/missing.json"
+  refuse "kb-board: --session-board $big is 65537 bytes; a session context is at most 65536" --session-board "$big"
+  refuse "kb-board: --session-board $malformed names no board; refusing before routing" --session-board "$malformed"
+  refuse "kb-board: --session-board $boardless names no board; refusing before routing" --session-board "$boardless"
+  assert_log_clean "$dir/ssh.argv" 'refused session board'
+  assert_log_clean "$dir/kb.argv" 'refused session board'
 }
 
 test_body_file_at_the_boundary_needs_no_transfer() {
@@ -1399,6 +1777,8 @@ test_registry_commands_are_rejected_without_transport() {
     link
     scope
     contrib
+    broker
+    model
   )
 
   local command
@@ -1421,6 +1801,74 @@ test_registry_commands_are_rejected_without_transport() {
   done
 }
 
+# The two classes of top-level kanban commands, with their aliases.
+# test_host_surface_matches_source_allowlist fails on a source command in
+# neither, and test_host_refuses_board_owned_commands_without_transport requires
+# kb-host to give the kb-board remedy for every board-owned one, so a new board
+# command cannot be classified here and still be missing from kb-host. Nothing
+# checks that the classes are disjoint or that a registry entry is allowed by
+# kb-host; test_host_registry_commands_are_allowed_without_transport keeps its
+# own list.
+HOST_REGISTRY_COMMANDS=(
+  version v
+  init
+  workspace w ws
+  dashboard dash
+  doctor
+  audit
+  backup
+  restore
+  rule r
+  schema
+  mcp
+  access
+  plugin
+  worker
+  link
+  scope
+  contrib
+  model
+  broker
+  whoami
+)
+BOARD_OWNED_COMMANDS=(
+  board
+  deploy
+  import
+  tag
+  archive
+  search
+  search-rebuild
+  task t
+  story s
+  handoff h
+  attention att attn
+  claim
+  checkpoint cp
+  heartbeat hb
+  release rel
+  note n
+  context ctx
+  events ev
+  watch
+  sitrep sr
+  subscription
+  todo
+  stale
+  transact
+  sprint
+  batch
+  incident
+  worktree
+  message
+  milestone
+  cleanup
+  overlap
+  trunk
+  test
+  stats
+)
+
 test_host_surface_matches_source_allowlist() {
   local fixture_file="$script_dir/kb-source-commands.txt"
   local source_file=${KB_SOURCE_RUST_FILE:-"$tmp_dir/source-surface/rust/lib.rs"}
@@ -1432,67 +1880,14 @@ test_host_surface_matches_source_allowlist() {
 
   assert_source_surface_matches_fixture "$source_file" "$fixture_file"
 
-  local allowed=(
-    version v
-    init
-    workspace w ws
-    dashboard dash
-    doctor
-    audit
-    backup
-    restore
-    rule r
-    schema
-    mcp
-    access
-    plugin
-    worker
-    link
-    scope
-    contrib
-  )
-  local denied=(
-    board
-    deploy
-    import
-    tag
-    archive
-    search
-    search-rebuild
-    task t
-    story s
-    handoff h
-    attention att attn
-    claim
-    checkpoint cp
-    heartbeat hb
-    release rel
-    note n
-    context ctx
-    events ev
-    watch
-    sitrep sr
-    subscription
-    todo
-    stale
-    transact
-    sprint
-    batch
-    incident
-    worktree
-    message
-    milestone
-    cleanup
-    overlap
-  )
 
   local command
   while IFS= read -r command; do
     [[ -z "$command" ]] && continue
-    if contains_item "$command" "${allowed[@]}"; then
+    if contains_item "$command" "${HOST_REGISTRY_COMMANDS[@]}"; then
       continue
     fi
-    if contains_item "$command" "${denied[@]}"; then
+    if contains_item "$command" "${BOARD_OWNED_COMMANDS[@]}"; then
       continue
     fi
     fail "unexpected top-level command in $source_file: $command"
@@ -1990,6 +2385,11 @@ test_host_registry_commands_are_allowed_without_transport() {
     'link show --board demo --id t-1'
     'scope show --set demo'
     'contrib status --board demo --id t-1'
+    'model list'
+    'model list --json'
+    'model add demo --as tester --json'
+    'model alias demo-alias --for demo --as tester --json'
+    'model unalias demo-alias --as tester --json'
   )
 
   local entry command_arg
@@ -2170,15 +2570,8 @@ test_host_refuses_board_owned_commands_without_transport() {
   table="$tmp_dir/host-board/hosts.tsv"
   make_table "$table" "$host_id" "$home_host" "$ssh_target" "$remote_host" "$kb_exec"
 
-  local -a commands=(
-    deploy import tag archive search search-rebuild
-    task t story s handoff h attention att attn claim checkpoint cp
-    heartbeat hb release rel note n context ctx events ev watch sitrep sr
-    subscription todo stale transact sprint batch incident worktree
-  )
-
   local command
-  for command in "${commands[@]}"; do
+  for command in "${BOARD_OWNED_COMMANDS[@]}"; do
     : >"$ssh_log"
     : >"$kb_log"
     output=$(run_expect_failure env \
@@ -2394,7 +2787,7 @@ test_board_checkpoint_carries_the_callers_git_provenance() {
   assert_argv_prefix "$ssh_log" -- "$ssh_target"
   assert_argv_file "$kb_log" --project "$board_id" checkpoint t-1 \
     --lease tok --as agent --summary s --intent i --next-action n --json \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # The local hop gets the same flags. A detached HEAD is named as such
   # rather than sent as an empty branch, and a clean tree says so.
@@ -2416,7 +2809,7 @@ test_board_checkpoint_carries_the_callers_git_provenance() {
   )
   assert_argv_file "$local_kb_log" --project "$board_id" h new \
     --as agent --summary s --intent i --next-action n \
-    --repo "$top" --branch DETACHED --head "$head" --dirty clean
+    --repo "$top" --branch DETACHED --head "$head" --dirty clean --git-captured
 }
 
 test_board_explicit_provenance_flag_is_kept_not_duplicated() {
@@ -2502,13 +2895,13 @@ test_board_provenance_is_only_for_the_three_provenance_writers() {
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
     "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json
   assert_argv_file "$kb_log" --project "$board_id" sitrep post 'tests still red' --as agent --lane driver-2 --json \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # The short forms are the same command.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
     "$board_id" sr new 'still red' --as agent --lane driver-2
   assert_argv_file "$kb_log" --project "$board_id" sr new 'still red' --as agent --lane driver-2 \
-    --repo "$top" --branch main --head "$head" --dirty '1 file changed'
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
 
   # sitrep list reads; nothing is appended.
   run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
@@ -2546,7 +2939,104 @@ test_board_provenance_repo_path_with_a_space_round_trips() {
     "$board_id" checkpoint t-1 --lease tok --as agent --summary s
 
   assert_argv_file "$kb_log" --project "$board_id" checkpoint t-1 --lease tok --as agent --summary s \
-    --repo "$top" --branch main --head "$head" --dirty '2 files changed'
+    --repo "$top" --branch main --head "$head" --dirty '2 files changed' --git-captured
+}
+
+test_board_adds_git_captured_only_when_it_filled_all_provenance_flags() {
+  local fakebin="$tmp_dir/prov-captured/fakebin"
+  local ssh_log="$tmp_dir/prov-captured/ssh.argv"
+  local kb_log="$tmp_dir/prov-captured/kb.argv"
+  setup_fakebin_with_real_git "$fakebin"
+
+  local board_id remote_host table repo top head
+  board_id=$(make_id board)
+  remote_host=$(make_id remote)
+  table="$tmp_dir/prov-captured/hosts.tsv"
+  make_table "$table" "$board_id" "$(make_id home)" "$(make_id target)" "$remote_host" "$fakebin/kb"
+
+  repo="$tmp_dir/prov-captured/repo"
+  make_scratch_repo "$repo" dirty.txt
+  top=$(git -C "$repo" rev-parse --show-toplevel)
+  head=$(git -C "$repo" rev-parse HEAD)
+
+  # The wrapper filled all four from one git read: it attests that with
+  # --git-captured, once, after the four (done-gate DG-21, `kb-wrapper`).
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --state done --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --state done --summary s \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" handoff create --as agent --summary s
+  assert_argv_file "$kb_log" --project "$board_id" handoff create --as agent --summary s \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" sitrep post 'landed' --as agent --task t-1
+  assert_argv_file "$kb_log" --project "$board_id" sitrep post 'landed' --as agent --task t-1 \
+    --repo "$top" --branch main --head "$head" --dirty '1 file changed' --git-captured
+
+  # A caller-typed head is no git read of the wrapper's: the rest is still
+  # filled, but nothing attests the set.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --head "$head" --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --head "$head" --summary s \
+    --repo "$top" --branch main --dirty '1 file changed'
+
+  # Any one of the four, in either spelling, withholds it the same way.
+  local typed
+  for typed in --repo="$top" --branch=main --dirty=clean; do
+    run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+      "$board_id" cp t-1 --lease tok --as agent "$typed" --summary s
+    if tr '\0' '\n' <"$kb_log" | grep -qx -- '--git-captured'; then
+      fail "--git-captured appended although the caller passed $typed"
+    fi
+    tr '\0' '\n' <"$kb_log" | grep -qx -- '--head' \
+      || fail "the wrapper stopped filling --head when the caller passed $typed"
+  done
+
+  # All four typed by the caller: forwarded as given, nothing added.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --repo /r --branch b --head "$head" --dirty clean
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent \
+    --repo /r --branch b --head "$head" --dirty clean
+
+  # A `git status` that fails is no read of the dirty state: the four are
+  # still filled, but the set is not attested.
+  local broken="$tmp_dir/prov-captured/broken"
+  make_scratch_repo "$broken" dirty.txt
+  printf 'not an index' >"$broken/.git/index"
+  if git -C "$broken" status --porcelain >/dev/null 2>&1; then
+    fail "a corrupt index did not make git status fail"
+  fi
+  run_board_remote_from "$broken" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --summary s
+  if tr '\0' '\n' <"$kb_log" | grep -qx -- '--git-captured'; then
+    fail "--git-captured appended although git status failed"
+  fi
+  tr '\0' '\n' <"$kb_log" | grep -qx -- '--dirty' \
+    || fail "the wrapper stopped filling --dirty when git status failed"
+
+  # Outside a repository there is no git read, so no provenance and no flag.
+  local plain="$tmp_dir/prov-captured/plain"
+  mkdir -p "$plain"
+  if git -C "$plain" rev-parse --show-toplevel >/dev/null 2>&1; then
+    fail "$plain sits inside a git repository; point TMPDIR outside one"
+  fi
+  run_board_remote_from "$plain" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" cp t-1 --lease tok --as agent --summary s
+  assert_argv_file "$kb_log" --project "$board_id" cp t-1 --lease tok --as agent --summary s
+
+  # Verbs that record no provenance never carry it, even from a checkout.
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" h ls --status pending --json
+  assert_argv_file "$kb_log" --project "$board_id" h ls --status pending --json
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" task move t-1 done --as agent
+  assert_argv_file "$kb_log" --project "$board_id" task move t-1 done --as agent
+  run_board_remote_from "$repo" "$fakebin" "$ssh_log" "$kb_log" "$table" "$remote_host" \
+    "$board_id" trunk show --json
+  assert_argv_file "$kb_log" --project "$board_id" trunk show --json
 }
 
 test_denylist_and_hook_behaviour() {
@@ -2674,11 +3164,18 @@ assert_no_bytecode_artifacts() {
 main() {
   local -a tests=(
     test_local_exec_injects_project_and_preserves_argv
+    test_own_login_policy_and_legacy_transport
+    test_own_login_all_board_transfer_branches
     test_remote_exec_uses_ssh_and_preserves_argv
     test_adjacent_hosts_table_is_used
     test_board_body_file_is_transferred_not_forwarded
     test_board_session_context_and_session_id_are_transferred
+    test_kb_model_crosses_to_the_board_host
+    test_board_session_end_release_is_forwarded
     test_session_context_at_the_boundary_needs_no_transfer
+    test_board_session_board_is_transferred_and_sends_no_project
+    test_board_refuses_session_board_whose_file_names_another_board
+    test_board_session_board_refusals_invoke_nothing
     test_host_body_file_is_transferred_for_registry_rules
     test_body_file_at_the_boundary_needs_no_transfer
     test_board_transact_items_ride_one_ssh_on_stdin
@@ -2726,6 +3223,7 @@ main() {
     test_board_outside_a_repository_appends_no_provenance
     test_board_provenance_is_only_for_the_three_provenance_writers
     test_board_provenance_repo_path_with_a_space_round_trips
+    test_board_adds_git_captured_only_when_it_filled_all_provenance_flags
     test_denylist_and_hook_behaviour
     test_content_audit
   )
