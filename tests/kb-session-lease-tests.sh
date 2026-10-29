@@ -83,6 +83,14 @@ case "$2 $3" in
   'hb t-fake'|'release t-fake'|'h new')
     case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*|*' --lease 87654321-4321-4321-4321-210987654321 '*) ;; *) exit 61 ;; esac
     printf '{"ok":true}\n' ;;
+  # kanban IDENT-49's lane form: the reply is the allocation record, and one
+  # task's reply (t-leak) wrongly echoes the lease, which must not be printed.
+  'worktree register')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    case "$4" in
+      t-fake) printf '{"allocationId":"wt-0000000a","task":"t-fake","workerId":null}\n' ;;
+      *) printf '{"allocationId":"wt-0000000b","lease":"12345678-1234-1234-1234-123456789012"}\n' ;;
+    esac ;;
   't cat')
     case "$4" in
       t-settled) printf '{"id":"t-settled","claim":null}\n' ;;
@@ -146,6 +154,21 @@ out=$("$lease" dotfiles handoff-accept h-test --as test)
 [ "$(grep -c '^dotfiles h acc h-test --as test --session lease-test-session --json$' "$t/calls")" = 1 ] || exit 1
 out=$("$lease" dotfiles release t-fake)
 [ ! -e "$session" ] || exit 1
+# The lane form of worktree register: the session's lease, one --json, and
+# the allocation record as the answer.
+out=$("$lease" dotfiles claim t-fake --as test)
+out=$("$lease" dotfiles worktree-register t-fake --host h --path /r/a --json)
+[ "$out" = '{"allocationId":"wt-0000000a","task":"t-fake","workerId":null}' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles worktree register t-fake --lease 12345678-1234-1234-1234-123456789012 --host h --path /r/a --json' ] || exit 1
+[ -f "$session" ] || exit 1
+if "$lease" dotfiles worktree-register t-fake --lease forged >"$t/refusal" 2>&1; then exit 1; fi
+out=$("$lease" dotfiles release t-fake)
+printf 't-leak\n12345678-1234-1234-1234-123456789012\n' >"$session"
+chmod 600 "$session"
+if "$lease" dotfiles worktree-register t-leak --host h >"$t/leak" 2>&1; then exit 1; fi
+! grep -q 12345678 "$t/leak" || exit 1
+grep -qF 'the board reply carried the lease; not printed' "$t/leak" || exit 1
+rm -f "$session"
 # Sessionless scope binding: one sessioned try, one sessionless retry, a warning, and the lease stored.
 n=$(wc -l < "$t/calls" | tr -d ' ')
 out=$("$lease" dotfiles claim t-bound --as test 2>"$t/warn")

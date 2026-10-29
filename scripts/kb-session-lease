@@ -12,12 +12,12 @@ die() {
   echo "kb-session-lease: ${op:-call} failed [cause=$1]: $2" >&2
   exit "${3:-64}"
 }
-usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|recover ID [KB OPTIONS...]'; }
+usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|recover ID [KB OPTIONS...]'; }
 [[ $# -ge 3 ]] || usage
 board=$1 op=$2 id=$3
 shift 3
-case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|recover) ;; *) usage ;; esac
-case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|recover:t-*) ;; *) die usage 'invalid task or handoff id' ;; esac
+case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|recover) ;; *) usage ;; esac
+case "$op:$id" in handoff-accept:h-*|claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|worktree-register:t-*|recover:t-*) ;; *) die usage 'invalid task or handoff id' ;; esac
 for arg in "$@"; do
   case "$arg" in --lease|--lease=*) die usage 'lease comes from the private session file' ;; esac
 done
@@ -306,9 +306,22 @@ case "$op" in
   checkpoint) cmd=(cp "$id" --lease "$token" "$@" --json) ;;
   release) cmd=(release "$id" --lease "$token" "$@") ;;
   handoff-create) cmd=(h new "$id" --lease "$token" "$@") ;;
+  # kanban IDENTITY IDENT-49: the lane registers its own worktree with the
+  # lease of its live claim, which only this wrapper reads.
+  worktree-register) cmd=(worktree register "$id" --lease "$token" "$@" --json) ;;
 esac
 "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error" || { board_rc=$?; fail_board "lease operation ($op)"; }
 if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
   rm -f -- "$session"
+fi
+if [[ "$op" = worktree-register ]]; then
+  # The allocation record is the caller's answer (it needs the allocation
+  # id); kanban never puts the token in it, and this wrapper never prints
+  # a reply that carries one.
+  if grep -qF -- "$token" "$private"; then
+    die refused 'the board reply carried the lease; not printed' 1
+  fi
+  cat -- "$private"
+  exit 0
 fi
 printf '{"taskID":"%s","operation":"%s","ok":true}\n' "$task" "$op"
