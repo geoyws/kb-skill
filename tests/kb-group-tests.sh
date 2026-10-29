@@ -235,7 +235,7 @@ refuse 'claim requires exactly one of --next or --candidates' group/test claim -
 check_calls ''
 refuse 'claim requires exactly one of --next or --candidates' group/test claim --next --as worker --candidates
 check_calls ''
-python3 - "$here/SKILL.md" <<'PY'
+python3 - "$here/references/board-group-routing.md" <<'PY'
 from pathlib import Path
 import sys
 recipe = Path(sys.argv[1]).read_text().split('## Explicit board-group routing (coordinator only)', 1)[1].split('## Board home host', 1)[0]

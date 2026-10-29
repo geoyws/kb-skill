@@ -5,8 +5,8 @@ installation.
 
 ## What is here
 
-- `SKILL.md` documents the public skill surface.
-  Its Reading section carries the DG-28..DG-30 review-visibility consumer
+- `SKILL.md` documents the public skill surface; rarer areas live in
+  `references/*.md`. Its Reading reference (`references/reading.md`) carries the DG-28..DG-30 review-visibility consumer
   contract: diagnostic task age, original evidence-note provenance and owner
   reconciliation without a second review. The existing watcher lives in
   skills-root `kb/kb-watch` (`scripts/kb-watch.py`), not in this package; the
