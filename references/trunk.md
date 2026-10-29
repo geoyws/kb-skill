@@ -24,11 +24,15 @@ kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","ch
 ```
 
 - `trunk set` is accepted only from `geoyws`. Root pins the trunk with
-  `--baseline`, required when the root tree holds gitlinks; one `--path-chain`
-  call per gitlink chain follows, parent before descendant, never `--baseline`
+  `--baseline`, required once the DG-46 kanban release ships (and already
+  today when the root tree holds gitlinks); one `--path-chain` call per
+  gitlink chain follows, parent before descendant, never `--baseline`
   with `--path-chain`. Owned needs a geoyws integration branch and a named
-  suite, else the child is third-party with its exact gitlink `--pin`. `PATH`
-  is a readable, non-shallow checkout on the ledger's host, `NAME` a remote
+  suite, else the child is third-party with its exact gitlink `--pin`. Every
+  child needs its pin an ancestor of its branch tip, a full non-partial
+  checkout, one branch per repository across paths, and a safe remote URL
+  (no userinfo, query, fragment, or scp user with a colon). `PATH` is a
+  readable, non-shallow checkout on the ledger's host, `NAME` a remote
   configured there that answers `ls-remote` with the branch. A
   `<trunk>-driver-N` lane branch is refused. A set writes one `trunk_set`
   event; there is no unset.
