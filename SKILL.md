@@ -294,6 +294,11 @@ unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
 or `kb-session-lease BOARD release TASK`. If the board claim has ended elsewhere
 but the private record survives, `kb-session-lease BOARD recover TASK` verifies
 the board shows a settled or expired claim and preserves the stale record aside.
+A record naming a story or epic (`s-`/`e-`, a lease from before kanban 521c726f
+made them unclaimable) is a local exit: `recover s-…`/`recover e-…` sets it
+aside without a board read, with `"reason":"unclaimable"`; any board lease it
+held expires on its own. Every other operation on an `s-`/`e-` id refuses and
+points there, and a `t-` operation over such a record names it.
 For an incoming handoff use
 `kb-session-lease BOARD handoff-accept HANDOFF --as ACTOR`. Claim and
 accept capture the raw reply privately and persist its token in the existing
