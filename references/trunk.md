@@ -18,16 +18,21 @@ whatever the board's `done_gate`. The trunk is asked fresh each time (`git
 ls-remote`), so a merge that has not been pushed is not on trunk.
 
 ```bash
-kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws --baseline SHA   # root; geoyws only
+kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws --baseline SHA [--repin]   # root; geoyws only
 kb trunk set --path-chain '["p1","p2"]' --repo PATH --remote NAME --branch NAME --as geoyws --kind owned --required-suite S --required-layer L   # or --kind third-party --pin SHA
 kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","children","revision"} or null
 ```
 
 - `trunk set` is accepted only from `geoyws`. Root pins the trunk with
   `--baseline`, required once the DG-46 kanban release ships (and already
-  today when the root tree holds gitlinks); one `--path-chain` call per
-  gitlink chain follows, parent before descendant, never `--baseline`
-  with `--path-chain`. Owned needs a geoyws integration branch and a named
+  today when the root tree holds gitlinks). On a trunk bump — the stored
+  baseline or a stored pin differs from the fresh tip — the root set carries
+  `--repin` once the DG-48 kanban release ships: kept third-party children
+  are re-pinned, owned re-verified, vanished gitlinks dropped, all or
+  nothing; child sets run only for new chains, after the root set. Every
+  set re-verifies the snapshot against per-remote 30 s git deadlines.
+  One `--path-chain` call per gitlink chain follows, parent before
+  descendant, never `--baseline` with `--path-chain`. Owned needs a geoyws integration branch and a named
   suite, else the child is third-party with its exact gitlink `--pin`. Every
   child needs its pin an ancestor of its branch tip, a full non-partial
   checkout, one branch per repository across paths, and a safe remote URL
