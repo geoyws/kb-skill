@@ -46,7 +46,151 @@ $K BOARD t ls --all --with-relations --fields id,status,title,parentID --json \
 - For "did we do X", also grep the journal (`~/work/journals/.sb/YYYY/MM/*.md`):
   it carries the decision and the why; the row carries the status.
 
-Outside the board home host, board commands go through `kb-board` and registry commands through `kb-host`; for routing, selectors and batched reads, read `references/board-home-host.md`.
+## Board home host is the execution boundary
+
+Every board's home host is `@@hal` since the P7 ledger cutover on 2026-10-03
+(`hosts.tsv`; kb infra t-93c9468e). hal's `/root/.local/bin/kb` is the
+installed kanban release binary and the ledger is `/root/.local/share/kanban`
+there. Historical note (2026-10-03): hax held a fenced pre-cutover copy;
+it is retired, never a board target. Route every board read and write,
+including acies, to @@hal through `kb-board` (or `kb-host hal` for registry
+commands). An unreachable @@hal blocks ledger operations; never fall back.
+
+The consumer table is `board<TAB>home_host<TAB>ssh_target<TAB>expected_remote<TAB>kb_exec[<TAB>login]`.
+Login is `ssh` (the five-field default, unchanged even with `KB_SSH_LOGIN`)
+or `own`. For `own`, `kb-board` and `kb-group` select a nonempty
+`KB_SSH_LOGIN` with `ssh -l LOGIN -- TARGET`, otherwise query `ssh -G TARGET`.
+Root or an absent SSH user is refused before command transport; local effective
+UID 0 is refused before the binary. Invalid policies and `own` executables
+under `/root/` refuse at table load (exit 64). Group members must share the
+registry route's normalized login policy as well as its other route fields.
+No wrapper principal claim is forwarded: the remote kernel UID is the identity.
+`kb-host` only consumes the extended table; its registry-only authority and
+transport are unchanged. `kb-board` refuses `broker` pretransport. This format
+support does not authorize account provisioning, installation or enforcement activation.
+
+The authoritative Kanban registry and boards live on the board home host chosen
+by the consumer table. `$KB_EXEC` below is the absolute installed `kb` path from that table; `$BOARD_HOME_HOST`, `$BOARD_SSH_TARGET`, and the selected remote hostname likewise come from the consumer's own table — substitute the consumer's values, never another estate's. Before any `/kb` read or write, check the current host
+**before attempting SSH**:
+
+```bash
+hostname                   # if this prints exactly the selected board home host, stay here
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
+```
+
+If `hostname` prints anything other than the selected board home host, enter
+the routed SSH target and verify the remote boundary there:
+
+```bash
+ssh "$BOARD_SSH_TARGET"
+hostname                   # must now print exactly the selected remote hostname
+test "$(command -v kb)" = "$KB_EXEC"
+"$KB_EXEC" v
+```
+
+An SSH one-shot does **not** load the interactive `PATH`, so it can report
+`kb: command not found` even though the binary is installed. Do not rediscover
+or re-quote this on every call. From outside the board home host, use the
+bundled argv-preserving wrapper for one-shot commands:
+
+```bash
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST r ls --json
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST v
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST audit verify --json
+```
+
+The wrapper verifies that the routed remote host matches the expected
+hostname, invokes the fixed installed path `$KB_EXEC` from the routing table, and
+preserves spaces and shell metacharacters as literal arguments. In an
+interactive SSH shell, use the same exact fail-closed check and invocation as
+above; any other `kb` resolution is a stale or shadowed PATH. Use an
+interactive SSH session for a related series of commands or prose-heavy
+mutations; use the wrapper for deterministic one-shots. Never fall back to a
+local `kb` after either path fails.
+
+Every `kb …` example below is a command to run **inside the verified board
+home host shell**. Keep one SSH session open for related operations to save
+connection overhead and tokens. Never run `ssh "$BOARD_SSH_TARGET"` from a
+shell whose exact `hostname` already matches the selected board home host; that
+shell is already at the required boundary.
+
+From another machine, never invoke a local `kb` or read a local Kanban SQLite
+file as a fallback. If SSH or the installed binary is unavailable, stop and report that boundary as blocked; do not run `kb init`, create a replacement board, or let local state diverge.
+
+Outside the board home host, do not call `kb` directly.
+
+- Use `skills/kb/scripts/kb-board PROJECT KB_COMMAND [ARGS...]` for every
+  board-owned one-shot command. It injects exactly one board selector (the
+  project, or for `--session-board` reads the file instead), rejects
+  caller-supplied `--project` / `--workspace` / `--db` selectors, and refuses
+  `r` / `rule` and the policy-registry `access`, `worker`, `link`, `scope`,
+  `contrib`, `model` and `plugin` verbs so registry operations cannot be routed through a
+  board helper. `board`, `sprint`, `batch`, `incident`, `worktree`, `message`,
+  `milestone`, `cleanup`, `overlap`, `trunk`, `test` and `stats` are board-owned
+  and route here; `kb-host` refuses each of them with this remedy.
+  On `checkpoint`, `handoff create` and `sitrep post` it also forwards your
+  checkout as `--repo` / `--branch` / `--head` / `--dirty`, because the binary
+  would otherwise capture the board host's cwd, and adds `--git-captured` when
+  it filled all four itself (see Provenance).
+- Use `skills/kb/scripts/kb-host BOARD_HOME_HOST KB_COMMAND [ARGS...]` for raw
+  registry-owned or non-board operations only. It resolves the host identity
+  from the consumer table, verifies the routed SSH target and remote hostname,
+  and preserves argv literally. Registry `rule`, `access`, `worker`, `link`,
+  `scope`, `contrib`, `model` and `plugin` verbs stay on the raw registry routing path
+  rather than `kb-board`.
+
+```bash
+<skill-dir>/scripts/kb-board BOARD_ID t ls --status todo --json
+<skill-dir>/scripts/kb-host BOARD_HOME_HOST r ls --json
+```
+
+**Runs of reads do not go one-shot.** Every wrapper call is its own SSH exec on
+the board home host, so three or more related reads — a resume (`ctx`, `r ls`,
+`dash`), a queue measurement, a row and its ancestors — take one of two shapes
+instead:
+
+1. **The persistent MCP channel, when the harness has it registered** (`ssh
+   "$BOARD_SSH_TARGET" "$KB_EXEC" mcp`, `references/mcp-server.md`). One connection
+   for the session; each read is then about one round trip plus the query, and
+   registry reads (`rule_list`, `dashboard`) ride the same channel as board
+   reads.
+2. **Otherwise one `batch`**: `kb-board BOARD_ID batch --items-file /dev/stdin
+   --json < read.json`, up to 32 board reads in one exec (**Working a task**).
+   `rule_list` may sit in it. `dashboard` may not — it reads boards outside the
+   batch and is refused with `names dashboard, which reads boards outside the
+   batch: run it alone; nothing in it ran` — so it stays its own `kb-host` call.
+
+Writes keep their shape: a single write is one wrapper call, and a unit's two
+boundaries are one `transact` each. Measured 2026-10-13 ~07:30 MYT from @@mbp
+to @@hal (kanban 0.3.1, SSH `ControlMaster auto`, `ControlPersist 600`, median of
+five runs; kanban `t-bbe8d7cc`):
+
+| path | one read | resume: `ctx` + `r ls` + `dash` |
+|---|---|---|
+| one-shot wrappers (`kb-board ctx`, `kb-host r ls`, `kb-host dash`) | `ctx` 0.52 s, `r ls` 0.50 s, `dash` 1.3–1.9 s | 2.31 s |
+| one `kb-board batch` (`context` + `rule_list`), then `kb-host dash` | 0.70 s for both reads | 2.23 s |
+| persistent MCP channel, three `tools/call` | `context` 0.20 s, `rule_list` 0.19–0.23 s, `dashboard` 1.17–1.25 s | 1.63 s, after a 0.65 s connect once |
+
+The dashboard's own server time dominates a resume, so the gain there is
+modest; the gain grows with the run: N small reads cost about 0.5 N s as
+one-shots, about 0.2 N s on the channel, and about 0.7 s flat in one batch.
+
+Inside the verified board home host shell, every board-owned command must use
+an explicit project selector. Registry rule commands must not receive board
+selectors. Use `--workspace PATH` only with a path verified to exist and be
+registered by the consumer table. For one-shot automation, shell-quote the
+entire remote command and every dynamic value safely; an interactive SSH
+session is preferred for prose mutations so titles and bodies cannot be split
+or expanded by an intermediate shell.
+
+Selector rule: board-owned commands such as `task`, `tag`, `search`, `claim`,
+and `attention` should normally use `--project NAME` remotely. Registry-owned
+`rule` commands must not receive `--project`, `--workspace`, or `--db`; rules
+live once in the registry and select boards through `ALL`, `ONLY:<board>`, and
+`EXCEPT:<board>` tags. Registry watch helpers also reject board selectors and
+`--all`. In particular, use `kb-host BOARD_HOME_HOST r ls --board kanban --json`
+(the rule verb's own board scope), never `kb-host BOARD_HOME_HOST r ls --project kanban`.
 
 ## Addressing a board
 
@@ -138,7 +282,71 @@ every lane queue filter actually match on. A row whose actor names its lane
 but whose `--lane` is empty is invisible to its own lane's queue, which is the
 same failure the harness-qualified actor caused, wearing different clothes.
 
-Inside OMP, claim and accept through `kb-session-lease`, never a printed `leaseToken`: read `references/session-lease.md`.
+**Inside OMP, do not print a claim response containing `leaseToken`.** Its
+secret filter correctly redacts bearer tokens, which makes a printed claim
+unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
+`kb-session-lease BOARD claim TASK --as ACTOR --lane LANE`,
+`kb-session-lease BOARD hb TASK`,
+`kb-session-lease BOARD checkpoint TASK --as ACTOR --state continue|blocked|done --summary ... --intent ... --next-action ...`,
+`kb-session-lease BOARD handoff-create TASK --as ACTOR --summary ... --intent ... --next-action ...`,
+or `kb-session-lease BOARD release TASK`. If the board claim has ended elsewhere
+but the private record survives, `kb-session-lease BOARD recover TASK` verifies
+the board shows a settled or expired claim and preserves the stale record aside.
+For an incoming handoff use
+`kb-session-lease BOARD handoff-accept HANDOFF --as ACTOR`. Claim and
+accept capture the raw reply privately and persist its token in the existing
+session file; only a constructed token-free receipt reaches the agent. A
+successful `checkpoint --state blocked|done` clears the lease file;
+a continuing checkpoint keeps it. A second claim in the same session refuses
+until release, handoff or terminal checkpoint settles the first (the refusal
+names the recover recovery for a record whose board claim has ended).
+The helper needs `jq` and a valid tmux pane or `KB_SESSION_ID`; outside
+tmux without a session ID it refuses rather than sharing the legacy file.
+Every helper failure prints one line, `kb-session-lease: <what> failed
+[cause=<class>]: <reason>`, with the token masked and, for board calls, a
+`next:` step. Classes: `usage`, `session_busy`, `session_unsafe`,
+`no_session_file`, `persist_failed`, `claim_active`, `claim_ended` (the board
+holds no lease: recover), `lease_mismatch` (another lease holds the row: do
+not write), `transport` (the call never reached the board, or its answer was
+lost and the outcome is unknown: read the row first) and `refused` (kb dotfiles
+t-8ccffdeb). A caller's own `--json` is dropped; the helper adds it where it
+parses the reply (t-75164807).
+Ordinary `kb-board` commands and transaction/MCP surfaces retain their
+existing contract; never allowlist real lease tokens in the OMP filter.
+**Write the heartbeat session file right after every claim** (George,
+2026-09-29, kb dotfiles t-c991e76a option A): mode 0600, two lines — task id,
+then lease token, at the path `<skill-dir>/scripts/kb-session-file` prints. The
+PostToolUse heartbeat hook (`claude/hooks/kb-heartbeat.sh`) runs the same
+helper and reads exactly that file; it never guesses, and no file means no
+heartbeats and the lease quietly expires. With a nonempty `KB_SESSION_ID` in
+the environment, the path is a deterministic per-session file
+(`~/.claude/kb-session.d/session-<full sha256 hex of the id>`), which takes precedence
+over tmux detection: two concurrent sessions with different ids get different
+files holding their own task id and lease token, and reopening the same id
+derives the same path. Without `KB_SESSION_ID` the path is one file per tmux
+pane (`~/.claude/kb-session.d/tmux-<socket hash>-<pane>`), so concurrent lanes
+on one host never overwrite each other's token (kb infra t-c827bfb2). Run the
+helper from the shell of the pane your harness runs in; never write the path
+by hand. An explicitly empty, over-long (>256 bytes), newline-bearing, or
+control-character session id is refused with no path printed, so set no token file. The session id is only a
+filename namespace: it grants no board, lane, role, or lease authority, and
+both sides must already agree on the id out of band. Without `KB_SESSION_ID`,
+outside tmux it prints the legacy single file `~/.claude/kb-session`
+and exits 3, which is safe only while one session per host claims. One
+session holds one task, so a second secure claim refuses rather than
+overwriting the file. Direct claimers must still manage the file themselves.
+The board is resolved off the session cwd by
+lane-detect, never stored in the file. A session started with an explicit
+session context (`--session-context PATH` or `KB_SESSION_CONTEXT`) takes its
+board and lane from that file instead, and no pane is consulted; export
+`KB_SESSION_ID` equal to the file's `sessionId`, so this helper and the
+heartbeat hook resolve the same session file.
+
+For direct, non-redacting callers only (OMP uses `kb-session-lease`):
+```bash
+f=$(<skill-dir>/scripts/kb-session-file) || [ $? -eq 3 ] || exit 1
+(umask 077; printf '%s\n%s\n' "$TASK" "$TOKEN" > "$f")
+```
 
 Run `/whoami` for your callsign: it traces the pane from the cockpit root to
 `@:<group>/<team>/<lane>/<seat>` (George, 2026-10-05; seat 2026-10-08) —
@@ -160,7 +368,7 @@ read before them — on the measured link that is two round trips where there we
 six (ADR-041, Consequences). The reads collapse into one `batch`: up to 32 reads
 in one request, answered by one process with one board open — `kb batch
 --items-file items.json --json` from the CLI, or the MCP `batch` tool
-(`readOnlyHint: true`, under **As an MCP server**) — so `t cat`, `ctx` and
+(`readOnlyHint: true`, in `references/mcp-server.md`) — so `t cat`, `ctx` and
 `att ls` for the task you are about to pick up all arrive together; `ctx`
 already carries the task's rules index and always-tier bodies, so the batch
 takes no `r ls`. This is the default for any run of three or more related
@@ -211,7 +419,7 @@ strictly earlier items **of its own batch**, never back into an earlier one.
 
 Definition of Done includes cleanup — the `finished` shape moves the row
 done only when every manifest entry is removed or held with a live expiry;
-see **Cleanup ledger — what you allocated, you remove**.
+see `references/cleanup-ledger.md`.
 
 The worked JSON is **The loop's write half, in one batch**, below — a claim, a
 checkpoint that takes the lease from item 0 by `$ref`, and the note: three
@@ -219,7 +427,7 @@ writes, one round trip, a token the agent never handles. Read it there for the
 item shapes and the threading, which both boundaries use; the tables above say
 which items each boundary carries. It is deliberately not repeated here.
 
-Replayed batches, an unclear `transact` receipt and what a rollback leaves standing: read `references/transact.md`.
+The worked batches are in **Batched writes — `transact`**, below.
 
 ### Single commands — interactive, and the fallback
 
@@ -288,6 +496,237 @@ which is exactly when you most want it to.
 
 Session end, `staleClaims`, `orphanedFrom`, resuming in order: `references/session-end-and-resume.md`. `--validation` and review verdicts: `references/review-verdicts.md`.
 
+## Batched writes — `transact`
+
+Each write above is its own round trip and its own transaction, and the loop's
+writes are not independent: a `claim` yields the lease token a `checkpoint`
+needs, and a checkpoint that landed after a claim that did not is not a smaller
+success, it is a board that lies. `transact` takes an ordered list of ordinary
+operations, runs them in one process against one open board inside one
+transaction, and **either all of them land or none of them do** (ADR-041).
+
+```bash
+kb transact --items-file items.json --json
+kb transact --items '[{"name": "note", "arguments": {"id": "t-1a2b3c4d", "text": "…"}}]' --json
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+`--items` and `--items-file` are one question in two spellings, so passing both
+is refused. Prefer the file: one argv string is capped at 128 KiB, which a batch
+carrying checkpoint bodies reaches. From outside the board home host, `kb-board`
+streams a local `--items-file PATH` on the single ssh connection's stdin and
+rewrites the flag to `/dev/stdin`, so both wrapper forms are **one** ssh and the
+unmodified items arrive byte-for-byte; the three lease-write items receive
+caller-side identity before streaming (see Provenance). The wrapper refuses a
+second `--items-file` before transport, including mixed `--items-file PATH` and
+`--items-file /dev/stdin` spellings (with or without `=`).
+
+**An item is `{"name": TOOL, "arguments": {…}}`** — the read-only batch's own
+shape. `TOOL` is an MCP tool name, which is the command with its subcommand
+joined by `_` (`task_move` is `kb task move`), and `arguments` names that
+command's flags and positionals literally, hyphens included: `id`, `text`,
+`next-action`, `lease-minutes`. A boolean flag is `true`; `false` and `null` are
+absence. At most 32 items.
+
+Refused as items, before anything runs: `batch` and `transact` themselves — a
+batch may not carry a batch — plus `import` and `search-rebuild`, which open a
+board-wide transaction of their own, and anything that does not address one
+board's rows.
+
+**The selector goes to `transact`, never to an item.** A batch addresses the one
+board it resolved; an item carrying `project`, `workspace`, `db` or `all-boards`
+is refused rather than having it silently discarded, and `kb-board` already
+injects exactly one board selector. There is no batch-level `--as` either: each item
+carries its own actor and is authorized exactly as if it had arrived alone, so a
+batch cannot elevate.
+
+**The envelope**, on stdout either way:
+
+```json
+{ "batchId": "9f1c…", "ok": true, "failedIndex": null, "rolledBack": false,
+  "results": [ { "index": 0, "ok": true, "result": { "…": "what that command answers alone" } } ] }
+```
+
+Execution stops at the first failure. That item reports
+`{"index", "ok": false, "error"}` with the CLI's own refusal text, every later
+item reports `{"index", "ok": false, "skipped": true}` and was never attempted,
+and the batch answers `ok: false` and exits non-zero. `rolledBack: true` means
+the board is exactly where the batch found it. `rolledBack: false` beside
+`ok: false` means one thing only: the list was refused before anything ran, so
+`results` is empty. Reads may sit in a write batch and see the earlier items'
+writes; a read that fails fails the batch, because continuing past it would be
+deciding on absent information.
+
+**`$ref` carries a value forward.** Any argument value may be
+`{"$ref": {"item": N, "path": "/json/pointer"}}`, replaced by the value at that
+RFC 6901 pointer inside item `N`'s result, where `N` is strictly earlier —
+forward and self-references are refused. That is how the lease token a `claim`
+mints (`/leaseToken`) reaches the checkpoint without the agent ever handling it.
+Every reference is checked for shape before any item runs, so a malformed
+pointer refuses the whole batch and nothing lands.
+
+**What a rollback does not undo.** Opening the board retires expired claims and
+commits that sweep before any batch scope exists, so a `transact` that rolled
+back may still have retired somebody else's lapsed lease and appended those
+events. That is correct — the sweep is not part of your batch and reverting it
+would resurrect dead leases — but a rolled-back `transact` is not a no-op on the
+ledger in every possible sense.
+
+**A replayed batch is not a no-op.** There is no idempotency key. A replayed
+loop batch is refused at its claim, because an active claim makes the second
+attempt fail by name, so it fails at index 0, skips every later item and lands
+nothing — good, but good by accident of `claim`'s own semantics rather than
+anything `transact` does. A batch whose first item is additive has no such
+protection: two replayed `note` items are two notes, two replayed `sitrep post`
+items are two sitreps. After a transport failure, read the board and decide;
+never retry a batch blindly.
+
+### The loop's write half, in one batch
+
+`items.json` — claim the task, checkpoint it with the lease the claim just
+minted, and write the plan note:
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver", "lane": "driver" } },
+  { "name": "checkpoint",
+    "arguments": { "id": "t-1a2b3c4d",
+                   "lease": { "$ref": { "item": 0, "path": "/leaseToken" } },
+                   "as": "@:geoyws/kanban/driver", "state": "continue",
+                   "summary": "wrapper streams the items on one ssh",
+                   "intent": "land the batched write surface",
+                   "next-action": "document the envelope in the skill",
+                   "repo": "/root/work/src/kanban", "branch": "kanban-geoyws-driver",
+                   "head": "da9a794", "dirty": "clean" } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan", "as": "@:geoyws/kanban/driver",
+                   "text": "wrapper first, then the skill, then the tests" } }
+]
+```
+
+```bash
+kb transact --items-file items.json --json                                    # at the boundary
+<skill-dir>/scripts/kb-board BOARD_ID transact --items-file /dev/stdin --json < items.json
+```
+
+Three writes, one round trip, a lease token that never passes through the agent,
+and — if the claim fails because somebody else holds the task — nothing on the
+board at all.
+
+**A provenance writer inside a batch carries its own provenance.** `kb-board`
+fills `--repo`, `--branch`, `--head` and `--dirty` from your checkout for a
+`checkpoint`, `handoff create` or `sitrep post` **command**; a batch's items are
+data, so it cannot fill them there. The binary runs on the board home host,
+whose cwd is not your checkout, and it refuses a row with blank provenance
+rather than storing a null:
+
+```
+refusing to record a row with blank provenance: repo_path, branch, head_sha,
+dirty_summary missing … Pass --repo PATH --branch NAME --head SHA --dirty TEXT
+```
+
+So put `repo`, `branch`, `head` and `dirty` in the item, as above, from
+`git rev-parse --show-toplevel`, `git symbolic-ref --short HEAD`,
+`git rev-parse HEAD` and a count of `git status --porcelain` lines (`clean`,
+`1 file changed`, `N files changed`). The separate overlap identity for
+`claim`, `heartbeat`, and `handoff_accept` **is** handled in
+batch items by `kb-board` on the caller (see Provenance). `note`,
+`release` and `task update` need nothing extra.
+
+### The loop in three batches
+
+One unit of work, start to finish: claim, read, checkpoint. Two `transact`s
+for the writes, one `batch` for the reads between them.
+
+**1. START** — `start.json`, one `transact`: the claim and the plan note.
+
+```json
+[
+  { "name": "claim",
+    "arguments": { "id": "t-1a2b3c4d", "as": "@:geoyws/kanban/driver/executor",
+                   "lane": "driver", "lease-minutes": 120 } },
+  { "name": "note",
+    "arguments": { "id": "t-1a2b3c4d", "kind": "plan",
+                   "as": "@:geoyws/kanban/driver/executor",
+                   "text": "read the context, then the wrapper change" } }
+]
+```
+
+Keep `TOKEN` from `results[0].result.leaseToken`; the END batch needs it.
+
+**2. READ** — `read.json`, one `batch`: everything about the task you now hold.
+
+```json
+[
+  { "name": "task_show",      "arguments": { "id": "t-1a2b3c4d", "limit": 200 } },
+  { "name": "context",        "arguments": { "id": "t-1a2b3c4d" } },
+  { "name": "attention_list", "arguments": { "status": "open", "task": "t-1a2b3c4d" } }
+]
+```
+
+Each item answers on its own, in order, as `{"index": N, "ok": true, "result":
+…}` or `{"index": N, "ok": false, "error": …}`; `result` is exactly what that
+read prints alone (`kb ctx t-1a2b3c4d --json` and item 1 are the same JSON). The
+rules ride item 1: `context` already carries the task's applicable `rulesIndex`
+and inline `alwaysRules`, so the READ batch adds no `rule_list`; fetch a lazy
+page with `kb r cat ID` only when the index says you need it. A
+failed item does not stop the others, and the batch exits zero. Item names are
+the MCP tool names: the command words joined by `_` (`t cat` is `task_show`,
+`ctx` is `context`); argument keys are the flag names without `--`
+(`"with-relations": true`).
+
+**3. END** — a finished unit closes **outside** `transact`. A done write needs
+a full head read from a checkout (Trunk, below), and `kb-board` reads it only
+for a direct `checkpoint`, never for a `transact` item; a typed `head` such as
+`da9a794` is refused and takes the whole batch, closing note included, down
+with it. So land the work on trunk first, then run the done checkpoint from
+that checkout and send the closing note after it. `--state done` releases the
+lease in the same write, so no `release` follows it. Leave `--repo`,
+`--branch`, `--head` and `--dirty` off: the wrapper fills all four from one git
+read and attests them, and any one typed by hand voids the attestation.
+
+```bash
+cd /root/work/src/kanban            # the trunk checkout, at the landed commit
+<skill-dir>/scripts/kb-board BOARD_ID cp t-1a2b3c4d --lease TOKEN \
+  --as "@:geoyws/kanban/driver/executor" --state done \
+  --summary "wrapper change merged and gated" --intent "close the unit" \
+  --next-action "none; the train carries it" --json
+<skill-dir>/scripts/kb-board BOARD_ID note t-1a2b3c4d "gate green at <full head>" \
+  --as "@:geoyws/kanban/driver/executor" --kind evidence --json
+```
+
+A unit that continues later still ends in one `transact` — `checkpoint`
+`state: continue` + `note` + `release` — because nothing in it reaches done.
+
+```bash
+kb transact --items-file start.json --json
+kb batch    --items-file read.json  --json
+kb transact --items-file end.json   --json   # a continue-later END only
+# through the wrapper, each file travels on the one ssh's stdin:
+<skill-dir>/scripts/kb-board BOARD_ID batch --items-file /dev/stdin --json < read.json
+```
+
+Replace `TOKEN` with the real token before sending: `$ref` reaches earlier
+items of its own batch only, never back into the START batch.
+
+**A replayed START batch lands nothing** — by `claim`'s semantics, not by
+`transact`'s. There is no idempotency key (ADR-041 §9): the replayed claim is
+refused by name at index 0, every later item is `skipped`, and because the batch
+is atomic nothing at all lands. An END batch has no such protection, and neither
+has any batch whose first item is additive: two replayed `note` items are two
+notes.
+
+**An agent that cannot tell whether a `transact` was received reads the board.**
+`kb t cat <id> --limit 200 --json` settles it — the claim is there or it is not,
+the checkpoint is there or it is not — and that is what to act on, rather than
+retrying blindly.
+
+One thing a rollback leaves standing: the expired-claim sweep every board open
+commits before any batch scope exists, so a rolled-back batch may still have
+retired somebody else's lapsed lease (**Batched writes — `transact`**, "What a
+rollback does not undo").
+
 ## Refusals worth knowing
 
 These are deliberate. Do not work around them; they exist because each one was
@@ -352,10 +791,8 @@ once a silent wrong answer.
 ## References
 
 - `references/board-group-routing.md` — read when coordinating a registered board group (`kb-group`).
-- `references/board-home-host.md` — read when routing, SSH, the hosts table, selectors, or a run of reads.
 - `references/rules.md` — read when reading or changing registry rules, adopting a board, or moving rules.
 - `references/aliases.md` — read when a short command form is unclear.
-- `references/session-lease.md` — read when claiming inside OMP, a `kb-session-lease` failure, or the heartbeat file.
 - `references/attention.md` — read when raising, answering or resolving an attention item.
 - `references/incidents.md` — read when working an incident (`i-` row).
 - `references/search.md` — read when searching the ledger or building RAG context.
@@ -367,7 +804,6 @@ once a silent wrong answer.
 - `references/review-verdicts.md` — read when filling `--validation` or recording a review verdict.
 - `references/model-attribution.md` — read when recording `--model`/`--writer-model`, bugs, test runs, or `kb stats models`.
 - `references/cleanup-ledger.md` — read when allocating host resources for a task, or a cleanup refusal.
-- `references/transact.md` — read when writing any `transact` batch, its envelope, replay or rollback.
 - `references/plans.md` — read when writing or reading a plan or epic.
 - `references/sprints.md` — read when working with a sprint.
 - `references/tags.md` — read when tagging rows or a tag refusal.
