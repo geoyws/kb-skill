@@ -80,9 +80,11 @@ board_reason() {
 # board_rc holds the kb-board exit status.
 # board_answered: kb itself refused the call (exit 1 with its JSON `error` or
 # its `Error:` line). Any other failure is the route's, not the board's.
+# Slurped, so an empty reply is `[]` and false: jq 1.6 (the kanban gate
+# image's) exits 0 under -e when its input is empty.
 board_answered() {
   [[ "$board_rc" = 1 ]] || return 1
-  jq -e 'type == "object" and (.error | type == "string")' "$private" >/dev/null 2>&1 \
+  jq -s -e 'length == 1 and (.[0] | type == "object" and (.error | type == "string"))' "$private" >/dev/null 2>&1 \
     || grep -q '^Error: ' "$error" 2>/dev/null
 }
 board_rc=0
