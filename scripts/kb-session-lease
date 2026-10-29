@@ -18,14 +18,20 @@ board=$1 op=$2 id=$3
 shift 3
 case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|recover) ;; *) usage ;; esac
 # Only task and bug rows (both t-) are claimable; the board refuses a story
-# or an epic. Say so here, with the remedy, instead of a bare "invalid id"
-# (kb dotfiles t-10502c21).
+# or an epic. Say so here, with the remedy that fits the operation, instead
+# of a bare "invalid id" (kb dotfiles t-10502c21, t-b1466e98). A session
+# record may still name a story from a lease taken before kanban 521c726f
+# made stories unclaimable: `recover` is its local exit (below).
+unclaimable=''
+case "$id" in s-*) kind='a story' ;; e-*) kind='an epic' ;; *) kind='' ;; esac
 case "$op:$id" in
   handoff-accept:h-*) ;;
   claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|worktree-register:t-*|recover:t-*) ;;
+  recover:s-*|recover:e-*) unclaimable=1 ;;
   handoff-accept:*) die usage "invalid handoff id $id: handoff-accept takes an h- handoff id" ;;
-  *:s-*) die usage "$id is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
-  *:e-*) die usage "$id is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks" ;;
+  claim:s-*) die usage "$id is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
+  claim:e-*) die usage "$id is an epic, and only task and bug rows (t- ids) are claimable: claim one of its child t- tasks" ;;
+  *:s-*|*:e-*) die usage "$id is $kind, and this wrapper holds leases only on task and bug rows (t- ids), so there is no $op for it. If this session's record still names $id (a lease taken before kanban 521c726f), clear it locally with kb-session-lease $board recover $id; any board lease it held expires on its own" ;;
   *) die usage "invalid task id $id: $op takes a t- task or bug id" ;;
 esac
 for arg in "$@"; do
@@ -213,7 +219,7 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
   }
   give_back() {
     local target=$release_id rec what="$op failed [cause=persist_failed]: $1"
-    if [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]]; then target=$task; fi
+    if [[ "$task" =~ ^t-[^[:space:]]+$ ]]; then target=$task; fi
     if [[ -z "$token" || "$token" == *$'\n'* || -z "$target" ]]; then
       echo "kb-session-lease: $what; no usable lease token or task to give back, so any board lease expires on its own" >&2
     elif "$here/kb-board" "$board" release "$target" --lease "$token" >/dev/null 2>&1; then
@@ -231,7 +237,8 @@ if [[ "$op" = claim || "$op" = handoff-accept ]]; then
     exit 70
   }
   [[ -n "$token" && "$token" != *$'\n'* ]] || give_back 'board reply carries no single-line lease token'
-  [[ "$task" =~ ^[tes]-[^[:space:]]+$ ]] || give_back 'board reply names no task'
+  # The board grants leases on t- rows only, the same set the guard admits.
+  [[ "$task" =~ ^t-[^[:space:]]+$ ]] || give_back 'board reply names no task'
   if ! { next=$(mktemp "$parent/.lease-next.XXXXXXXX") \
     && printf '%s\n%s\n' "$task" "$token" >"$next" \
     && chmod 600 "$next" \
@@ -266,30 +273,37 @@ if [[ "$op" = recover ]]; then
   if [[ -z "$token" || "$token" == *$'\n'* || -n "$(sed -n '3p' "$session")" ]]; then
     die no_session_file 'malformed session record; refusing recover'
   fi
-  # --limit 1 caps notes/checkpoints/handoffs: a long settled row would otherwise refuse (ADR-037).
-  board_rc=0
-  "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error" || board_rc=$?
-  if [[ "$board_rc" != 0 ]]; then
-    if board_answered; then
-      die refused "board read refused: $(board_reason); session record retained" 1
-    fi
-    die transport "board read failed (exit $board_rc); session record retained, retry recover shortly" 1
-  fi
-  bid=$(jq -r .id "$private" 2>/dev/null) || die transport 'board read failed; session record retained, retry recover shortly' 1
-  if [[ "$bid" != "$id" ]]; then
-    die refused 'board row is for a different task (wrong board or task); session record retained'
-  fi
-  if jq -e '.claim == null' "$private" >/dev/null 2>&1; then
-    reason=settled
-  elif jq -e '.claim.expiresAt | type == "number"' "$private" >/dev/null 2>&1; then
-    now=$(($(date +%s) * 1000))
-    if jq -e --argjson now "$now" '.claim.expiresAt <= $now' "$private" >/dev/null 2>&1; then
-      reason=expired
-    else
-      die claim_active 'active claim held; it must be settled by its holder (hb/checkpoint/release) or allowed to expire before recover'
-    fi
+  if [[ -n "$unclaimable" ]]; then
+    # A story or epic record is a lease from before kanban 521c726f. Nothing
+    # here can heartbeat, settle or release it, and the board lets it expire,
+    # so it is set aside without a board read.
+    reason=unclaimable
   else
-    die refused 'ambiguous claim state (expiresAt missing or non-numeric); session record retained'
+    # --limit 1 caps notes/checkpoints/handoffs: a long settled row would otherwise refuse (ADR-037).
+    board_rc=0
+    "$here/kb-board" "$board" t cat "$id" --limit 1 --json >"$private" 2>"$error" || board_rc=$?
+    if [[ "$board_rc" != 0 ]]; then
+      if board_answered; then
+        die refused "board read refused: $(board_reason); session record retained" 1
+      fi
+      die transport "board read failed (exit $board_rc); session record retained, retry recover shortly" 1
+    fi
+    bid=$(jq -r .id "$private" 2>/dev/null) || die transport 'board read failed; session record retained, retry recover shortly' 1
+    if [[ "$bid" != "$id" ]]; then
+      die refused 'board row is for a different task (wrong board or task); session record retained'
+    fi
+    if jq -e '.claim == null' "$private" >/dev/null 2>&1; then
+      reason=settled
+    elif jq -e '.claim.expiresAt | type == "number"' "$private" >/dev/null 2>&1; then
+      now=$(($(date +%s) * 1000))
+      if jq -e --argjson now "$now" '.claim.expiresAt <= $now' "$private" >/dev/null 2>&1; then
+        reason=expired
+      else
+        die claim_active 'active claim held; it must be settled by its holder (hb/checkpoint/release) or allowed to expire before recover'
+      fi
+    else
+      die refused 'ambiguous claim state (expiresAt missing or non-numeric); session record retained'
+    fi
   fi
   ino2=$(stat -c %i "$session" 2>/dev/null || stat -f %i "$session")
   if [[ "$ino2" != "$ino" ]]; then
@@ -310,7 +324,12 @@ malformed="malformed session record for $id (recover refuses it too); move it as
 # Quote the record's first line only once it has a task id's shape: a
 # damaged record may hold the bearer token there.
 [[ "$task" =~ ^[tes]-[0-9a-z]{1,32}$ ]] || fail_local "$malformed"
-[[ "$task" = "$id" ]] || fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
+if [[ "$task" != "$id" ]]; then
+  case "$task" in
+    s-*|e-*) fail_local "task does not match session lease: this session holds a stale lease record for $task (stories and epics are not claimable since kanban 521c726f); clear it with kb-session-lease $board recover $task" ;;
+  esac
+  fail_local "task does not match session lease: this session holds $task; settle that lease, or name $task"
+fi
 token=$(sed -n '2p' "$session")
 [[ -n "$token" && "$token" != *$'\n'* && $(sed -n '3p' "$session") = '' ]] || fail_local "$malformed"
 case "$op" in
