@@ -18,14 +18,20 @@ whatever the board's `done_gate`. The trunk is asked fresh each time (`git
 ls-remote`), so a merge that has not been pushed is not on trunk.
 
 ```bash
-kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws   # geoyws only
-kb trunk show --json                                              # {"repo","remote","branch"} or null
+kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws --baseline SHA   # root; geoyws only
+kb trunk set --path-chain '["p1","p2"]' --repo PATH --remote NAME --branch NAME --as geoyws --kind owned --required-suite S --required-layer L   # or --kind third-party --pin SHA
+kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","children","revision"} or null
 ```
 
-- `trunk set` is accepted only from `geoyws`. `PATH` is a readable,
-  non-shallow checkout on the ledger's host, `NAME` a remote configured there
-  that answers `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is
-  refused. A set writes one `trunk_set` event; there is no unset.
+- `trunk set` is accepted only from `geoyws`. Root pins the trunk with
+  `--baseline`, required when the root tree holds gitlinks; one `--path-chain`
+  call per gitlink chain follows, parent before descendant, never `--baseline`
+  with `--path-chain`. Owned needs a geoyws integration branch and a named
+  suite, else the child is third-party with its exact gitlink `--pin`. `PATH`
+  is a readable, non-shallow checkout on the ledger's host, `NAME` a remote
+  configured there that answers `ls-remote` with the branch. A
+  `<trunk>-driver-N` lane branch is refused. A set writes one `trunk_set`
+  event; there is no unset.
 - `trunk show` reads only, and is open to anyone who can read the board.
 - To land work: merge and push it to trunk, then record the landed commit
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
