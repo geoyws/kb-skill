@@ -20,27 +20,33 @@ ls-remote`), so a merge that has not been pushed is not on trunk.
 ```bash
 kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws --baseline SHA [--repin]   # root; geoyws only
 kb trunk set --path-chain '["p1","p2"]' --repo PATH --remote NAME --branch NAME --as geoyws --kind owned --required-suite S --required-layer L   # or --kind third-party --pin SHA
-kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","children","revision"} or null
+kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","children","uncovered","revision"} or null
 ```
 
 - `trunk set` is accepted only from `geoyws`. Root pins the trunk with
-  `--baseline`, required once the DG-46 kanban release ships (and already
-  today when the root tree holds gitlinks). On a trunk bump — the stored
-  baseline or a stored pin differs from the fresh tip — the root set carries
-  `--repin` once the DG-48 kanban release ships: kept third-party children
-  are re-pinned, owned re-verified, vanished gitlinks dropped, all or
-  nothing; child sets run only for new chains, after the root set. Every
-  set re-verifies the snapshot against per-remote 30 s git deadlines.
+  `--baseline`, required on gitlinked roots once the DG-46 kanban release
+  ships (today kanban stores a hint instead). When a stored pin differs
+  from the fresh gitlink, or a stored child's gitlink vanished, the root
+  set carries `--repin` once the DG-48 kanban release ships: kept
+  third-party children are re-pinned, owned re-verified, vanished gitlinks
+  dropped, all or nothing; child sets run only for new chains and kept
+  chains whose branch, URL or kind changed, after the root set. A moved
+  baseline alone takes a plain `--baseline` root set. Every set
+  re-verifies the snapshot; one 30 s limit covers the whole snapshot today,
+  per-question deadlines once DG-48 ships.
   One `--path-chain` call per gitlink chain follows, parent before
   descendant, never `--baseline` with `--path-chain`. Owned needs a geoyws integration branch and a named
   suite, else the child is third-party with its exact gitlink `--pin`. Every
   child needs its pin an ancestor of its branch tip, a full non-partial
   checkout, one branch per repository across paths, and a safe remote URL
-  (no userinfo, query, fragment, or scp user with a colon). `PATH` is a
-  readable, non-shallow checkout on the ledger's host, `NAME` a remote
-  configured there that answers `ls-remote` with the branch. A
-  `<trunk>-driver-N` lane branch is refused. A set writes one `trunk_set`
-  event; there is no unset.
+  (no leading `-`, `?`, `#` or `::`, schemes limited to ssh/https/http/file/
+  git, no userinfo, no colon in an scp user part). The checkout's own git
+  config must not redirect the remote (`url.`/`include.` rewrites, an ssh
+  or proxy command, credential helpers, `http.*proxy` and friends, or
+  remote helper overrides). `PATH` is a readable, non-shallow checkout on
+  the ledger's host, `NAME` a remote configured there that answers
+  `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is refused.
+  A set writes one `trunk_set` event; there is no unset.
 - `trunk show` reads only, and is open to anyone who can read the board.
 - To land work: merge and push it to trunk, then record the landed commit
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
