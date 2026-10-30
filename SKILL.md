@@ -2260,14 +2260,18 @@ whatever the board's `done_gate`. The trunk is asked fresh each time (`git
 ls-remote`), so a merge that has not been pushed is not on trunk.
 
 ```bash
-kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws   # geoyws only
+kb trunk set --repo PATH --remote NAME --branch NAME --as ACTOR    # any board writer
 kb trunk show --json                                              # {"repo","remote","branch"} or null
 ```
 
-- `trunk set` is accepted only from `geoyws`. `PATH` is a readable,
+- `trunk set` is accepted from any actor the board's write authority admits
+  (under `managed`: `write` at the board's scope, `--as` bound to you or your
+  live lane actor; kanban `t-0b70d2b3`, 2026-10-30). `PATH` is a readable,
   non-shallow checkout on the ledger's host, `NAME` a remote configured there
   that answers `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is
-  refused. A set writes one `trunk_set` event; there is no unset.
+  refused for every actor. Name the board's real trunk (usually `main`), never
+  your own work branch. A set writes one `trunk_set` event naming you; there
+  is no unset.
 - `trunk show` reads only, and is open to anyone who can read the board.
 - To land work: merge and push it to trunk, then record the landed commit
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
