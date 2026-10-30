@@ -1,6 +1,6 @@
 ---
 name: kb
-description: Use the authoritative Kanban work ledger over SSH — tasks, claims and leases, checkpoints, handoffs, sitreps, and attention items that need the board owner. Use whenever recording, reading, resuming, or handing over durable work state.
+description: "Authoritative Kanban ledger over SSH: tasks, claims, leases, checkpoints, handoffs, sitreps, attention. Use /kb."
 ---
 
 # /kb — the kanban work ledger
