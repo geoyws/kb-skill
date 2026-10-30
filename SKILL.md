@@ -2266,7 +2266,10 @@ kb trunk show --json                                              # {"repo","rem
 
 - `trunk set` is accepted from any actor the board's write authority admits
   (under `managed`: `write` at the board's scope, `--as` bound to you or your
-  live lane actor; kanban `t-0b70d2b3`, 2026-10-30). `PATH` is a readable,
+  live lane actor; kanban `t-0b70d2b3`, 2026-10-30). It is a coordinator
+  verb: run it from your lane's own process, never with a worker
+  credential (`KANBAN_WORKER_CREDENTIAL`), which is refused as
+  coordinator-only. `PATH` is a readable,
   non-shallow checkout on the ledger's host, `NAME` a remote configured there
   that answers `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is
   refused for every actor. Name the board's real trunk (usually `main`), never
