@@ -1,6 +1,6 @@
 ---
 name: kb
-description: "Authoritative Kanban ledger over SSH: tasks, claims, leases, checkpoints, handoffs, sitreps, attention. Use /kb."
+description: "Kanban ledger: tasks, claims, leases, checkpoints, att."
 ---
 
 # /kb — the kanban work ledger
