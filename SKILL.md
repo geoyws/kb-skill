@@ -2275,6 +2275,19 @@ kb trunk show --json                                              # {"repo","rem
   refused for every actor. Name the board's real trunk (usually `main`), never
   your own work branch. A set writes one `trunk_set` event naming you; there
   is no unset.
+- `--baseline SHA [--repin]` on a root set publishes the board's verified
+  final-target default. A root whose tip records a gitlink needs
+  `--baseline`, a full SHA on the trunk; without one the set is refused and
+  nothing is stored. Children are approved parent-first with the
+  `--path-chain JSON` form: `--kind owned --required-suite NAME
+  --required-layer LAYER`, or `--kind third-party --pin SHA`. After a trunk
+  bump that moves or removes published gitlinks, re-set the root with
+  `--baseline <full SHA on the trunk> --repin`: kept third-party pins are
+  re-derived from the fresh tip (each must equal the commit `--baseline`
+  records there) and kept children the tip no longer records are dropped
+  with their descendants; the receipt and the `trunk_set` event list the
+  `repinned` and `dropped` chains. Without `--repin`, a set whose kept
+  child the fresh tip no longer matches is refused, naming that child.
 - `trunk show` reads only, and is open to anyone who can read the board.
 - To land work: merge and push it to trunk, then record the landed commit
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or
