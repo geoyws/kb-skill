@@ -388,6 +388,8 @@ unusable for later writes. Use the routed opt-in `kb-session-lease` helper:
 `kb-session-lease BOARD handoff-create TASK --as ACTOR --summary ... --intent ... --next-action ...`,
 `kb-session-lease BOARD worktree-register TASK --host HOST --repo REALPATH --path REALPATH --leaf LEAF --branch BRANCH --base-sha SHA --purpose writer|e2e --owner ACTOR`
 (kanban IDENTITY IDENT-49: registers the claimed task's worktree with the session's lease and prints the token-free allocation record),
+`kb-session-lease BOARD worktree-disposition TASK --allocation ID --state merged|removed|preserved --reason TEXT [--accepted-sha SHA]`
+(kanban IDENTITY IDENT-50: dispositions the claimed task's own lane allocation with the session's lease and prints the token-free disposition receipt),
 or `kb-session-lease BOARD release TASK`. If the board claim has ended elsewhere
 but the private record survives, `kb-session-lease BOARD recover TASK` verifies
 the board shows a settled or expired claim and preserves the stale record aside.

@@ -91,6 +91,11 @@ case "$2 $3" in
       t-fake) printf '{"allocationId":"wt-0000000a","task":"t-fake","workerId":null}\n' ;;
       *) printf '{"allocationId":"wt-0000000b","lease":"12345678-1234-1234-1234-123456789012"}\n' ;;
     esac ;;
+  # kanban IDENT-50's lane form (t-4df575ab): the reply is the disposition
+  # receipt; the call names the allocation, not the task.
+  'worktree disposition')
+    case " $* " in *' --lease 12345678-1234-1234-1234-123456789012 '*) ;; *) exit 61 ;; esac
+    printf '{"allocationId":"wt-0000000a","task":"t-fake","workerId":null,"state":"completed","disposition":"removed"}\n' ;;
   't cat')
     case "$4" in
       t-settled) printf '{"id":"t-settled","claim":null}\n' ;;
@@ -162,6 +167,16 @@ out=$("$lease" dotfiles worktree-register t-fake --host h --path /r/a --json)
 [ "$(tail -n 1 "$t/calls")" = 'dotfiles worktree register t-fake --lease 12345678-1234-1234-1234-123456789012 --host h --path /r/a --json' ] || exit 1
 [ -f "$session" ] || exit 1
 if "$lease" dotfiles worktree-register t-fake --lease forged >"$t/refusal" 2>&1; then exit 1; fi
+out=$("$lease" dotfiles release t-fake)
+# The lane form of worktree disposition: the allocation leads the call, the
+# session's lease follows, one --json, and the receipt is the answer.
+out=$("$lease" dotfiles claim t-fake --as test)
+out=$("$lease" dotfiles worktree-disposition t-fake --allocation wt-0000000a --state removed --reason landed --json)
+[ "$out" = '{"allocationId":"wt-0000000a","task":"t-fake","workerId":null,"state":"completed","disposition":"removed"}' ] || exit 1
+[ "$(tail -n 1 "$t/calls")" = 'dotfiles worktree disposition wt-0000000a --lease 12345678-1234-1234-1234-123456789012 --state removed --reason landed --json' ] || exit 1
+[ -f "$session" ] || exit 1
+if "$lease" dotfiles worktree-disposition t-fake --state removed --reason landed >"$t/refusal" 2>&1; then exit 1; fi
+grep -qF 'worktree-disposition needs --allocation ID' "$t/refusal" || exit 1
 out=$("$lease" dotfiles release t-fake)
 printf 't-leak\n12345678-1234-1234-1234-123456789012\n' >"$session"
 chmod 600 "$session"
