@@ -4,7 +4,7 @@ Read when: taking a code row to `done`.
 
 ## Trunk — done means on trunk
 
-On a board whose trunk `geoyws` has set, every write that takes a row of any
+On a board whose trunk has been set, every write that takes a row of any
 type to `done` — `task move … done`, `checkpoint --state done`, `story
 advance` into `done`, an import flip — is refused when the row has recorded a
 head unless that head is a full 40-character SHA, read from a checkout (a
@@ -18,12 +18,18 @@ whatever the board's `done_gate`. The trunk is asked fresh each time (`git
 ls-remote`), so a merge that has not been pushed is not on trunk.
 
 ```bash
-kb trunk set --repo PATH --remote NAME --branch NAME --as geoyws --baseline SHA [--repin]   # root; geoyws only
-kb trunk set --path-chain '["p1","p2"]' --repo PATH --remote NAME --branch NAME --as geoyws --kind owned --required-suite S --required-layer L   # or --kind third-party --pin SHA
+kb trunk set --repo PATH --remote NAME --branch NAME --as ACTOR --baseline SHA [--repin]   # root; any board writer
+kb trunk set --path-chain '["p1","p2"]' --repo PATH --remote NAME --branch NAME --as ACTOR --kind owned --required-suite S --required-layer L   # or --kind third-party --pin SHA
 kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","children","uncovered","revision"} or null
 ```
 
-- `trunk set` is accepted only from `geoyws`. Root pins the trunk with
+- `trunk set` is accepted from any actor the board's write authority admits
+  (under `managed`: `write` at the board's scope, `--as` bound to you or your
+  live lane actor; kanban `t-0b70d2b3`, 2026-10-30). It is a coordinator
+  verb: run it from your lane's own process, never with a worker
+  credential (`KANBAN_WORKER_CREDENTIAL`), which is refused as
+  coordinator-only. Name the board's real trunk, never your own work
+  branch; every set writes a `trunk_set` event naming you. Root pins the trunk with
   `--baseline`, required on gitlinked roots once the DG-46 kanban release
   ships (today kanban stores a hint instead). When a stored pin differs
   from the fresh gitlink, or a stored child's gitlink vanished, the root
@@ -46,7 +52,7 @@ kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","ch
   remote helper overrides). `PATH` is a readable, non-shallow checkout on
   the ledger's host, `NAME` a remote configured there that answers
   `ls-remote` with the branch. A `<trunk>-driver-N` lane branch is refused.
-  A set writes one `trunk_set` event; there is no unset.
+  A set writes one `trunk_set` event naming the actor; there is no unset.
 - `trunk show` reads only, and is open to anyone who can read the board.
 - To land work: merge and push it to trunk, then record the landed commit
   from that checkout — `kb cp` for a task, `kb sr new --task ID` for a story or

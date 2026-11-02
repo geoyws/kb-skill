@@ -12,11 +12,11 @@ die() {
   echo "kb-session-lease: ${op:-call} failed [cause=$1]: $2" >&2
   exit "${3:-64}"
 }
-usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|recover ID [KB OPTIONS...]'; }
+usage() { die usage 'usage: kb-session-lease BOARD claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|worktree-disposition|recover ID [KB OPTIONS...]'; }
 [[ $# -ge 3 ]] || usage
 board=$1 op=$2 id=$3
 shift 3
-case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|recover) ;; *) usage ;; esac
+case "$op" in claim|hb|checkpoint|release|handoff-accept|handoff-create|worktree-register|worktree-disposition|recover) ;; *) usage ;; esac
 # Only task and bug rows (both t-) are claimable; the board refuses a story
 # or an epic. Say so here, with the remedy that fits the operation, instead
 # of a bare "invalid id" (kb dotfiles t-10502c21, t-b1466e98). A session
@@ -26,7 +26,7 @@ unclaimable=''
 case "$id" in s-*) kind='a story' ;; e-*) kind='an epic' ;; *) kind='' ;; esac
 case "$op:$id" in
   handoff-accept:h-*) ;;
-  claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|worktree-register:t-*|recover:t-*) ;;
+  claim:t-*|hb:t-*|checkpoint:t-*|release:t-*|handoff-create:t-*|worktree-register:t-*|worktree-disposition:t-*|recover:t-*) ;;
   recover:s-*|recover:e-*) unclaimable=1 ;;
   handoff-accept:*) die usage "invalid handoff id $id: handoff-accept takes an h- handoff id" ;;
   claim:s-*) die usage "$id is a story, and only task and bug rows (t- ids) are claimable: advance it with kb-board $board s adv $id --as ACTOR, or claim one of its child t- tasks" ;;
@@ -340,12 +340,27 @@ case "$op" in
   # kanban IDENTITY IDENT-49: the lane registers its own worktree with the
   # lease of its live claim, which only this wrapper reads.
   worktree-register) cmd=(worktree register "$id" --lease "$token" "$@" --json) ;;
+  # kanban IDENTITY IDENT-50: the lane dispositions its own allocation;
+  # --allocation names it, the rest of the form rides through, and the
+  # lease comes from the session file exactly as register's does.
+  worktree-disposition)
+    allocation='' rest=() expect=''
+    for arg in "$@"; do
+      if [[ -n "$expect" ]]; then allocation=$arg expect=''; continue; fi
+      case "$arg" in
+        --allocation) expect=allocation ;;
+        --allocation=*) allocation=${arg#--allocation=} ;;
+        *) rest+=("$arg") ;;
+      esac
+    done
+    [[ -n "$allocation" ]] || die usage 'worktree-disposition needs --allocation ID --state merged|removed|preserved --reason TEXT [--accepted-sha SHA]'
+    cmd=(worktree disposition "$allocation" --lease "$token" "${rest[@]}" --json) ;;
 esac
 "$here/kb-board" "$board" "${cmd[@]}" >"$private" 2>"$error" || { board_rc=$?; fail_board "lease operation ($op)"; }
 if [[ "$op" = release || "$op" = handoff-create ]] || { [[ "$op" = checkpoint ]] && jq -e '.state == "done" or .state == "blocked"' "$private" >/dev/null; }; then
   rm -f -- "$session"
 fi
-if [[ "$op" = worktree-register ]]; then
+if [[ "$op" = worktree-register || "$op" = worktree-disposition ]]; then
   # The allocation record is the caller's answer (it needs the allocation
   # id); kanban never puts the token in it, and this wrapper never prints
   # a reply that carries one.
