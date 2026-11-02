@@ -29,17 +29,23 @@ kb trunk show --json   # {"repo","remote","branch","repositoryID","baseline","ch
   verb: run it from your lane's own process, never with a worker
   credential (`KANBAN_WORKER_CREDENTIAL`), which is refused as
   coordinator-only. Name the board's real trunk, never your own work
-  branch; every set writes a `trunk_set` event naming you. Root pins the trunk with
-  `--baseline`, required on gitlinked roots once the DG-46 kanban release
-  ships (today kanban stores a hint instead). When a stored pin differs
-  from the fresh gitlink, or a stored child's gitlink vanished, the root
-  set carries `--repin` once the DG-48 kanban release ships: kept
-  third-party children are re-pinned, owned re-verified, vanished gitlinks
-  dropped, all or nothing; child sets run only for new chains and kept
-  chains whose branch, URL or kind changed, after the root set. A moved
-  baseline alone takes a plain `--baseline` root set. Every set
-  re-verifies the snapshot; one 30 s limit covers the whole snapshot today,
-  per-question deadlines once DG-48 ships.
+  branch; every set writes a `trunk_set` event naming you.
+- `--baseline SHA [--repin]` on a root set publishes the board's verified
+  final-target default. A root whose tip records a gitlink needs
+  `--baseline`, a full SHA on the trunk; without one the set is refused and
+  nothing is stored. When a stored pin differs from the fresh gitlink, or a
+  stored child's gitlink vanished — after a trunk bump that moves or
+  removes published gitlinks — re-set the root with `--baseline <full SHA
+  on the trunk> --repin`: kept third-party pins are re-derived from the
+  fresh tip (each must equal the commit `--baseline` records there), owned
+  children re-verified, and kept children the tip no longer records are
+  dropped with their descendants, all or nothing; the receipt and the
+  `trunk_set` event list the `repinned` and `dropped` chains. Without
+  `--repin`, a set whose kept child the fresh tip no longer matches is
+  refused, naming that child. A moved baseline alone takes a plain
+  `--baseline` root set. Child sets run only for new chains and kept
+  chains whose branch, URL or kind changed, after the root set. Every set
+  re-verifies the snapshot, each git question under its own deadline.
   One `--path-chain` call per gitlink chain follows, parent before
   descendant, never `--baseline` with `--path-chain`. Owned needs a geoyws integration branch and a named
   suite, else the child is third-party with its exact gitlink `--pin`. Every
